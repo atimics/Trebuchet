@@ -352,25 +352,6 @@ function validateProofFile(file) {
   return file;
 }
 
-function validateClassicArtifactFile(file) {
-  if (!file) return null;
-  const name = String(file.name || '');
-  const type = String(file.type || '');
-  const artifactLike = type === 'application/json'
-    || type === 'text/json'
-    || type === 'text/html'
-    || type === 'text/plain'
-    || (!type && /\.(json|html?|txt)$/i.test(name))
-    || /\.(json|html?|txt)$/i.test(name);
-  if (!artifactLike) {
-    throw new Error('Classic artifact must be JSON, HTML, or text');
-  }
-  if (file.size <= 0 || file.size > CLASSIC_ARTIFACT_IMPORT_LIMIT) {
-    throw new Error('Classic artifact must be 1MB or smaller');
-  }
-  return file;
-}
-
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     if (typeof FileReader !== 'function') {
@@ -526,4 +507,23 @@ async function copyText(value, label = 'Value') {
       message: 'Select and copy the value manually.',
     });
   }
+}
+
+// A logo restored from a saved launch or a launch record skipped the picker, so it can be larger
+// than a launch accepts (an older save, or a copy enlarged for the address stamp). Put it through
+// the same shrinking the picker uses, now, instead of letting Create refuse it later.
+async function fitRestoredTokenLogo() {
+  const logo = state.tokenLogo;
+  const match = String(logo?.dataUrl || '').match(/^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match || typeof File !== 'function' || typeof atob !== 'function') return;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const file = new File([bytes], logo.name || 'token-logo', { type: match[1] });
+  const source = await loadLogoImage(file);
+  const fits = file.size <= CLASSIC_LOGO_MAX_BYTES
+    && source.width <= CLASSIC_LOGO_MAX_DIMENSION && source.height <= CLASSIC_LOGO_MAX_DIMENSION;
+  source.release();
+  if (fits || state.tokenLogo !== logo) return;
+  await selectTokenLogo(file);
 }

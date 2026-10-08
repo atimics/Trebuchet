@@ -59,7 +59,7 @@ function fakeSafeStorage() {
   };
 }
 
-test('adds encrypted pending wallets idempotently and removes them', async (t) => {
+test('adds encrypted pending wallets idempotently and retires them', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     secretStore.setSafeStorage(fakeSafeStorage());
@@ -87,8 +87,8 @@ test('adds encrypted pending wallets idempotently and removes them', async (t) =
     assert.match(disk[0].mnemonicEnc, /^enc:/);
     assert.equal(secretStore.decryptString(disk[0].mnemonicEnc), 'alpha beta');
 
-    pendingWallets.remove('Wallet1111111111111111111111111111111111');
-    assert.deepEqual(pendingWallets.list(), []);
+    pendingWallets.retire('Wallet1111111111111111111111111111111111');
+    assert.deepEqual(pendingWallets.get('Wallet1111111111111111111111111111111111').secretKey, [1, 2, 3]);
   });
 });
 
@@ -212,7 +212,7 @@ test('preserves malformed pending-wallet bytes and requires recovery for reads a
 
     const pendingWallets = await importFreshPendingWallets(configDir);
 
-    for (const action of [() => pendingWallets.list(), () => pendingWallets.add('new', [1, 2, 3]), () => pendingWallets.remove('old'), () => pendingWallets.removePinEncrypted()]) {
+    for (const action of [() => pendingWallets.list(), () => pendingWallets.add('new', [1, 2, 3]), () => pendingWallets.retire('old'), () => pendingWallets.removePinEncrypted()]) {
       assert.throws(action, { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
       assert.equal(readFileSync(pendingWalletFile(configDir), 'utf8'), '{not json');
     }
@@ -280,7 +280,7 @@ test('removes only PIN-encrypted pending wallets during destructive PIN reset', 
   });
 });
 
-test('adding and removing another wallet preserves unreadable ciphertext and record metadata', async (t) => {
+test('adding and retiring another wallet preserves unreadable ciphertext and record metadata', async (t) => {
   await withMutedConsole(async () => {
     const configDir = makeTempConfigDir(t);
     secretStore.lockSecretPin();
@@ -290,8 +290,9 @@ test('adding and removing another wallet preserves unreadable ciphertext and rec
     const pendingWallets = await importFreshPendingWallets(configDir);
     pendingWallets.add('new-wallet', [1, 2, 3]);
     assert.deepEqual(JSON.parse(readFileSync(pendingWalletFile(configDir)))[0], original);
-    pendingWallets.remove('new-wallet');
-    assert.deepEqual(JSON.parse(readFileSync(pendingWalletFile(configDir))), [original]);
+    pendingWallets.retire('new-wallet');
+    const disk = JSON.parse(readFileSync(pendingWalletFile(configDir)));
+    assert.deepEqual(disk[0], original); assert.ok(disk[1].retiredAt);
     assert.equal(pendingWallets.get('encrypted-wallet').secretKey, undefined);
   });
 });
@@ -408,4 +409,45 @@ test('fresh wallet PIN custody requires a protected device secret', async (t) =>
     assert.throws(() => pendingWallets.add('fresh', [4, 5, 6]), { code: 'RECOVERY_ENCRYPTION_REQUIRED' });
     assert.equal(existsSync(pendingWalletFile(configDir)), false);
   });
+});
+
+test('a finished launch retires its wallet and keeps the key readable', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.setSafeStorage(fakeSafeStorage());
+    const pendingWallets = await importFreshPendingWallets(configDir);
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [1, 2, 3], 'alpha beta');
+    const before = readFileSync(pendingWalletFile(configDir), 'utf8');
+
+    const retired = pendingWallets.retire('Wallet1111111111111111111111111111111111', '2026-10-03T22:05:30.000Z');
+    assert.equal(retired.retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.deepEqual(retired.secretKey, [1, 2, 3]);
+    const saved = pendingWallets.get('Wallet1111111111111111111111111111111111');
+    assert.deepEqual(saved.secretKey, [1, 2, 3]); assert.equal(saved.mnemonic, 'alpha beta');
+    const disk = JSON.parse(readFileSync(pendingWalletFile(configDir), 'utf8'));
+    assert.equal(disk.length, 1); assert.equal(disk[0].retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.equal(disk[0].secretKeyEnc, JSON.parse(before)[0].secretKeyEnc, 'the ciphertext is kept as it was');
+
+    // Retiring twice keeps the first time; an unknown wallet is a no-op.
+    pendingWallets.retire('Wallet1111111111111111111111111111111111', '2026-10-04T00:00:00.000Z');
+    assert.equal(pendingWallets.get('Wallet1111111111111111111111111111111111').retiredAt, '2026-10-03T22:05:30.000Z');
+    assert.equal(pendingWallets.retire('Missing11111111111111111111111111111111'), null);
+    // A later add of the same wallet keeps it retired and its key unchanged.
+    pendingWallets.add('Wallet1111111111111111111111111111111111', [9, 9, 9], 'changed');
+    assert.deepEqual(pendingWallets.get('Wallet1111111111111111111111111111111111').secretKey, [1, 2, 3]);
+  });
+});
+
+test('no code path deletes a launch wallet key', async (t) => {
+  const configDir = makeTempConfigDir(t);
+  const pendingWallets = await importFreshPendingWallets(configDir);
+  assert.equal(pendingWallets.remove, undefined, 'the wallet store has no delete');
+  const root = new URL('../', import.meta.url);
+  const sources = ['server.js', 'launchExecution.js', 'walletExecution.js', 'pendingWallets.js', 'sweepOrchestrator.js']
+    .map((name) => [name, readFileSync(new URL(name, root), 'utf8')]);
+  for (const [name, source] of sources) {
+    assert.doesNotMatch(source, /pendingWallets\.remove\s*\(/, `${name} deletes a wallet key`);
+  }
+  const dismiss = readFileSync(new URL('server.js', root), 'utf8').match(/app\.post\('\/api\/pending-wallets\/dismiss'[\s\S]*?\n\}\);/)[0];
+  assert.match(dismiss, /pendingWallets\.retire\(publicKey\)/, 'hiding a wallet keeps its key');
 });

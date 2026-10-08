@@ -125,27 +125,154 @@ async function openDraftForCreation(draftId) {
     state.loadedSavedLaunchId = entry.id;
     rememberActiveLaunchId(entry.id);
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace('configure');
   renderAll();
 }
 
+// Every coin has one page: its steps. A draft's steps create it; an on-chain
+// coin's steps say what the chain and its launch record show.
 function openCoin(key) {
   const target = coinByKey(key);
-  // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
     openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
-  state.coins = { ...state.coins, key, detail: null, detailError: null };
+  // The launch running in the workspace stays on screen as it runs.
+  if (target?.mint && target.mint === proofTokenMint(state.launchProof) && liveLaunchInProgress()) {
+    state.coins = { ...state.coins, key: null };
+    setView('launch');
+    renderAll();
+    return;
+  }
+  // The last read of this coin shows at once; the chain is read again behind it.
+  const seen = target?.mint ? coinPageCache.get(target.mint) : null;
+  state.coins = { ...state.coins, key, detail: seen?.detail || null, detailError: null, airdrop: seen?.airdrop || null };
+  state.launchWorkspace = null;
   resetPoolSupport();
-  setView('coins');
-  const coin = coinByKey(key);
-  if (coin?.kind === 'onchain') {
-    loadCoinDetail(coin.mint).catch(() => null);
-    loadCoinPositions(coin.mint).catch(() => null);
+  setView('launch');
+  if (target?.kind === 'onchain') {
+    loadCoinDetail(target.mint).catch(() => null);
+    loadCoinPositions(target.mint).catch(() => null);
+    loadCoinAirdrop(target.mint).catch(() => null);
+  }
+  renderAll();
+}
+
+// Each on-chain coin's last read in this session, by mint: its page and its airdrop.
+const coinPageCache = new Map();
+function rememberCoinPage(mint, patch) {
+  coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
+}
+
+// The coin's airdrop: what each wallet received, and what the chain says it holds now.
+async function loadCoinAirdrop(mint) {
+  if (!state.apiClient?.getCoinAirdrop) return;
+  const previous = state.coins.airdrop?.mint === mint ? state.coins.airdrop : coinPageCache.get(mint)?.airdrop || null;
+  state.coins = { ...state.coins, airdrop: { mint, recipients: previous?.recipients || null, decimals: previous?.decimals ?? null, loading: true, error: null } };
+  renderCoins();
+  try {
+    const response = await state.apiClient.getCoinAirdrop(mint);
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { mint, ...response.airdrop, loading: false, error: null } };
+    rememberCoinPage(mint, { airdrop: state.coins.airdrop });
+  } catch (error) {
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { ...state.coins.airdrop, loading: false, error: error.message || 'Could not read the balances' } };
   }
   renderCoins();
+}
+
+// Received against held now, as a fact: all of it, more, part, or none.
+function airdropHolding(row) {
+  if (row.nowRaw == null) return { tone: 'unknown', label: 'Not read', rank: 3 };
+  const received = BigInt(row.receivedRaw || '0');
+  const now = BigInt(row.nowRaw);
+  if (now === 0n) return { tone: 'none', label: 'None left', rank: 0 };
+  if (now < received) {
+    const left = Number((now * 1000n) / (received || 1n)) / 10;
+    return { tone: 'part', label: `${left.toFixed(left < 10 ? 1 : 0)}% left`, rank: 1 };
+  }
+  return { tone: 'all', label: now > received ? 'Holds more' : 'Holds all', rank: 2 };
+}
+
+// What the chain's history shows a wallet did with the coin since its airdrop.
+const AIRDROP_ACTIVITY = [['burnedRaw', 'Burned'], ['soldRaw', 'Sold'], ['boughtRaw', 'Bought'], ['sentRaw', 'Sent'], ['transferredInRaw', 'Got']];
+function airdropActivity(row, amount) {
+  const history = row.history;
+  if (!history) return [];
+  if (history.error) return ['History not read'];
+  const done = AIRDROP_ACTIVITY.filter(([field]) => BigInt(history[field] || '0') > 0n)
+    .map(([field, label]) => `${label} ${amount(history[field])}`);
+  if (history.partial) done.push('older history not read');
+  return done;
+}
+
+function coinAirdropHtml(airdrop) {
+  if (!airdrop) return '';
+  if (airdrop.error && !airdrop.recipients) return `<p class="pool-support-error">${escapeHtml(airdrop.error)}</p>`;
+  const rows = airdrop.recipients || [];
+  if (!rows.length) return airdrop.loading ? '<p class="coins-empty">Reading the airdrop…</p>' : '';
+  const decimals = Number.isFinite(Number(airdrop.decimals)) ? Number(airdrop.decimals) : null;
+  const amount = (raw) => (raw == null || decimals == null ? '—' : compactAmount(Number(BigInt(raw)) / 10 ** decimals));
+  const ranked = rows.map((row) => ({ row, holding: airdropHolding(row), activity: airdropActivity(row, amount) }))
+    .sort((a, b) => a.holding.rank - b.holding.rank || Number(BigInt(b.row.receivedRaw) - BigInt(a.row.receivedRaw)));
+  const count = (tone) => ranked.filter((item) => item.holding.tone === tone).length;
+  const did = (field) => rows.filter((row) => BigInt(row.history?.[field] || '0') > 0n).length;
+  const totals = [
+    count('all') ? `${count('all')} hold all${ranked.some((item) => item.holding.label === 'Holds more') ? ' or more' : ''}` : null,
+    count('part') ? `${count('part')} hold part` : null,
+    count('none') ? `${count('none')} hold none` : null,
+    ...[['burnedRaw', 'burned'], ['soldRaw', 'sold'], ['boughtRaw', 'bought'], ['sentRaw', 'sent']]
+      .map(([field, label]) => (did(field) ? `${did(field)} ${label}` : null)),
+  ].filter(Boolean);
+  return `
+    <p class="coin-airdrop-totals">${rows.length} wallet${rows.length === 1 ? '' : 's'}${totals.length ? ` · ${totals.join(' · ')}` : ''}${airdrop.loading ? ' · reading…' : ''}</p>
+    <div class="coin-airdrop" role="table" aria-label="Airdrop recipients">
+      <div class="coin-airdrop-row is-head" role="row"><span role="columnheader">Wallet</span><span role="columnheader">Received</span><span role="columnheader">Holds now</span><span role="columnheader">What happened</span></div>
+      ${ranked.map(({ row, holding, activity }) => `
+        <div class="coin-airdrop-row is-${holding.tone}" role="row">
+          <span role="cell">${walletChipHtml(row.wallet)}</span>
+          <span role="cell">${escapeHtml(amount(row.receivedRaw))}</span>
+          <span role="cell">${escapeHtml(amount(row.nowRaw))}</span>
+          <span role="cell">${escapeHtml(activity.length ? activity.join(' · ') : holding.label)}</span>
+        </div>`).join('')}
+    </div>`;
+}
+
+// The on-chain coin the page shows, or null while it shows a coin being created.
+function chainCoinOnPage() {
+  const coin = state.coins.key ? coinByKey(state.coins.key) : null;
+  return coin?.kind === 'onchain' ? coin : null;
+}
+
+function chainCoinDetail(coin) {
+  return coin && state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
+}
+
+// A saved draft whose reserved address has since launched is that coin now: show the coin.
+function launchedCoinForWorkspaceDraft() {
+  if (state.activeView !== 'launch' || chainCoinOnPage() || liveLaunchInProgress()) return null;
+  if (proofTokenMint(currentLaunchProof())) return null;
+  const reserved = String(state.selectedVanityPublicKey || '').trim();
+  if (!reserved) return null;
+  const coin = (state.coins.list || []).find((item) => item.kind === 'onchain' && item.launchedHere && item.mint === reserved);
+  if (!coin) return null;
+  // Only the draft that made this coin is that coin. A new coin that picked its address is not.
+  const token = currentLaunchConfig().token || {};
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  return same(token.symbol, coin.symbol) && same(token.name, coin.name) ? coin : null;
+}
+
+// A new coin holding an address another launch has minted drops it for a fresh random one.
+function dropUsedVanitySelection() {
+  if (chainCoinOnPage() || liveLaunchInProgress() || state.fullRunRunning || state.realExecutionRunning) return false;
+  if (proofTokenMint(currentLaunchProof())) return false;
+  if (!vanityAddressUsedReason(state.selectedVanityPublicKey) || launchedCoinForWorkspaceDraft()) return false;
+  state.selectedVanityPublicKey = null;
+  invalidateClassicOutputs();
+  return true;
 }
 
 async function loadCoinPositions(mint) {
@@ -242,7 +369,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${walletChipHtml(position.owner)}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -284,12 +411,23 @@ async function loadCoinDetail(mint) {
     const response = await state.apiClient.getCoin(mint);
     if (state.coins.key !== `mint:${mint}`) return;
     const checkedStatus = coinChainStatus(response.coin?.creation);
+    rememberCoinPage(mint, { detail: response.coin });
     state.coins = {
       ...state.coins,
       detail: response.coin,
       detailLoading: false,
       checked: checkedStatus ? { ...(state.coins.checked || {}), [mint]: checkedStatus } : state.coins.checked,
+      airdropPlan: null,
     };
+    // The sweep sends the saved airdrop first: read it so the page can say so before anyone sweeps.
+    const sweepWallet = response.coin?.creation?.walletManaged ? response.coin.creation.walletPublicKey : null;
+    if (sweepWallet && state.apiClient.getAirdropPlan) {
+      state.apiClient.getAirdropPlan(sweepWallet).then((plan) => {
+        if (state.coins.key !== `mint:${mint}` || !plan || plan.tokenMint !== mint) return;
+        state.coins = { ...state.coins, airdropPlan: plan };
+        renderCoins();
+      }).catch(() => null);
+    }
   } catch (error) {
     state.coins = { ...state.coins, detailLoading: false, detailError: error.message || 'Could not read the coin' };
   }
@@ -332,10 +470,6 @@ async function removeAddedCoin(mint) {
   } catch (error) {
     notify(error.message || 'Could not remove that coin');
   }
-}
-
-function coinTitle(coin) {
-  return coin?.name || coin?.symbol || (coin?.mint ? shortAddress(coin.mint) : 'Untitled coin');
 }
 
 // ---------------------------------------------------------------------------
@@ -462,16 +596,9 @@ function hydrateCoinCards() {
 }
 
 function renderCoins() {
-  const listView = $('#coinsListView');
-  const page = $('#coinPage');
-  if (!listView || !page) return;
-  const { key } = state.coins;
-  const coin = key ? coinByKey(key) : null;
-  listView.hidden = Boolean(coin);
-  page.hidden = !coin;
-  if (coin) {
-    renderCoinPage(coin);
-    return;
+  if (state.activeView === 'launch' && (chainCoinOnPage() || launchedCoinForWorkspaceDraft())) {
+    renderLaunchWorkspace();
+    renderCoinContext();
   }
   const target = $('#coinsList');
   if (!target) return;
@@ -562,7 +689,7 @@ function coinMarketsHtml(markets) {
   if (!markets) return '';
   if (markets.error) return `<p class="pool-support-error">Could not read the markets: ${escapeHtml(markets.error)}</p>`;
   const pools = markets.pools || [];
-  if (!pools.length) return '<p class="coins-empty">No Raydium pools hold this coin yet.</p>';
+  if (!pools.length) return '<p class="coins-empty">No pools found for this coin.</p>';
   const drains = pools.filter((pool) => pool.drainsSolPool);
   return `
     ${drains.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> This coin is cheaper in its ${drains.map((pool) => escapeHtml(pool.quoteSymbol || 'pair')).join(', ')} pool${drains.length === 1 ? '' : 's'} than in its SOL pool. Bots buy it there and sell it into the SOL pool, taking SOL buyers' money, until the gap closes. Buy support only holds below that price.</p>` : ''}
@@ -570,7 +697,7 @@ function coinMarketsHtml(markets) {
       <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
-          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml(pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId))}</small></span>
+          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
           <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
@@ -589,40 +716,57 @@ const CREATION_STEP_ACTIONS = {
   return: 'Sweep the launch wallet',
 };
 
-function coinCreationHtml(creation, coin) {
+// The one thing left to do for a coin launched here, or '' when nothing is.
+function coinNextStepAction(creation, coin) {
   if (!creation) return '';
-  const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
-  const next = creation.steps.find((step) => ['todo', 'mismatch'].includes(step.state)) || null;
+  // A step neither recorded nor checkable on-chain has not been done as far as anyone can tell:
+  // it is still the next step. Skipping it offered a sweep before the liquidity was locked.
+  const next = creation.steps.find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state)) || null;
   let action = '';
   if (next) {
     if (next.id === 'return' && creation.walletManaged && creation.walletPublicKey) {
-      // Sweep the launch wallet: nothing else of the plan is needed.
-      action = `<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>Sweep the launch wallet</span><i class="fa-solid fa-broom"></i></button>`;
+      // The sweep runs the saved airdrop first, then returns the rest: say both before it is pressed.
+      const plan = state.coins.airdropPlan?.tokenMint === coin?.mint ? state.coins.airdropPlan : null;
+      const delivered = new Set((creation.journal?.airdrop?.transferred || []).map((row) => row.wallet));
+      const pending = plan ? plan.recipients.filter((row) => !delivered.has(row.wallet)) : [];
+      const tokens = (rows) => rows.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 4 });
+      const airdropNote = plan ? `<p class="coin-airdrop-note" role="note"><i class="fa-solid fa-parachute-box" aria-hidden="true"></i> Airdrop: ${pending.length
+        ? `${tokens(pending)} tokens to ${pending.length} wallet${pending.length === 1 ? '' : 's'} are sent first${delivered.size ? ` (${delivered.size} already delivered)` : ''}`
+        : `all ${plan.recipients.length} wallets delivered`}. Then every token and SOL left in the launch wallet goes to the return wallet.</p>` : '';
+      const sweeping = state.sweepingWalletPublicKey === creation.walletPublicKey;
+      const last = !sweeping && state.lastRecoverySweep?.publicKey === creation.walletPublicKey ? state.lastRecoverySweep : null;
+      const progress = sweeping
+        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${escapeHtml(coinSweepProgressText(creation.walletPublicKey, plan, delivered))}</p>`
+        : last ? `<p class="coin-airdrop-note${last.error ? ' is-error' : ''}" role="status">${escapeHtml(last.message)}</p>` : '';
+      action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
       action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
-    } else if (!creation.walletManaged) {
-      action = '<p class="pool-support-intro">The launch wallet is not in this app, so what is left can\'t be done from here.</p>';
     } else {
-      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so what is left can\'t be done from here.</p>';
+      const reason = !creation.walletManaged ? 'Launch key not in Trebuchet' : 'Launch plan not saved';
+      action = `<button class="primary-button compact" type="button" disabled aria-disabled="true" data-blocked-reason="${reason}" title="${reason}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span></button>`;
     }
   }
-  return `
-    <ul class="coin-creation">
-      ${creation.steps.map((step) => {
-        const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
-        return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
-          <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail || '')}</small></span>
-        </li>`;
-      }).join('')}
-    </ul>
-    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one fact' : `${mismatches.length} facts`}. The chain is what counts.</p>` : ''}
-    ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
+  return action ? `<div class="coin-actions">${action}</div>` : '';
 }
 
 // Bring up a coin's remaining steps from its launch record, at the step it
 // needs. Checks the record has a plan BEFORE touching the coin being
 // worked on, so a record without one never shows another coin's design.
+// What the running sweep is doing now: each airdrop wallet as it lands, then the rest.
+function coinSweepProgressText(walletPublicKey, plan, delivered) {
+  const live = state.sweepAirdropProgress?.publicKey === walletPublicKey ? state.sweepAirdropProgress : null;
+  const total = plan?.recipients?.length || 0;
+  if (!total) return 'Sweeping every token and SOL to the return wallet. Keep the app open.';
+  if (!live) return delivered.size >= total
+    ? 'Sweeping every token and SOL to the return wallet. Keep the app open.'
+    : `Airdrop: ${delivered.size} of ${total} wallets sent. Starting… Keep the app open.`;
+  const sent = Math.min(total, delivered.size + (live.completed || 0));
+  const failed = live.failedCount ? `, ${live.failedCount} failed` : '';
+  if (live.status === 'done') return `Airdrop: ${sent} of ${total} wallets sent${failed}. Now sweeping every token and SOL to the return wallet.`;
+  const left = Math.max(0, total - sent);
+  return `Airdrop: ${sent} of ${total} wallets sent${failed}. About ${Math.max(1, Math.ceil(left * 15 / 60))} min left; each transfer waits for full confirmation. Keep the app open.`;
+}
+
 function continueCoinStep(mint) {
   const journal = state.coins.detail?.mint === mint ? state.coins.detail?.creation?.journal : null;
   if (!journal || !recoveryLaunchConfig(journal)) {
@@ -642,6 +786,7 @@ function continueCoinStep(mint) {
     state.selectedWalletPublicKey = journal.walletPublicKey;
     state.accountId = journal.walletPublicKey;
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace(recoveryWorkspaceForJournal(journal));
   renderAll();
@@ -663,88 +808,119 @@ function coinActivityHtml(events = []) {
     </li>`).join('')}</ul>`;
 }
 
-function draftPlanHtml(entry) {
-  const config = entry?.config || {};
-  const topology = config.poolTopology || {};
-  const pools = Array.isArray(topology.pools) ? topology.pools : [];
-  const supportSol = pools.reduce((sum, pool) => sum + (pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0), 0);
-  const held = Number(topology.preallocation?.supplyPercent || 0);
-  const facts = [
-    ['Supply', compactAmount(parseWholeNumber(String(config.token?.supply || '1000000000')) || 1e9)],
-    ['Target market cap', `$${compactAmount(Number(topology.targetMarketCapUsd || 0))}`],
-    ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
-    ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
-    ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
-  ];
-  return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
-}
+const CHAIN_FACT_LABELS = { wallet: 'Launch', mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
 
-// The coin page header: the coin's card, with its explorer links.
-function coinHeaderHtml({ name, symbol, image = null, status = '', address = null, links = false }) {
-  const trailing = links && address
-    ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>`
-    : '';
-  return coinCardHtml({ name, symbol, address, image }, { variant: 'header', tag: 'header', status, trailing });
-}
-
-function renderCoinPage(coin) {
-  if ($('#coinPageFooter')) $('#coinPageFooter').innerHTML = '';
-  const body = $('#coinPageBody');
-  const supportPanel = $('#poolSupportPanel');
-  if (!body) return;
-  const detail = state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
+// The rail for an on-chain coin: the same four rows as creating one, each from the chain
+// and the launch record (see coinCreationSteps on the server).
+function onchainCoinFacts(coin) {
+  const detail = chainCoinDetail(coin);
+  const creation = detail?.creation || null;
+  const step = (id) => creation?.steps?.find((item) => item.id === id) || null;
   const account = detail?.account && !detail.account.error ? detail.account : null;
-  const name = account?.metadata?.name || detail?.info?.name || coin.name;
-  const symbol = account?.metadata?.symbol || detail?.info?.symbol || coin.symbol;
-  const header = coinHeaderHtml({
-    name,
-    symbol,
-    image: detail?.image || coin.image || coin.logoDataUrl || null,
-    status: coinStatus(coin),
-    address: coin.mint || coin.reservedAddress || null,
-    links: Boolean(coin.mint && !coin.practice),
-  });
+  if (!detail) {
+    const value = state.coins.detailError ? 'Not read' : 'Reading the chain';
+    const fact = { state: state.coins.detailError ? 'unrecorded' : 'running', value };
+    return [{ id: 'wallet', ...fact }, { id: 'mint', ...fact }, { id: 'liquidity', ...fact }, { id: 'finish', ...fact }];
+  }
+  const worst = (...steps) => {
+    const states = steps.filter(Boolean).map((item) => item.state);
+    return ['mismatch', 'todo', 'unrecorded', 'recorded'].find((item) => states.includes(item)) || 'done';
+  };
+  const poolCount = (detail.markets?.pools || []).length;
+  const pools = `${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+  const wallet = creation?.walletPublicKey
+    ? { state: 'done', value: `From ${shortAddress(creation.walletPublicKey)}` }
+    : { state: 'done', value: coin.practice ? 'Test coin' : 'Added by address' };
+  const token = account
+    ? { state: step('token')?.state || 'done', value: `${formatTokenAmount(account.supply, account.decimals)} · mint authority ${account.mintAuthority ? 'kept' : 'revoked'}` }
+    : { state: 'unrecorded', value: 'Not a readable mint' };
+  const locks = step('locks')?.detail?.match(/(\d+)\/(\d+)/);
+  const liquidity = creation
+    ? { state: worst(step('pools'), step('locks'), step('reveal')), value: `${pools} open${locks ? ` · ${locks[1]}/${locks[2]} locked` : ''}` }
+    : { state: 'done', value: detail.markets ? pools : 'Not read' };
+  const swept = step('return');
+  const finish = !creation
+    ? { state: 'done', value: 'Not launched here' }
+    : swept?.state === 'done'
+      ? { state: 'done', value: 'Empty' }
+      : swept?.state === 'recorded'
+        ? { state: 'recorded', value: 'Recorded empty' }
+        : swept?.state === 'unrecorded'
+          ? { state: 'unrecorded', value: 'Not read' }
+          : { state: swept?.state || 'todo', value: 'Holds funds', action: 'Sweep the launch wallet' };
+  return [{ id: 'wallet', ...wallet }, { id: 'mint', ...token }, { id: 'liquidity', ...liquidity }, { id: 'finish', ...finish }];
+}
 
-  if (coin.kind === 'draft') {
-    // A draft's page is its creation steps (see openCoin).
-    body.innerHTML = header;
+function chainCoinSection(eyebrow, title, body, trailing = '') {
+  return `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">${escapeHtml(eyebrow)}</span><h2>${escapeHtml(title)}</h2></div>${trailing}</div>${body}</section>`;
+}
+
+// The open row of an on-chain coin's page: what the chain and the launch record show for it.
+function renderChainCoinPane(coin, workspace) {
+  const pane = $('#coinChainPane');
+  const supportPanel = $('#poolSupportPanel');
+  if (!pane) return;
+  if (!coin) {
+    pane.hidden = true;
+    pane.innerHTML = '';
     if (supportPanel) supportPanel.hidden = true;
     return;
   }
-
-  const identity = account ? [
-    ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
-  ] : [];
-  body.innerHTML = `${header}
-    ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
-    ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
-
-    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
-    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
-    ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
-    ${coinMarketEvidenceHtml(coin.mint)}
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>`;
-  // Removing a coin is the page's last, least-used action: it sits after
-  // buy support, not between the coin's activity and its actions.
-  const footer = $('#coinPageFooter');
-  if (footer) {
-    footer.innerHTML = coin.status === 'Added'
-      ? `<button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button>`
-      : '';
+  const detail = chainCoinDetail(coin);
+  const account = detail?.account && !detail.account.error ? detail.account : null;
+  const creation = detail?.creation || null;
+  const facts = (rows) => `<dl class="pool-support-facts">${rows.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  const parts = [];
+  if (state.coins.detailLoading && !detail) parts.push('<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>');
+  if (state.coins.detailError) parts.push(`<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>`);
+  // Each row lists its own launch steps only when one is wrong or not done, and the next
+  // step's action on the row it belongs to.
+  const ROW_STEPS = { mint: ['token'], liquidity: ['pools', 'locks', 'reveal'], finish: ['return'] };
+  const rowSteps = (creation?.steps || []).filter((step) => (ROW_STEPS[workspace] || []).includes(step.id) && !['done', 'recorded'].includes(step.state) && step.detail);
+  if (rowSteps.length) {
+    parts.push(`<ul class="coin-creation">${rowSteps.map((step) => {
+      const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
+      return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}"><i class="fa-solid ${meta.icon}" aria-hidden="true"></i><span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail)}</small></span></li>`;
+    }).join('')}</ul>`);
   }
-  if (supportPanel) {
-    supportPanel.hidden = false;
-    // A test coin has no real pool: buy support is simulated against a
-    // sample pool, and the panel says so.
-    const intro = supportPanel.querySelector('.pool-support-intro');
-    if (intro) {
-      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
+  const nextStep = (creation?.steps || []).find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state));
+  if (nextStep && (ROW_STEPS[workspace] || []).includes(nextStep.id)) parts.push(coinNextStepAction(creation, coin));
+  const journal = creation?.journal || null;
+  if (workspace === 'wallet') {
+    if (journal?.createdAt) parts.push(chainCoinSection('Launch', 'Launched', facts([['Date', escapeHtml(formatDate(journal.createdAt))]])));
+    parts.push(chainCoinSection('Activity', 'What has happened', coinActivityHtml(detail?.events || [])));
+    if (coin.status === 'Added') parts.push(`<div class="coin-page-footer"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>`);
+  } else if (workspace === 'mint') {
+    if (account) {
+      parts.push(chainCoinSection('On-chain', 'Token', facts([
+        ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
+        ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
+        ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
+        ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+      ]), coin.practice ? '' : `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Raydium</a></span>`));
     }
+    const airdrop = state.coins.airdrop?.mint === coin.mint ? state.coins.airdrop : null;
+    if (airdrop?.recipients?.length || airdrop?.error) {
+      parts.push(chainCoinSection('Airdrop', 'Who received it', coinAirdropHtml(airdrop), '<button class="pill-button" type="button" data-action="refresh-coin-airdrop">Refresh</button>'));
+    }
+  } else if (workspace === 'liquidity') {
+    if (detail?.markets) parts.push(chainCoinSection('Markets', 'Pools', coinMarketsHtml(detail.markets), '<button class="pill-button" type="button" data-action="refresh-coin">Refresh</button>'));
+    parts.push(coinMarketEvidenceHtml(coin.mint));
+    parts.push(chainCoinSection('Positions', 'Your positions', coinPositionsHtml(), '<button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button>'));
+  } else if (workspace === 'finish') {
+    const returnWallet = journal?.transfer?.destinationWallet || journal?.launchConfig?.poolTopology?.sweepDestination || null;
+    const rows = [];
+    if (creation?.walletPublicKey) rows.push(['Launch wallet', walletChipHtml(creation.walletPublicKey)]);
+    if (returnWallet) rows.push(['Return wallet', walletChipHtml(returnWallet)]);
+    parts.push(rows.length ? chainCoinSection('Wallets', 'Launch and return', facts(rows)) : '<p class="coins-empty">Not launched with Trebuchet.</p>');
+  }
+  pane.hidden = false;
+  pane.innerHTML = parts.join('');
+  if (supportPanel) {
+    supportPanel.hidden = workspace !== 'liquidity';
+    // A test coin has no real pool: buy support is simulated against a sample pool.
+    const intro = supportPanel.querySelector('.pool-support-intro');
+    if (intro) intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
       target.value = coin.mint;
@@ -773,6 +949,28 @@ function renderCoinContext() {
     bar.innerHTML = '';
   }
   if (state.activeView !== 'launch') return;
+  const eyebrow = $('#viewEyebrow');
+  const title = $('#viewTitle');
+  // Written once: redrawing it on every change would replace the button
+  // under a click that is still in progress (a blur fires "change").
+  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
+    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
+  }
+  const chainCoin = chainCoinOnPage();
+  if (chainCoin) {
+    const detail = chainCoinDetail(chainCoin);
+    const account = detail?.account && !detail.account.error ? detail.account : null;
+    if (title) {
+      title.innerHTML = coinCardHtml({
+        name: account?.metadata?.name || detail?.info?.name || chainCoin.name,
+        symbol: account?.metadata?.symbol || detail?.info?.symbol || chainCoin.symbol,
+        address: chainCoin.mint,
+        image: detail?.image || chainCoin.image || null,
+      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin) });
+      hydrateCoinCards();
+    }
+    return;
+  }
   const name = String($('#tokenName')?.value || '').trim();
   const symbol = String($('#tokenSymbol')?.value || '').trim();
   const proof = currentLaunchProof();
@@ -783,13 +981,6 @@ function renderCoinContext() {
     ? practice ? 'Test coin' : launchViewChainStatus()
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
-  const eyebrow = $('#viewEyebrow');
-  const title = $('#viewTitle');
-  // Written once: redrawing it on every change would replace the button
-  // under a click that is still in progress (a blur fires "change").
-  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
-    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
-  }
   if (title) {
     title.innerHTML = coinCardHtml(
       { name, symbol, address, image: state.tokenLogo?.dataUrl ? launchIdentityImageSrc(state.tokenLogo, { animate: false }) : null },

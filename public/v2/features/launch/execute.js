@@ -1,4 +1,4 @@
-async function checkExecutionReadiness() {
+async function checkExecutionReadiness({ retried = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
@@ -14,9 +14,20 @@ async function checkExecutionReadiness() {
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
       rememberLaunchProof(state.executionReadiness);
-      const blockerCount = state.executionReadiness.blockers?.length || 0;
+      const blockers = state.executionReadiness.blockers || [];
+      // The server binds the estimate to more of the plan than the screen does. A stale estimate is
+      // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
+        state.executionChecking = false;
+        notify('The plan changed since the estimate: estimating again');
+        if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
+        await estimateClassicFunding();
+        return checkExecutionReadiness({ retried: true });
+      }
       renderAll();
-      notify(blockerCount ? `${blockerCount} launch blocker${blockerCount === 1 ? '' : 's'}` : 'Launch ready');
+      notify(blockers.length
+        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+        : 'Launch ready');
       return;
     }
 
@@ -245,7 +256,7 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   const airdropStatus = airdropCompletionStatus(proof, safeConfig.poolTopology);
   const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) return airdropIssue;
-  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch record before final sweep.';
+  if (!proof) return 'The launch record is not loaded.';
 
   const staleReport = staleReportPublishForProof(proof, safeConfig);
   if (staleReport) return 'Launch report is stale for this proof; republish before final sweep.';
@@ -267,11 +278,6 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
       : 'Publish or download the launch report before final sweep.';
   }
   return null;
-}
-
-function fullRunPendingAirdropCount(proof) {
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  return airdropCompletionStatus(proof, config.poolTopology).pending;
 }
 
 function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLaunchConfig()) {
@@ -477,7 +483,19 @@ async function runFullLaunch() {
     ? String(state.lastRunEnvelope.id || '')
     : '';
   if (!runEnvelopeId) {
-    notify('Review and arm the local run before starting a full launch');
+    // A plan edit since the estimate leaves it stale. Re-estimating is read-only, so Launch does it
+    // rather than stopping on the blocker; once the token exists the launch keeps its original estimate.
+    if (!classicFundingEstimateStatus(config).matchesConfig && !launchTokenExists()) {
+      notify('The plan changed since the estimate: estimating again');
+      await estimateClassicFunding();
+      state.executionReadiness = null;
+      if (!classicFundingEstimateStatus(currentLaunchConfig()).matchesConfig) return;
+    }
+    // Launch reviews first: it opens the operation review, and approving it starts the launch.
+    state.launchAfterArm = true;
+    await reviewAndArmRun();
+    if (state.lastRunEnvelope?.status === 'armed') { state.launchAfterArm = false; return runFullLaunch(); }
+    if (!state.approvalOpen) state.launchAfterArm = false;
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
@@ -565,7 +583,7 @@ async function runFullLaunch() {
           const failed = Array.isArray(finalization.airdrop?.failed) ? finalization.airdrop.failed.length : 0;
           if (!finalization.airdrop || failed > 0) {
             throw new Error(failed > 0
-              ? `Airdrop has ${failed} failed recipient${failed === 1 ? '' : 's'}; retry before final sweep.`
+              ? `${failed} airdrop recipient${failed === 1 ? '' : 's'} not paid.`
               : 'Airdrop did not complete; final sweep stopped.');
           }
         }
@@ -573,7 +591,7 @@ async function runFullLaunch() {
         proofConfig = proofConfigForFingerprint(proof, config);
         airdropStatus = airdropCompletionStatus(proof, proofConfig.poolTopology);
         if (airdropStatus.failed > 0) {
-          throw new Error(`Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before final sweep.`);
+          throw new Error(`${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`);
         }
         if (!airdropStatus.complete) {
           throw new Error(airdropCompletionIssue(airdropStatus) || 'Airdrop is not complete; final sweep stopped.');
@@ -719,7 +737,7 @@ async function runLaunchEnvelope() {
   // Once the token exists (next step is liquidity or later), funding is
   // committed: arm with the estimate the launch started from, never send
   // the user back to Fund to re-estimate from half-spent balances.
-  const midLaunch = state.executionReadiness?.nextEndpoint === '/api/create-lp';
+  const midLaunch = launchTokenExists();
   const fundingEstimate = recoveryEndpoint
     ? null
     : currentClassicFundingEstimateForConfig(config) || (midLaunch ? state.classicFundingEstimate : null);
@@ -763,8 +781,21 @@ async function runLaunchEnvelope() {
     : state.executionReadiness?.nextEndpoint === '/api/finish-token-creation'
       ? 'Finish token safely'
     : state.executionReadiness?.nextAction || 'the next operation';
+  if (state.launchAfterArm && !recoveryEndpoint) {
+    state.launchAfterArm = false;
+    notify('Approved. Launching.');
+    runFullLaunch().catch((error) => notify(error.message || 'The launch could not start'));
+    return;
+  }
+  state.launchAfterArm = false;
   notify(`Approved. Next: ${nextOperation}.`);
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
   });
+}
+
+// Once the token exists, funding is committed: the launch continues on the estimate it started
+// from. Nothing after that point re-estimates or sends you back to Fund.
+function launchTokenExists() {
+  return Boolean(proofTokenMint(currentLaunchProof()));
 }

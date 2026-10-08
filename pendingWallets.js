@@ -9,7 +9,14 @@
 //   1. /api/generate-wallet   → add(publicKey, secretKey, mnemonic)
 //   2. ...launch proceeds...
 //   3. /api/transfer-assets   → on success AND after verifying the
-//                                wallet is on-chain empty, remove(pk).
+//                                wallet is on-chain empty, retire(pk).
+//      The key is kept, marked retired: "empty" can still mean open token
+//      accounts holding rent, and only this key can close them.
+//
+// Keys are never deleted. Hiding a wallet retires it too. The only other
+// change is the Recovery PIN reset, which archives the encrypted file first.
+//
+//   retiredAt:    "ISO timestamp"   (optional; set by retire)
 //
 // At-rest encryption: secret material (the secretKey byte array and the
 // mnemonic) goes through secretStore before being written to disk. In
@@ -71,6 +78,7 @@ function decodeEntry(raw) {
     out.rarity = raw.rarity.trim();
   }
   if (raw.vanity === true) out.vanity = true;
+  if (typeof raw.retiredAt === 'string' && raw.retiredAt) out.retiredAt = raw.retiredAt;
 
   // Secret key (byte array). Encrypted form serialises through JSON.
   if (typeof raw.secretKeyEnc === 'string') {
@@ -101,6 +109,7 @@ function encodeEntry(decoded) {
   const out = { ...prior, publicKey: decoded.publicKey, createdAt: decoded.createdAt };
   if (typeof decoded.rarity === 'string' && decoded.rarity.trim()) out.rarity = decoded.rarity.trim();
   if (decoded.vanity === true) out.vanity = true;
+  if (typeof decoded.retiredAt === 'string' && decoded.retiredAt) out.retiredAt = decoded.retiredAt;
   const encodeSecret = (field, tokenField, text) => {
     const original = prior[tokenField];
     const same = typeof original === 'string' && secretStore.decryptString(original) === text;
@@ -286,13 +295,18 @@ export function add(publicKey, secretKey, mnemonic, metadata = {}) {
   return verifyPersistedWallet(publicKey);
 }
 
-// Drop a wallet from the recovery list. Used when the launch finishes
-// cleanly (and the wallet is verified on-chain empty), or when the
-// user manually dismisses an entry.
-export function remove(publicKey) {
+// A finished launch's wallet leaves the recovery list but keeps its key, so what the sweep
+// could not move (token-account rent, dust sent later) can still be reclaimed. The saved
+// key is read back before this returns.
+export function retire(publicKey, retiredAt = new Date().toISOString()) {
   const list = load();
-  const filtered = list.filter((w) => w.publicKey !== publicKey);
-  if (filtered.length !== list.length) persist(filtered);
+  const entry = list.find((w) => w.publicKey === publicKey);
+  if (!entry || entry.retiredAt) return entry || null;
+  entry.retiredAt = retiredAt;
+  persist(list);
+  const saved = verifyPersistedWallet(publicKey);
+  if (saved.retiredAt !== retiredAt) throw storageError(new Error('Verify the retired wallet record before continuing.'));
+  return saved;
 }
 
 export function removePinEncrypted() {
@@ -312,6 +326,18 @@ export function removePinEncrypted() {
 // give me the recoverable secret" lookup (resume, and the server-side signer
 // resolution that F5 moves toward — letting the client send a pubkey instead
 // of round-tripping the secret key through the renderer).
+// Every saved wallet's public record (address, created, retired), without decrypting anything.
+export function records() {
+  return readRaw().map((entry) => ({ publicKey: entry.publicKey, retiredAt: entry.retiredAt || null, createdAt: entry.createdAt || null }));
+}
+
+// Whether a wallet is saved, and whether it is retired, from the stored record alone:
+// nothing is decrypted, so this is cheap and works while the Recovery PIN is locked.
+export function keyRecord(publicKey) {
+  const entry = readRaw().find((item) => item.publicKey === publicKey);
+  return entry ? { publicKey: entry.publicKey, retiredAt: entry.retiredAt || null, createdAt: entry.createdAt || null } : null;
+}
+
 export function get(publicKey) {
   return load().find((w) => w.publicKey === publicKey) || null;
 }

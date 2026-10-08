@@ -49,6 +49,15 @@ let state = null;
 // File I/O
 // ---------------------------------------------------------------------------
 
+// The network an RPC URL serves, from its address, when it says so (Helius, the public endpoints and
+// most providers put "devnet" or "mainnet" in the host). Null when the URL does not say.
+export function inferRpcNetwork(url) {
+  const text = String(url || '').toLowerCase();
+  if (/devnet/.test(text)) return 'devnet';
+  if (/mainnet/.test(text)) return 'mainnet';
+  return null;
+}
+
 function load() {
   try {
     if (fs.existsSync(configFile())) {
@@ -57,7 +66,8 @@ function load() {
       // Backward compat: add network field to entries and state.
       if (!state.activeNetwork) state.activeNetwork = 'mainnet';
       for (const r of state.saved) {
-        if (!r.network) r.network = 'mainnet';
+        // Entries saved without a network take it from their URL (a Helius devnet URL is devnet).
+        if (!r.network) r.network = inferRpcNetwork(r.url) || 'mainnet';
       }
       // Quick sanity check
       if (!state.active || !Array.isArray(state.saved) || state.saved.length === 0) {
@@ -114,10 +124,45 @@ export function getRpcUrl() {
  */
 export function getConfig() {
   ensureLoaded();
+  const activeEntry = state.saved.find((r) => r.url === state.active);
+  const rpcNetwork = activeEntry?.network || inferRpcNetwork(state.active) || null;
   return {
     active: state.active,
     saved: state.saved.map((r) => ({ ...r })),
+    activeNetwork: state.activeNetwork || 'mainnet',
+    rpcNetwork,
+    // The app's network and the network its RPC serves disagree: every chain check refuses.
+    networkMismatch: Boolean(rpcNetwork && rpcNetwork !== (state.activeNetwork || 'mainnet')),
   };
+}
+
+/**
+ * Make the app's network the one its RPC serves (keep the RPC).
+ */
+export function matchNetworkToRpc() {
+  ensureLoaded();
+  const { rpcNetwork } = getConfig();
+  if (rpcNetwork !== 'mainnet' && rpcNetwork !== 'devnet') throw new Error('The RPC does not say which network it serves.');
+  state.activeNetwork = rpcNetwork;
+  persist();
+  return rpcNetwork;
+}
+
+/**
+ * Keep the app's network and switch to a saved RPC on it, preferring one from the same provider as
+ * the current RPC (Helius mainnet -> Helius devnet).
+ */
+export function matchRpcToNetwork() {
+  ensureLoaded();
+  const network = state.activeNetwork || 'mainnet';
+  const candidates = state.saved.filter((r) => r.network === network);
+  if (!candidates.length) throw new Error(`No saved RPC is on ${network}. Add one in Settings.`);
+  let host = '';
+  try { host = new URL(state.active).hostname.split('.').slice(-2).join('.'); } catch { /* none */ }
+  const sameProvider = candidates.find((r) => { try { return new URL(r.url).hostname.endsWith(host); } catch { return false; } });
+  state.active = (sameProvider || candidates[0]).url;
+  persist();
+  return state.active;
 }
 
 /**
@@ -131,6 +176,9 @@ export function setActiveRpc(url) {
     throw new Error(`RPC URL is not in the saved list. Add it first.`);
   }
   state.active = url;
+  // Choosing an RPC chooses its network, so the two can't disagree.
+  const network = found.network || inferRpcNetwork(url);
+  if (network === 'mainnet' || network === 'devnet') state.activeNetwork = network;
   persist();
 }
 
@@ -151,7 +199,7 @@ export function addSavedRpc(name, url, network) {
   const trimmedName = name.trim();
   const trimmedUrl = url.trim();
 
-  const rpcNetwork = network || state.activeNetwork || 'mainnet';
+  const rpcNetwork = network || inferRpcNetwork(trimmedUrl) || state.activeNetwork || 'mainnet';
   const existing = state.saved.find((r) => r.url === trimmedUrl);
   if (existing) {
     existing.name = trimmedName;

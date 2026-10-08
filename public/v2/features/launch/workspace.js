@@ -137,7 +137,7 @@ function setView(view) {
     state.approvalOpen = false;
   }
   // A coin's creation steps are part of its coin page, under Coins.
-  const navView = view === 'launch' || view === 'lean' ? 'coins' : view;
+  const navView = view === 'launch' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -146,8 +146,7 @@ function setView(view) {
   });
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
-  if (view === 'nfts') window.TrebuchetNfts?.onShow();
-  if (view === 'lean') window.TrebuchetLean?.onShow();
+  if (view === 'wallet') refreshHeldWallets();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -183,9 +182,12 @@ function coinFacts() {
     || (mint && proofToken.mintAuthorityRenounced === true && proofToken.freezeAuthorityDisabled === true)
   );
   const recordedPools = launchProofPoolIds(proof).length;
+  // Recorded pools are not finished liquidity: when the server says the next step is to create or
+  // resume liquidity (positions or locks still missing), that wins, or only a sweep would be offered.
+  const liquidityPending = ['/api/create-lp', '/api/resume-launch'].includes(readiness?.nextEndpoint || '');
   const liquidityComplete = Boolean(
     isReadinessPhaseComplete('liquidity')
-    || (poolCount > 0 && recordedPools >= poolCount)
+    || (poolCount > 0 && recordedPools >= poolCount && !liquidityPending)
   );
   const revealPending = readiness?.nextEndpoint === '/api/reveal-sealed-metadata'
     || (liquidityComplete && (readiness?.completion?.metadataRevealPending === true || proofToken.sealedMetadataPending === true));
@@ -212,9 +214,13 @@ function coinFacts() {
   const walletKey = practice
     ? state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || ''
     : selectedLaunchWalletPublicKey();
+  // Wallets stay hidden while the Recovery PIN is locked, so say Unlock, not Create.
+  const pinLocked = state.secretPin?.locked === true;
   const signer = practice && walletKey
     ? { state: 'done', value: `${shortAddress(walletKey)} · test mode` }
-    : !walletKey
+    : pinLocked && !walletKey
+      ? { state: 'todo', value: 'PIN locked', action: 'Unlock' }
+      : !walletKey
       ? { state: 'todo', value: 'None chosen', action: state.managedWallets.length ? 'Choose a launch wallet' : 'Create a launch wallet' }
       : walletIsUnlocked()
         ? { state: 'done', value: `${shortAddress(walletKey)} · unlocked` }
@@ -274,7 +280,9 @@ function coinFacts() {
           ? { state: 'running', value: 'Being opened' }
           : !mint && !tokenComplete
             ? { state: 'todo', value: 'No pools yet', action: 'Open the pools' }
-            : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
+            : recordedPools >= poolCount && poolCount > 0
+              ? { state: 'todo', value: `${pools} open · positions or locks unfinished`, action: 'Finish liquidity' }
+              : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
     'pools', 'locks', 'reveal',
   );
 
@@ -326,21 +334,28 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
-  const facts = coinFacts();
+  dropUsedVanitySelection();
+  const stale = launchedCoinForWorkspaceDraft();
+  if (stale) {
+    openCoin(stale.key);
+    return;
+  }
+  const chainCoin = chainCoinOnPage();
+  document.body.dataset.coinMode = chainCoin ? 'onchain' : 'create';
+  const facts = chainCoin ? onchainCoinFacts(chainCoin) : coinFacts();
   const next = nextCoinFact(facts);
-  const previous = state.launchFactStates || {};
-  const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
-  // The open row stays open while you look at it. When what it shows becomes
-  // true, the row that needs doing opens instead: that is the only "next".
-  const openFact = facts.find((fact) => fact.id === open);
-  const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  const rows = chainCoin ? ['wallet', 'mint', 'liquidity', 'finish'] : launchWorkspaces.map((item) => item.id);
+  const open = rows.includes(state.launchWorkspace) ? state.launchWorkspace : null;
+  // The open row stays open while you look at it, even once it is done: the
+  // rail says what is next, and moving the screen out from under you is not.
+  let workspace = open || (chainCoin && next?.state === 'running' ? null : next?.id) || (chainCoin ? 'liquidity' : 'finish');
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
     state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
   }
-  state.launchWorkspace = workspace;
+  // While an on-chain coin is still being read, no row is chosen for it yet.
+  if (!chainCoin || chainCoinDetail(chainCoin)) state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
 
@@ -353,11 +368,16 @@ function renderLaunchWorkspace() {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
+    const label = button.querySelector('strong');
+    if (label) {
+      label.dataset.createLabel ||= label.textContent;
+      label.textContent = chainCoin ? CHAIN_FACT_LABELS[fact.id] || label.dataset.createLabel : label.dataset.createLabel;
+    }
     const value = button.querySelector('[data-coin-fact-value]');
     // Until the token is on chain, its row says what is drafted, not only what is missing.
-    const draft = facts.find((item) => item.id === 'configure');
+    const draft = chainCoin ? null : facts.find((item) => item.id === 'configure');
     const shown = fact.id === 'mint' && fact.state === 'todo' && draft
-      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · not on-chain` : 'Not named yet')
+      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · draft` : 'Not named yet')
       : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
         ? `${String(draft.value).split(' · ')[1] || ''} · not open`.trim()
         : fact.value;
@@ -366,7 +386,7 @@ function renderLaunchWorkspace() {
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
   $$('[data-next-fact]').forEach((button) => {
-    const show = Boolean(next && next.action && next.id !== workspace && next.state !== 'running');
+    const show = Boolean(!chainCoin && next && next.action && next.id !== workspace && next.state !== 'running');
     button.hidden = !show;
     if (!show) return;
     button.dataset.launchWorkspace = next.id;
@@ -374,13 +394,15 @@ function renderLaunchWorkspace() {
   });
   $$('[data-launch-pane]').forEach((panel) => {
     const workspaces = String(panel.dataset.launchPane || '').split(/\s+/).filter(Boolean);
-    const active = workspaces.includes(workspace);
+    const active = !chainCoin && workspaces.includes(workspace);
     panel.hidden = !active;
     panel.classList.toggle('is-active-launch-pane', active);
   });
   $$('[data-classic-workspace]').forEach((panel) => {
-    panel.hidden = panel.dataset.classicWorkspace !== workspace;
+    panel.hidden = Boolean(chainCoin) || panel.dataset.classicWorkspace !== workspace;
   });
+  renderChainCoinPane(chainCoin, workspace);
+  if (chainCoin) return;
 
   renderVortexControl();
   const selectedWorkspace = launchWorkspaces.find((item) => item.id === workspace);
@@ -391,6 +413,41 @@ function renderLaunchWorkspace() {
   renderLaunchNextRail(facts, next, workspace);
   renderPlanSlides(workspace, facts.find((fact) => fact.id === workspace));
   refreshLaunchChainCheck(facts);
+}
+
+// A blocker the app can fix itself carries the fix; it is offered as one button beside it.
+function blockerFixHtml(item) {
+  const fix = item?.fix;
+  if (fix?.action === 'add-sol-support' && Number(fix.sol) > 0) {
+    return `<button class="secondary-button compact" type="button" data-action="add-sol-support" data-sol="${escapeHtml(String(fix.sol))}">Add ${escapeHtml(String(fix.sol))} SOL support</button>`;
+  }
+  return '';
+}
+
+// Raise the SOL pool's buy support by the amount a blocker asked for, then check again.
+function addSolPoolSupport(sol) {
+  const input = $('#supportSol');
+  const amount = Number(sol);
+  if (!input || !(amount > 0)) return;
+  const current = Math.max(0, parseNumericInput(input.value, 0));
+  input.value = String(Math.round((current + amount) * 100) / 100);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  invalidateClassicOutputs();
+  renderAll();
+  checkExecutionReadiness().catch(() => null);
+}
+
+// "Get the pair tokens" is the buy button itself, so when buying can't run it is greyed out with
+// the reason beside it (see the start-quote-acquire guard), never a press that does nothing.
+// A pair token whose check failed (often a rate-limited RPC) offers to check it again instead.
+function pairTokensRailButton() {
+  const failed = state.customPools.find((pool) => Number(pool.supplyPercent || 0) > 0 && customQuoteInfoRecord(pool)?.error);
+  if (failed) {
+    const symbol = failed.quoteSymbol ? `$${failed.quoteSymbol}` : 'the pair token';
+    return `<button class="primary-button rail-act" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(failed.id)}">Check ${escapeHtml(symbol)} again</button>`;
+  }
+  return '<button class="primary-button rail-act" type="button" data-action="start-quote-acquire">Get the pair tokens</button>';
 }
 
 // The right-hand column. One button, then the wallet it acts on: balances, what
@@ -424,15 +481,49 @@ function renderLaunchNextRail(facts, next, workspace) {
   const spend = observedExecutionSpendSummary();
   const row = (label, value, tone = '') => `<div class="rail-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
 
-  const action = next
-    ? (canAct
-      ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
-      : `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`)
-    : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>';
+  // Funding has no row of its own: the rail estimates it and says what to send. Once the plan is
+  // set, the rail is two buttons: Launch (red when funded and ready, since it cannot be undone)
+  // and Sweep (amber when the launch wallet still holds something to send back).
+  const factOf = (id) => facts.find((fact) => fact.id === id) || null;
+  const fundFact = factOf('fund');
+  const sweepFact = factOf('finish');
+  const beforePlan = !next || ['wallet', 'configure'].includes(next.id);
+  const busy = next && next.state === 'running';
+  const liquidityDone = ['done', 'recorded'].includes(factOf('liquidity')?.state);
+  const leftovers = Boolean(walletKey) && !practice && sweepFact?.state !== 'done'
+    && ((holds != null && holds > 0.001) || tokens.length > 0);
+  // A readiness check that found blockers greys Launch out and lists them, rather than offering a
+  // button that only answers with a toast.
+  const readiness = state.executionReadiness;
+  const blockers = !practice && readiness?.status === 'blocked' && Array.isArray(readiness.blockers) ? readiness.blockers : [];
+  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy && !blockers.length;
+  const fundingTodo = !practice && fundFact && fundFact.state !== 'done' && next?.id === 'fund';
+  const fundingButton = !fundingTodo ? ''
+    : !estimate || estimateStatus.stale
+      ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
+      // A "Send SOL" button copies the launch wallet's address: that is where the SOL goes.
+      : /^Send /.test(fundFact.action || '') && walletKey
+        ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="${escapeHtml(`${fundFact.action}: copies ${walletKey}`)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action.replace(/ to the launch wallet$/, ''))}</button>`
+        : fundFact.action === 'Get the pair tokens'
+          ? pairTokensRailButton()
+          : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
+  // One button at a time: Launch, which reads Resume once the token exists and the launch is
+  // unfinished, and Sweep only once the launch is complete (a sweep mid-launch empties the wallet
+  // the remaining steps need).
+  const resuming = !practice && Boolean(mint) && !liquidityDone;
+  const launchButton = `<button class="rail-act rail-launch${launchReady ? ' is-ready' : ''}" type="button" data-action="${practice ? 'launch-rail-act' : 'run-full-launch'}" ${launchReady ? '' : 'disabled'}>${resuming ? 'Resume' : 'Launch'}</button>`;
+  const sweepButton = `<button class="rail-act rail-sweep${leftovers ? ' has-leftovers' : ''}" type="button" data-action="${liquidityDone ? 'launch-rail-act' : 'cancel-refund-launch'}" ${leftovers ? '' : 'disabled'}>Sweep</button>`;
+  const action = busy
+    ? `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`
+    : beforePlan
+      ? (next && canAct
+        ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
+        : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>')
+      : `${fundingButton}<div class="rail-pair is-single">${liquidityDone && !practice ? sweepButton : launchButton}</div>`;
 
   const walletBlock = `
     <section class="rail-block">
-      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      <div class="rail-head"><span class="rail-label">Wallet</span>${walletKey ? walletChipHtml(walletKey) : '<code>none</code>'}</div>
       ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
@@ -440,14 +531,30 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
     </section>`;
 
-  // The Funding row's own panel shows what is needed; the rail repeats it nowhere.
-  const fundingBlock = practice || workspace === 'fund' || (needs == null && !estimateStatus.stale)
-    ? ''
-    : `<section class="rail-block">
-        <div class="rail-head"><span class="rail-label">Funding</span><small>${estimate ? '' : estimateStatus.stale ? 'Out of date' : 'Not estimated'}</small></div>
-        ${needs != null ? `<div class="rail-meter" role="img" aria-label="Wallet holds ${sol(holds)} of ${sol(needs)} SOL"><i style="width:${fill.toFixed(1)}%"></i></div>
-        ${row('Needs', `${sol(needs)} <i>SOL</i>`)}${short != null ? row('Short', short ? `${sol(short)} <i>SOL</i>` : '0', short ? 'warn' : 'ok') : ''}` : ''}
-      </section>`;
+  // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch
+  // started from draining, never "short". Before that, what the launch costs against what the wallet holds.
+  const launched = !practice && (Boolean(mint) || Boolean(state.fullRunRunning || state.realExecutionRunning));
+  const budget = launched ? Number(state.classicFundingEstimate?.totalSol || 0) || null : null;
+  const drainBlock = launched && budget && holds != null ? `
+    <section class="rail-block rail-cost is-draining">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch budget: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch budget</span><small>${escapeHtml(`${sol(Math.min(Math.max(0, budget - holds), budget))} used`)}</small></span>
+        <span class="rail-balance is-amount"><b>${sol(Math.max(0, holds))}</b><span>of ${sol(budget)} SOL left</span></span>
+        <span class="rail-meter" aria-hidden="true"><i style="width:${Math.min(100, (Math.max(0, holds) / budget) * 100).toFixed(1)}%"></i></span>
+      </button>
+    </section>` : '';
+  const costStatus = needs == null
+    ? (estimateStatus.stale ? 'out of date' : 'not estimated')
+    : holds == null ? 'balance not checked'
+      : short > 0.0001 ? `short ${sol(short)} SOL` : 'covered';
+  const fundingBlock = practice ? '' : drainBlock || `
+    <section class="rail-block rail-cost">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch cost: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch cost</span><small class="${needs != null && holds != null ? (short > 0.0001 ? 'is-warn' : 'is-ok') : ''}">${escapeHtml(costStatus)}</small></span>
+        <span class="rail-balance${needs != null ? ' is-amount' : ''}"><b>${needs != null ? sol(needs) : '—'}</b>${needs != null ? '<span>SOL</span>' : ''}</span>
+        ${needs != null && holds != null ? `<span class="rail-meter" aria-hidden="true"><i style="width:${fill.toFixed(1)}%"></i></span>` : ''}
+      </button>
+    </section>`;
 
   const lockedCount = results.reduce((count, pool) => count + [
     ...(pool?.mainPositions || []), ...(pool?.ladderPositions || []), ...(pool?.supportPositions || []), ...(pool?.bootstrap ? [pool.bootstrap] : []),
@@ -463,19 +570,26 @@ function renderLaunchNextRail(facts, next, workspace) {
   rail.innerHTML = `
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
-      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+      ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
+      ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
+        <span class="rail-label">Can't launch yet</span>
+        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}${blockerFixHtml(item)}</li>`).join('')}</ul>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+      </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
-// Each phase owns the settings that belong to it, as at most three tabs, the last
-// being the phase's own action: Token (Details, Address, Create), Liquidity
-// (Price & pool, Pairs, Create), Leftovers (Return & report, Airdrop, Finish).
+// Each phase owns the settings that belong to it as tabs: Launch setup (Fund, Recover,
+// Airdrop), Token setup (Details, Address, Create), Liquidity (Price & pool, Pairs,
+// Create), Recovery (Finish, plus Record and Recover). The 'run' tab shows the phase's own panel.
 // The tab shown is a view: nothing is saved, and nothing counts toward progress.
 const PHASE_TABS = {
+  wallet: [{ id: 'run', label: 'Fund' }, { id: 'return', label: 'Recover' }, { id: 'airdrop', label: 'Airdrop' }],
   mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
-  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
-  finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
+  // Price & pool and Create are one page: the price and preset on top, the picture and the Create button under it.
+  liquidity: [{ id: 'run', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }],
+  finish: [{ id: 'run', label: 'Finish' }],
 };
 // Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
 // built by the bridge, so these tabs just choose which part shows.
@@ -483,12 +597,24 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  return estimate && pairTokens
-    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
-    : null;
+  if (!estimate) return null;
+  return [
+    { id: 'cost', label: 'Cost' },
+    { id: 'breakdown', label: 'Breakdown' },
+    ...(pairTokens ? [{ id: 'acquire', label: 'Pair tokens' }] : []),
+    ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
+  ];
+}
+// Recovery gains a Record page, and a Recover page when there is something to recover: each
+// exists only when the panel built it, so the strip never offers an empty page.
+function finishTabs() {
+  const has = (part) => Boolean($(`#classicBridge [data-finish-part="${part}"]`));
+  return [...PHASE_TABS.finish, ...(has('record') ? [{ id: 'record', label: 'Record' }] : []), ...(has('recover') ? [{ id: 'recover', label: 'Recover' }] : [])];
 }
 function phaseTabsFor(workspace) {
-  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+  if (workspace === 'fund') return fundTabs();
+  if (workspace === 'finish') return finishTabs();
+  return PHASE_TABS[workspace] || null;
 }
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
@@ -502,10 +628,14 @@ function phaseTabValue(id, runValue) {
     case 'address': return text('#vanitySummary').replace(' · recommended', '') || 'Random address';
     case 'price': return `$${String($('#targetMarketCapUsd')?.value || '').trim() || '—'} · ${Number($('#liquidityBudgetSol')?.value || 0)} SOL`;
     case 'pairs': return text('#classicSummary') || '—';
-    case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
+    case 'return': return launchWalletHoldingsSummary();
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
+    case 'record': return state.launchProof ? 'Saved' : 'Not ready';
+    case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
+    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }
 }
@@ -517,7 +647,8 @@ function currentPhaseSlide(workspace, runDone) {
   const chosen = state.phaseSlide[workspace];
   if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
   // A phase that already holds its fact opens on its action, which shows the result.
-  return runDone ? 'run' : tabs[0].id;
+  // Funding has no action tab: its parts are Cost, Pair tokens and Send yourself.
+  return runDone && workspace !== 'fund' ? 'run' : tabs[0].id;
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
@@ -529,15 +660,43 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
+  $('#launchWorkspaceViewport')?.classList.remove('is-combined');
   if (!tabs) {
-    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
-  const running = current === 'run' || workspace === 'fund';
-  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+  const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Price & pool shows its settings slide and the phase panel together.
+  const combined = workspace === 'liquidity' && current === 'run';
+  // Moving between tabs slides the page in from the side it lies on. The slides share one
+  // track that already slides; the action page is a separate panel, so it slides itself.
+  const tabIndex = tabs.findIndex((tab) => tab.id === current);
+  const previous = strip.dataset.phase === workspace && strip.dataset.index !== undefined ? Number(strip.dataset.index) : null;
+  const wasRunning = strip.dataset.running === '1';
+  const direction = previous == null ? 0 : Math.sign(tabIndex - previous);
+  strip.dataset.phase = workspace;
+  strip.dataset.index = String(tabIndex);
+  strip.dataset.running = running ? '1' : '0';
+  const slideIn = (node) => {
+    if (!node || !direction) return;
+    node.classList.remove('slide-in-right', 'slide-in-left');
+    void node.offsetWidth;
+    node.classList.add(direction > 0 ? 'slide-in-right' : 'slide-in-left');
+    node.addEventListener('animationend', () => node.classList.remove('slide-in-right', 'slide-in-left'), { once: true });
+  };
+  if (bridge) {
+    bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+    bridge.dataset.finishTab = workspace === 'finish' ? current : '';
+  }
   strip.style.setProperty('--tabs', String(tabs.length));
+  if (workspace === 'wallet' && ['run', 'return'].includes(current)) {
+    ensureLaunchWalletBalance();
+    renderRecoverLedger();
+  }
+  // One tab is just the panel itself; a strip with a single button says nothing.
+  strip.hidden = tabs.length < 2;
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
   if (strip.dataset.structure !== structure) {
@@ -551,23 +710,28 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
-    const value = phaseTabValue(tab.id, fact?.value);
+    const value = phaseTabValue(tab.id === 'run' && workspace === 'liquidity' ? 'price' : tab.id, fact?.value);
     const small = button.querySelector('small');
     if (small.textContent !== value) small.textContent = value;
   });
   // The action tab shows the phase's own panel; every other tab slides a settings page in.
   const frame = $('#planSlides');
-  if (frame) frame.hidden = running;
+  if (frame) frame.hidden = running && !combined;
   if (bridge) bridge.hidden = !running;
+  if (running && !combined && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if ((!running || combined) && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
-  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
-  if (running) return;
-  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running && !combined);
+  $('#launchWorkspaceViewport')?.classList.toggle('is-combined', combined);
+  if (running && !combined) return;
+  const slideId = combined ? 'price' : current;
+  track.dataset.active = slideId;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(slideId));
   track.style.transform = `translateX(-${index * 100}%)`;
   let active = null;
   $$('#planTrack > [data-plan-slide]').forEach((slide) => {
-    const on = slide.dataset.planSlide === current;
+    const on = slide.dataset.planSlide === slideId;
     slide.toggleAttribute('inert', !on);
     if (on) active = slide;
   });
@@ -583,12 +747,22 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     }
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
-      new ResizeObserver(() => {
-        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
+      const observer = new ResizeObserver(() => {
+        const live = $(`#planTrack > [data-plan-slide="${track.dataset.active || ''}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
-      }).observe(track);
+      });
+      // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads
+      // its tokens, a section opens) must grow the frame with it, or its lower rows are cut off.
+      observer.observe(track);
+      $$('#planTrack > [data-plan-slide]').forEach((slide) => observer.observe(slide));
     }
   }
+}
+
+// Re-applies the open phase's tabs after something redrew the panel under them.
+function syncPlanSlides() {
+  const workspace = state.launchWorkspace;
+  renderPlanSlides(workspace, coinFacts().find((fact) => fact.id === workspace));
 }
 
 function setPlanSlide(id) {
@@ -616,6 +790,15 @@ function runLaunchRailAction() {
     setLaunchWorkspace('mint', { focus: false });
     $('#tokenName')?.focus();
     return;
+  }
+  if (next.id === 'wallet' && state.secretPin?.locked === true && !selectedLaunchWalletPublicKey()) {
+    openRecoveryPinGate({ reason: 'unlock' });
+    return;
+  }
+  // Funding has no row: press its panel's own button where it is, without opening the panel.
+  if (next.id === 'fund') {
+    const fundPrimary = $('[data-classic-workspace="fund"] .primary-button:not([data-next-fact]):not(:disabled)');
+    if (fundPrimary) { fundPrimary.click(); return; }
   }
   if (state.launchWorkspace !== next.id) {
     setLaunchWorkspace(next.id, { focus: false });
@@ -666,12 +849,8 @@ function renderGlobalStrip() {
   const metrics = [
     state.realExecutionRunning ? ['Launch', `${signed} of ${total} steps done`] : null,
     state.apiStatus === 'connected' ? null : ['App', apiLabel],
-    state.recovery.activeJournalCount + recoveryWallets > 0
-      ? ['Recovery', [
-        state.recovery.activeJournalCount ? `${state.recovery.activeJournalCount} unfinished launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}` : null,
-        recoveryWallets ? `${recoveryWallets} old launch wallet${recoveryWallets === 1 ? '' : 's'}` : null,
-      ].filter(Boolean).join(' · ')]
-      : null,
+    state.recovery.activeJournalCount ? ['Unfinished', `${state.recovery.activeJournalCount} launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}`] : null,
+    recoveryWallets ? ['To sweep', `${recoveryWallets} wallet${recoveryWallets === 1 ? '' : 's'}`] : null,
   ].filter(Boolean);
   const strip = $('#globalStrip');
   strip.hidden = metrics.length === 0;
@@ -779,7 +958,6 @@ function renderLiveLaunchMonitor() {
     monitor.hidden = true;
     monitor.innerHTML = '';
     document.body.dataset.launchFocus = 'idle';
-    state.launchDetailsExpanded = false;
     return;
   }
 
@@ -804,8 +982,7 @@ function renderLiveLaunchMonitor() {
   // What exists so far, as facts: the same rows the coin shows, not a percentage.
   const chainFacts = coinFacts().filter((fact) => ['mint', 'liquidity', 'finish'].includes(fact.id));
   const factLabels = { mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
-  const expanded = state.launchDetailsExpanded === true;
-  document.body.dataset.launchFocus = expanded ? 'details' : 'active';
+  document.body.dataset.launchFocus = 'active';
   monitor.hidden = false;
   monitor.className = `live-launch-monitor ${blocked ? 'is-blocked' : 'is-running'}`;
   monitor.innerHTML = `
@@ -832,10 +1009,6 @@ function renderLiveLaunchMonitor() {
         <span><small>${escapeHtml(factLabels[fact.id])}</small><strong>${escapeHtml(fact.value || '')}</strong></span>
       </li>`).join('')}
     </ul>
-    <button class="live-launch-details-button" type="button" data-action="toggle-launch-details" aria-expanded="${expanded}">
-      <span>${expanded ? 'Focus on current action' : 'Show launch details'}</span>
-      <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i>
-    </button>
   `;
 }
 

@@ -127,18 +127,41 @@ async function findVenuePools(connection, venue, first, second) {
  * state carries the decoded price fields plus reserveA/reserveB (raw vault
  * amounts). A venue whose lookup fails is skipped, not fatal.
  */
-export async function fetchVenuePoolsByMints(connection, mint, anchor) {
-  if (!connection || !mint || !anchor || mint === anchor) return [];
+// Which pools exist for a pair changes rarely, and finding them is a scan of every pool account
+// (getProgramAccounts, the heaviest RPC call). Keep a complete scan for 10 minutes; reserves are
+// still read fresh on every call. A scan where a lookup failed is not kept.
+const POOL_DISCOVERY_TTL_MS = 10 * 60 * 1000;
+const poolDiscoveryCache = new Map();
+
+export function clearPoolDiscoveryCache() {
+  poolDiscoveryCache.clear();
+}
+
+async function discoverVenuePools(connection, mint, anchor) {
+  const key = `${connection.rpcEndpoint || ''}|${mint}|${anchor}`;
+  const hit = poolDiscoveryCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.pools;
   const lookups = VENUES.flatMap((venue) => [
     findVenuePools(connection, venue, mint, anchor),
     findVenuePools(connection, venue, anchor, mint),
   ]);
   const settled = await Promise.allSettled(lookups);
   const pools = [];
+  let complete = true;
   settled.forEach((result) => {
     if (result.status === 'fulfilled') pools.push(...result.value);
-    else console.warn(`venue pools: lookup failed: ${result.reason?.message || result.reason}`);
+    else {
+      complete = false;
+      console.warn(`venue pools: lookup failed: ${result.reason?.message || result.reason}`);
+    }
   });
+  if (complete) poolDiscoveryCache.set(key, { pools, expiresAt: Date.now() + POOL_DISCOVERY_TTL_MS });
+  return pools;
+}
+
+export async function fetchVenuePoolsByMints(connection, mint, anchor) {
+  if (!connection || !mint || !anchor || mint === anchor) return [];
+  const pools = await discoverVenuePools(connection, mint, anchor);
   if (!pools.length) return [];
 
   const extra = await accountsByKey(connection, [

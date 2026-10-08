@@ -159,12 +159,22 @@ export function createSolSweepService({
       const reserveLamports = integer(policy.reserveLamports, 'Reserve'), feeCeilingLamports = integer(policy.feeCeilingLamports, 'Fee limit');
       const microLamports = integer(policy.microLamports, 'Priority fee'), computeUnitLimit = integer(policy.computeUnitLimit, 'Compute limit');
       if (computeUnitLimit === 0 || computeUnitLimit > 1_400_000 || !Number.isSafeInteger(reserveLamports + feeCeilingLamports)) throw error('INVALID_INPUT', 'Use a bounded SOL transfer fee policy');
-      const amountLamports = current.lamports - reserveLamports - feeCeilingLamports;
+      // With nothing reserved the wallet must end at exactly zero: Solana refuses a balance left
+      // between zero and the rent-exempt minimum. The fee for these instructions is fixed, so the
+      // quoted fee is the limit and the amount is everything else.
+      let feeLimit = feeCeilingLamports;
+      if (reserveLamports === 0) {
+        const expiry = await connection.getLatestBlockhash('finalized');
+        const probe = transactionFor({ destinationWallet: destination, amountLamports: 1, computeUnitLimit, microLamports }, wallet, expiry.blockhash);
+        const quoted = await fee(probe.compileMessage(), { feeCeilingLamports });
+        feeLimit = quoted;
+      }
+      const amountLamports = current.lamports - reserveLamports - feeLimit;
       if (amountLamports <= 0) {
         const completed = prior.findLast((operation) => operation.state === 'confirmed' && operation.payload.destinationWallet === destination);
         return completed ? result(completed) : { solTransferred: 0 };
       }
-      const payload = { destinationWallet: destination, amountLamports, reserveLamports, feeCeilingLamports, microLamports, computeUnitLimit };
+      const payload = { destinationWallet: destination, amountLamports, reserveLamports, feeCeilingLamports: feeLimit, microLamports, computeUnitLimit };
       await validateApproval(approval, { payload }, launch);
       const operation = store.transaction(() => {
         store.saveLaunch(launch);

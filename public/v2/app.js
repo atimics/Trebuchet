@@ -15,21 +15,18 @@ const views = {
   coins: { eyebrow: '', title: 'Coins' },
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
-  nfts: { eyebrow: '', title: 'NFT collections' },
-  lean: { eyebrow: '', title: 'Lean launch' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
-  history: { eyebrow: '', title: 'History' },
   settings: { eyebrow: '', title: 'Settings' },
 };
 
 const launchWorkspaces = [
-  { id: 'wallet', title: 'Launch wallet', detail: 'Choose the isolated local wallet that signs this launch.' },
+  { id: 'wallet', title: 'Launch setup', detail: 'Choose the isolated local wallet that signs this launch.' },
   { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and return wallet.' },
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Leftovers', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Finish', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -199,12 +196,11 @@ const CLASSIC_QUOTE_VENUES = Object.freeze({
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
 const CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER = 1000;
 const CLASSIC_LADDER_MAX_BANDS = 20;
-const CLASSIC_TOKEN_NAME_MAX_BYTES = 32;
-const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10;
-const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000;
 const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n;
 const CLASSIC_LOGO_MAX_BYTES = 100 * 1024;
-const CLASSIC_LOGO_MAX_DIMENSION = 200;
+// No chain limits pixels: the metadata holds a link, and the image is uploaded free under ~100 KB.
+// The byte cap is the real limit; the report embeds the logo only when small and links it otherwise.
+const CLASSIC_LOGO_MAX_DIMENSION = 1024;
 const CLASSIC_LOGO_MIN_DIMENSION = 64;
 const LOGO_SOURCE_MAX_BYTES = 10 * 1024 * 1024;
 const LOGO_SOURCE_MAX_DIMENSION = 8192;
@@ -227,13 +223,7 @@ const LAUNCH_PROOF_STORAGE_LIMIT = 1000000;
 const LAUNCH_PROOF_IMPORT_LIMIT = 2000000;
 const WALLET_BALANCE_REFRESH_INTERVAL_MS = 8000;
 const WALLET_BALANCE_FRESH_MS = 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_STORAGE_KEY = 'trebuchet:v2:classic-report-comparison:v1';
-const CLASSIC_REPORT_COMPARISON_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_INPUT_LIMIT = 50000;
-const CLASSIC_REPORT_COMPARISON_ROW_LIMIT = 80;
-const CLASSIC_ARTIFACT_IMPORT_LIMIT = 1000000;
 const V2_HTML_PROOF_AIRDROP_SAMPLE_LIMIT = 100;
-const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object.freeze(['index.html', 'styles.css', 'api-client.js', 'app.js']);
 // Mirror of ../../viewportSmokeContract.js. This file is a classic browser
 // script and cannot import it, so test/viewport-smoke-contract.test.mjs
 // asserts the two stay identical.
@@ -243,7 +233,6 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'tokenomicsChart',
   'liquidityChart',
   'fundingMeter',
-  'parityPanel',
   'firstViewportFit',
   'terminalPanelFit',
   'discoveryTokenViewport',
@@ -277,7 +266,6 @@ try {
 
 const state = {
   activeView: 'launch',
-  activeHistoryPane: 'recovery',
   // The open row of the coin's facts; null opens the row that needs doing.
   launchWorkspace: null,
   launchFactStates: null,
@@ -402,6 +390,8 @@ const state = {
   revealingWalletPublicKey: null,
   discardingWalletPublicKey: null,
   sweepingWalletPublicKey: null,
+  sweepAirdropProgress: null,
+  heldWallets: { list: null, loading: false, at: 0, error: null, sweep: null },
   lastRecoverySweep: null,
   lastSecretPinReset: null,
   lastRunEnvelope: null,
@@ -416,6 +406,11 @@ const state = {
   vanityAvailable: false,
   vanityReason: null,
   vanityRunning: false,
+  grindJobs: [],
+  airdropLists: null,
+  kolWallets: null,
+  vanityCalibrating: false,
+  vanityCalibrationError: null,
   vanityProgress: null,
   vanityProgressStats: null,
   vanitySource: null,
@@ -489,19 +484,13 @@ const state = {
   realExecutionRunning: false,
   fullRunRunning: false,
   fullRunStep: null,
-  launchDetailsExpanded: false,
+  launchAfterArm: false,
   lastFullRun: null,
   lastRealExecution: null,
   executionLedger: [],
   launchProof: null,
   reportPublishing: false,
   lastReportPublish: null,
-  classicReportComparison: {
-    input: '',
-    result: null,
-    comparedAt: null,
-    error: null,
-  },
   airdropRunning: false,
   lastAirdropResult: null,
   demoLaunchRunning: false,
@@ -509,7 +498,6 @@ const state = {
   lastLocalDossier: null,
   recoveryActionId: null,
   lastRecoveryResult: null,
-  recoveryWizardStep: null,
   liveOps: {
     lp: null,
     lpCursor: 0,
@@ -529,6 +517,14 @@ const state = {
   lastClassicDiagnostic: null,
   baseManualLadderText: '',
   baseSupportDepth: 12,
+  baseSupportLayersText: '',
+  launchPresetId: null,
+  launchPresetSignature: null,
+  // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
+  solPoolVenue: 'raydium',
+  solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolVenue: 'raydium',
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -603,9 +599,18 @@ function renderEnvironmentControls() {
   const fixedByMint = state.activeView === 'launch' && Boolean(proofTokenMint(currentLaunchProof()));
   const settingsEnvironment = $('#launchSettingsEnvironment');
   if (settingsEnvironment) {
-    settingsEnvironment.textContent = fixedByMint
-      ? 'Fixed by this coin\'s mint'
-      : environment === 'live' ? 'Real transactions and SOL' : 'Nothing is sent';
+    const networkName = (value) => (value === 'devnet' ? 'Devnet' : value === 'mainnet' ? 'Mainnet' : '');
+    const network = networkName(state.chainNetwork);
+    if (state.networkMismatch && environment === 'live') {
+      // The app's network and its RPC's disagree: say so and offer both ways out.
+      settingsEnvironment.innerHTML = `<span class="network-mismatch" role="alert"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> Network is ${escapeHtml(network)}, RPC is ${escapeHtml(networkName(state.rpcNetwork))}</span>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="rpc">Use ${escapeHtml(networkName(state.rpcNetwork))}</button>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="network">Use a ${escapeHtml(network)} RPC</button>`;
+    } else {
+      settingsEnvironment.textContent = fixedByMint
+        ? `Fixed by this coin's mint${network ? ` · ${network}` : ''}`
+        : environment === 'live' ? `${network || 'Live'} · real transactions and SOL` : 'Nothing is sent';
+    }
   }
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
@@ -642,6 +647,22 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
   } finally {
     state.environmentSwitching = false;
     renderAll();
+  }
+}
+
+
+async function reconcileNetwork(match) {
+  if (!state.apiClient?.reconcileNetwork) return;
+  try {
+    const result = await state.apiClient.reconcileNetwork(match);
+    state.chainNetwork = result?.config?.activeNetwork || result?.network || state.chainNetwork;
+    state.rpcNetwork = result?.config?.rpcNetwork || state.rpcNetwork;
+    state.networkMismatch = result?.config?.networkMismatch === true;
+    state.rpcActiveUrl = result?.config?.active || state.rpcActiveUrl;
+    renderAll();
+    notify(`Network and RPC now both ${state.chainNetwork === 'devnet' ? 'devnet' : 'mainnet'}`);
+  } catch (error) {
+    notify(error.message || 'Could not match the network and RPC');
   }
 }
 
@@ -1162,107 +1183,6 @@ function clearStoredLaunchProof() {
   }
 }
 
-function normalizeClassicComparisonRow(row) {
-  if (!row || typeof row !== 'object') return null;
-  const validStates = new Set(['pass', 'warn', 'missing', 'mismatch']);
-  return {
-    id: compactLedgerText(row.id || 'field', 80),
-    label: compactLedgerText(row.label || 'Classic field', 90),
-    expected: row.expected == null ? null : compactLedgerText(row.expected, 120),
-    actual: row.actual == null ? null : compactLedgerText(row.actual, 120),
-    state: validStates.has(row.state) ? row.state : 'warn',
-    detail: compactLedgerText(row.detail || 'Review this field.', 180),
-  };
-}
-
-function classicComparisonStatusFromCounts({ mismatchCount = 0, missingCount = 0, warnCount = 0 } = {}) {
-  if (Number(mismatchCount) > 0) return 'mismatch';
-  if (Number(missingCount) > 0) return 'missing';
-  if (Number(warnCount) > 0) return 'warn';
-  return 'pass';
-}
-
-function normalizeClassicReportComparison(comparison = {}) {
-  const comparedAt = Number(Date.parse(comparison.comparedAt || comparison.result?.comparedAt || ''));
-  const input = String(comparison.input || '');
-  const result = comparison.result && typeof comparison.result === 'object' ? comparison.result : null;
-  const normalized = {
-    input: input.length <= CLASSIC_REPORT_COMPARISON_INPUT_LIMIT ? input : '',
-    result: null,
-    comparedAt: Number.isFinite(comparedAt) ? new Date(comparedAt).toISOString() : null,
-    error: comparison.error ? compactLedgerText(comparison.error, 180) : null,
-  };
-  if (input.length > CLASSIC_REPORT_COMPARISON_INPUT_LIMIT && !normalized.error) {
-    normalized.error = 'Classic artifact text was too large to retain locally; comparison result was kept.';
-  }
-  if (!result) return normalized;
-  if (Number.isFinite(comparedAt) && Date.now() - comparedAt > CLASSIC_REPORT_COMPARISON_MAX_AGE_MS) {
-    return { input: '', result: null, comparedAt: null, error: null };
-  }
-  const rows = Array.isArray(result.rows)
-    ? result.rows.map(normalizeClassicComparisonRow).filter(Boolean).slice(0, CLASSIC_REPORT_COMPARISON_ROW_LIMIT)
-    : [];
-  const passCount = Math.max(0, Math.floor(Number(result.passCount || 0)) || 0);
-  const warnCount = Math.max(0, Math.floor(Number(result.warnCount || rows.filter((row) => row.state === 'warn').length)) || 0);
-  const missingCount = Math.max(0, Math.floor(Number(result.missingCount || rows.filter((row) => row.state === 'missing').length)) || 0);
-  const mismatchCount = Math.max(0, Math.floor(Number(result.mismatchCount || rows.filter((row) => row.state === 'mismatch').length)) || 0);
-  normalized.result = {
-    status: classicComparisonStatusFromCounts({ mismatchCount, missingCount, warnCount }),
-    comparedAt: normalized.comparedAt || new Date().toISOString(),
-    artifactKind: compactLedgerText(result.artifactKind || 'artifact', 24),
-    artifactSource: compactLedgerText(result.artifactSource || 'unknown', 32),
-    structuredEvidence: result.structuredEvidence === true,
-    proofFingerprint: typeof result.proofFingerprint === 'string' ? result.proofFingerprint.slice(0, 10000) : null,
-    passCount,
-    warnCount,
-    missingCount,
-    mismatchCount,
-    fieldCount: Math.max(0, Math.floor(Number(result.fieldCount || rows.length)) || rows.length),
-    classicMint: result.classicMint ? compactLedgerText(result.classicMint, 80) : null,
-    classicPoolCount: Math.max(0, Math.floor(Number(result.classicPoolCount || 0)) || 0),
-    rows,
-  };
-  return normalized;
-}
-
-function persistClassicReportComparison() {
-  const storage = v2LocalStorage();
-  if (!storage) return;
-  try {
-    const comparison = normalizeClassicReportComparison(state.classicReportComparison);
-    if (!comparison.result && !comparison.input && !comparison.error) {
-      storage.removeItem(CLASSIC_REPORT_COMPARISON_STORAGE_KEY);
-      return;
-    }
-    storage.setItem(CLASSIC_REPORT_COMPARISON_STORAGE_KEY, JSON.stringify(comparison));
-  } catch {
-    // Report comparison persistence is advisory and should never block recovery.
-  }
-}
-
-function restoreClassicReportComparison() {
-  const storage = v2LocalStorage();
-  if (!storage) return;
-  try {
-    const parsed = JSON.parse(storage.getItem(CLASSIC_REPORT_COMPARISON_STORAGE_KEY) || '{}');
-    state.classicReportComparison = normalizeClassicReportComparison(parsed);
-  } catch {
-    state.classicReportComparison = {
-      input: '',
-      result: null,
-      comparedAt: null,
-      error: null,
-    };
-  }
-}
-
-function clearExecutionAudit() {
-  state.executionLedger = [];
-  persistExecutionLedger();
-  renderSignaturePanel();
-  renderHistory();
-  notify('Execution audit cleared');
-}
 
 function escapeHtml(value) {
   return String(value)
@@ -1343,42 +1263,6 @@ function selectedManagedWallet() {
 
 function pendingRecoveryWallet(publicKey) {
   return state.recovery.pendingWallets.find((wallet) => wallet.publicKey === publicKey) || null;
-}
-
-function recoveryWalletState(wallet) {
-  const reason = walletLockInfo(wallet);
-  if (reason.state === 'missing') {
-    return { label: 'Key missing', className: 'danger', detail: reason.detail };
-  }
-  if (reason.state === 'wrong-key') {
-    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
-  }
-  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
-    return {
-      label: 'Secret missing',
-      className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
-    };
-  }
-  if (state.secretPin.locked || wallet?.secretPinLocked) {
-    return {
-      label: 'PIN locked',
-      className: 'warn',
-      detail: 'Unlock the Recovery PIN before revealing this launch wallet.',
-    };
-  }
-  if (wallet?.publicKey && wallet.publicKey === selectedLaunchWalletPublicKey()) {
-    return {
-      label: 'Selected',
-      className: '',
-      detail: 'This wallet is active for funding, recovery, and guarded launch execution.',
-    };
-  }
-  return {
-    label: 'Recoverable',
-    className: 'warn',
-    detail: 'Saved launch wallet secret is available through the guarded reveal flow.',
-  };
 }
 
 function fmtSol(value) {
@@ -1519,26 +1403,6 @@ function routeStartupRecoveryFirst() {
     restored,
     kind: journalNeedsTokenFinish(journal) ? 'token' : 'journal',
   };
-}
-
-function canResumeJournal(journal) {
-  if (!journal || state.demoActive || isTerminalJournal(journal)) return false;
-  if (journalNeedsTokenFinish(journal)) return false;
-  if (completedLpJournal(journal)) return false;
-  if (!journalHasResumeMaterial(journal)) return false;
-  return !journalResumePlan(journal).manualRecoveryRequired;
-}
-
-function canContinueJournalToFinish(journal) {
-  return Boolean(
-    journal
-    && !isTerminalJournal(journal)
-    && completedLpJournal(journal),
-  );
-}
-
-function canDismissJournal(journal) {
-  return Boolean(journal?.id) && !isTerminalJournal(journal);
 }
 
 function journalHasResumeMaterial(journal) {
@@ -2028,6 +1892,43 @@ function parseManualLadderBands(value) {
   return analyzeManualLadder(value).bands;
 }
 
+// Support layers, one per line: quote share %, low x, high x. The multiples are of the start price
+// and at most 1 (0.8, 1 is from 20% below the start price up to it). Lines it cannot use are listed
+// in `rejected` (1-based). Blank lines, # comments and a header line are skipped.
+function analyzeSupportLayers(value) {
+  const layers = [];
+  const rejected = [];
+  String(value || '').split(/\r?\n/).forEach((rawLine, lineIndex) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return;
+    const parts = line.split(/[,\t ]+/).map((part) => part.replace(/[x×]$/i, '').trim()).filter(Boolean);
+    if (!parts.length || /share|quote|supply/i.test(parts[0])) return;
+    const sharePercent = parseNumericInput(parts[0], NaN);
+    const lowerMultiplier = parseNumericInput(parts[1], NaN);
+    const upperMultiplier = parseNumericInput(parts[2], NaN);
+    if (
+      Number.isFinite(sharePercent) && sharePercent > 0
+      && Number.isFinite(lowerMultiplier) && lowerMultiplier > 0
+      && Number.isFinite(upperMultiplier) && upperMultiplier > lowerMultiplier && upperMultiplier <= 1
+    ) {
+      layers.push({ sharePercent, lowerMultiplier, upperMultiplier });
+    } else {
+      rejected.push({ line: lineIndex + 1, text: line });
+    }
+  });
+  return { layers: layers.slice(0, SUPPORT_LAYERS_MAX), rejected, overflow: Math.max(0, layers.length - SUPPORT_LAYERS_MAX) };
+}
+
+const SUPPORT_LAYERS_MAX = 6;
+
+function parseSupportLayers(value) {
+  return analyzeSupportLayers(value).layers;
+}
+
+function supportLayersText(layers = []) {
+  return (layers || []).map((layer) => `${layer.sharePercent}, ${layer.lowerMultiplier}, ${layer.upperMultiplier}`).join('\n');
+}
+
 // Reads the custom ladder text. Lines it cannot use are listed in `rejected`
 // (1-based line numbers) so the panel can say which ones were skipped.
 // Blank lines, # comments and a header line are skipped on purpose.
@@ -2218,10 +2119,10 @@ function toggleHeldShareFunder(address) {
 
 function currentAirdropPlan() {
   const parsed = parseAirdropCsv(state.airdropCsvText);
-  const manualCount = parsePositiveInteger($('#airdropWallets').value, 0);
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const share = heldSharePlan(supply);
-  const csvCount = parsed.recipients.length || manualCount;
+  // The recipients are the CSV's wallets: the count is how many it lists.
+  const csvCount = parsed.recipients.length;
   const recipientCount = csvCount + share.rows.length;
   const enabled = recipientCount > 0;
   const budgetConfig = currentAirdropBudgetConfig();
@@ -2249,7 +2150,7 @@ function currentAirdropPlan() {
     requestedSupplyPercent: budget.requestedSupplyPercent,
     requiredSupplyPercent: budget.requiredSupplyPercent,
     autoFit: budget.autoFit,
-    source: parsed.recipients.length ? 'csv' : manualCount ? 'manual-count' : share.active ? 'funders' : 'off',
+    source: parsed.recipients.length ? 'csv' : share.active ? 'funders' : 'off',
     csvRecipientCount: csvCount,
     funderShareCount: share.rows.length,
     funderSharePercent: share.active ? share.heldPercent : 0,
@@ -2998,10 +2899,34 @@ function executionLedgerAttemptLabel(entry) {
   return attempt > 1 ? `attempt ${attempt}` : '';
 }
 
-function riskClass(value) {
-  if (['High', 'Watch', 'Low confidence'].includes(value)) return 'danger';
-  if (['Medium', 'Warn', 'Medium confidence'].includes(value)) return 'warn';
-  return '';
+
+// The sidebar is an icon rail by default (labels are tooltips); the choice is a per-viewer
+// convenience, so a blocked or empty store just leaves the default.
+function readNavMode() {
+  try { return window.localStorage?.getItem('trebuchet-nav') === 'full' ? 'full' : 'icons'; } catch { return 'icons'; }
+}
+
+function applyNavMode(mode) {
+  document.body.dataset.nav = mode;
+  $$('.nav-item').forEach((item) => {
+    const label = item.querySelector('span')?.textContent?.trim();
+    if (label) item.title = label;
+  });
+  const network = $('#networkButton');
+  if (network) network.title = `${($('#custodySignalLabel')?.textContent || '').trim()} · ${($('#networkLabel')?.textContent || '').trim()}`.replace(/^ · | · $/g, '');
+  const toggle = $('#navToggle');
+  if (toggle) {
+    const label = mode === 'icons' ? 'Expand navigation' : 'Collapse navigation';
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-expanded', mode === 'icons' ? 'false' : 'true');
+    toggle.querySelector('i').className = `fa-solid ${mode === 'icons' ? 'fa-angles-right' : 'fa-angles-left'}`;
+  }
+}
+
+function setNavMode(mode) {
+  applyNavMode(mode);
+  try { window.localStorage?.setItem('trebuchet-nav', mode); } catch { /* the choice just is not remembered */ }
 }
 
 function defaultSignatureRows() {
@@ -3073,18 +2998,18 @@ function airdropCompletionStatus(proof = currentLaunchProof(), topology = curren
   };
 }
 
-function airdropCompletionIssue(status = {}, actionLabel = 'final sweep') {
+function airdropCompletionIssue(status = {}) {
   if (!status?.configured || status.complete) return null;
   if (status.retryRequired) {
-    return `Airdrop has ${status.failed} failed recipient${status.failed === 1 ? '' : 's'}; retry before ${actionLabel}.`;
+    return `${status.failed} airdrop recipient${status.failed === 1 ? '' : 's'} not paid.`;
   }
   if (status.pending > 0) {
-    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} still pending; run airdrop before ${actionLabel}.`;
+    return `${status.pending} airdrop recipient${status.pending === 1 ? '' : 's'} not paid yet.`;
   }
   const missing = Array.isArray(status.missing) && status.missing.length
     ? status.missing.join(', ')
     : 'recipient and transaction evidence';
-  return `Airdrop proof is incomplete (${missing}); refresh or rerun airdrop before ${actionLabel}.`;
+  return `Airdrop record incomplete: ${missing}.`;
 }
 
 function liveAirdropComplete(topology, proof) {
@@ -3273,12 +3198,12 @@ function liveRunProgressContext() {
               ? 'Funding estimate is stale for the current token, pools, market cap, or airdrop model.'
             : !fundingBalanceKnown
               ? funding.walletBalanceStale
-                ? 'Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
+                ? 'Launch wallet balance is out of date.'
                 : 'Selected launch-wallet balance has not been verified yet.'
               : !fundingSolReady
                 ? `Launch wallet is short ${funding.missingSol.toFixed(3)} SOL.`
                 : quoteStatus.stale
-                  ? 'Quote acquire is stale for the selected wallet or launch model; run it again.'
+                  ? 'The pair-token purchase was for another wallet or plan.'
                 : !quoteAcquireReady
                   ? `${quoteRoutes.length} quote acquire route${quoteRoutes.length === 1 ? '' : 's'} still need successful completion.`
                   : !manualReady
@@ -4332,25 +4257,6 @@ function validateProofFile(file) {
   return file;
 }
 
-function validateClassicArtifactFile(file) {
-  if (!file) return null;
-  const name = String(file.name || '');
-  const type = String(file.type || '');
-  const artifactLike = type === 'application/json'
-    || type === 'text/json'
-    || type === 'text/html'
-    || type === 'text/plain'
-    || (!type && /\.(json|html?|txt)$/i.test(name))
-    || /\.(json|html?|txt)$/i.test(name);
-  if (!artifactLike) {
-    throw new Error('Classic artifact must be JSON, HTML, or text');
-  }
-  if (file.size <= 0 || file.size > CLASSIC_ARTIFACT_IMPORT_LIMIT) {
-    throw new Error('Classic artifact must be 1MB or smaller');
-  }
-  return file;
-}
-
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     if (typeof FileReader !== 'function') {
@@ -4508,13 +4414,33 @@ async function copyText(value, label = 'Value') {
   }
 }
 
+// A logo restored from a saved launch or a launch record skipped the picker, so it can be larger
+// than a launch accepts (an older save, or a copy enlarged for the address stamp). Put it through
+// the same shrinking the picker uses, now, instead of letting Create refuse it later.
+async function fitRestoredTokenLogo() {
+  const logo = state.tokenLogo;
+  const match = String(logo?.dataUrl || '').match(/^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match || typeof File !== 'function' || typeof atob !== 'function') return;
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const file = new File([bytes], logo.name || 'token-logo', { type: match[1] });
+  const source = await loadLogoImage(file);
+  const fits = file.size <= CLASSIC_LOGO_MAX_BYTES
+    && source.width <= CLASSIC_LOGO_MAX_DIMENSION && source.height <= CLASSIC_LOGO_MAX_DIMENSION;
+  source.release();
+  if (fits || state.tokenLogo !== logo) return;
+  await selectTokenLogo(file);
+}
+
 function currentVanityConfig() {
   const prefix = $('#vanityStart').value.trim();
   const suffix = $('#vanityEnd').value.trim();
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   // A saved any-case address stays valid even if the toggle is off now.
   const caseInsensitive = $('#vanityCaseInsensitive')?.checked === true || selected?.caseInsensitive === true;
-  const length = Number($('#vanityLength')?.value) || selected?.addressLength || null;
+  // A chosen address keeps its own length; the length field only filters the grind.
+  const length = selected ? (Number($('#vanityLength')?.value) || selected.addressLength ? selected.publicKey.length : null) : Number($('#vanityLength')?.value) || null;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
@@ -4896,63 +4822,6 @@ function selectedClassicQuoteVenue() {
 // neighbouring bands. It reads and writes the same percentage fields the plan
 // builder already consumes, so nothing downstream changes.
 
-function vortexAllocationModel() {
-  const pools = [];
-  (state.customPools || []).forEach((pool, index) => {
-    pools.push({
-      id: `custom-${index}`,
-      symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
-      mint: String(pool.quoteMint || ''),
-      percent: Number(pool.supplyPercent || 0),
-      minPercent: 0,
-      feeTier: Number(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
-    });
-  });
-  const venue = selectedClassicQuoteVenue();
-  const isFlywheel = venue.key === 'meme' || venue.key === 'reserve';
-  pools.push({
-    id: 'sol',
-    symbol: 'SOL',
-    mint: 'So11111111111111111111111111111111111111112',
-    percent: Number($('#mainPoolPercent')?.value || 0),
-    minPercent: 10,
-    feeTier: state.solPoolConfigIndex,
-  });
-  const quotePercent = Number($('#quotePoolPercent')?.value || 0);
-  // Always present: a pool at 0% still needs a boundary to drag open.
-  if (isFlywheel || quotePercent > 0) {
-    pools.push({
-      id: 'quote',
-      symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
-      mint: isFlywheel ? (venue.quoteMint || '') : '',
-      percent: quotePercent,
-      minPercent: isFlywheel ? 10 : 0,
-      maxPercent: isFlywheel ? 30 : 100,
-      feeTier: state.pairPoolConfigIndex,
-    });
-  }
-  return {
-    pools,
-    depositSol: Number($('#liquidityBudgetSol')?.value || $('#launchSol')?.value || 0),
-    sweepDestination: $('#sweepDestination')?.value || '',
-  };
-}
-
-function applyVortexAllocation(pools = []) {
-  for (const pool of pools) {
-    if (pool.id === 'sol') {
-      if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(pool.percent);
-    } else if (pool.id === 'quote') {
-      if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(pool.percent);
-    } else if (String(pool.id).startsWith('custom-')) {
-      const index = Number(String(pool.id).slice('custom-'.length));
-      if (state.customPools?.[index]) state.customPools[index].supplyPercent = pool.percent;
-    }
-  }
-  renderFlywheelPick();
-  scheduleLaunchAutoSave();
-}
-
 // The flywheel vortex has been removed from the shell (no mount point and
 // no vortex script). Kept as a documented no-op so renderer call sites and
 // the full-input audit stay intact.
@@ -4968,54 +4837,6 @@ function renderFlywheelPick() {
   host.hidden = venueKey !== 'meme';
   mintEl.textContent = state.memeFlywheelMint ? shortAddress(state.memeFlywheelMint) : '—';
   mintEl.title = state.memeFlywheelMint || '';
-}
-
-// Draw a fresh memecoin from the flywheel pool (never repeating the current
-// pairing when the pool has alternatives).
-// Build a four-token vortex in one action: the flywheel pairing becomes the
-// hub and two more memecoins join SOL as circulating rings, 10% each.
-async function spinFlywheelVortex() {
-  const own = ownTokenMint();
-  const candidates = (state.flywheelPools?.meme || []).filter((mint) => !own || mint !== own);
-  if (candidates.length < 3) {
-    notify('The meme flywheel pool needs at least three mints for a four-token vortex');
-    return;
-  }
-  const drawn = [];
-  const rest = candidates.slice();
-  while (drawn.length < 3) {
-    drawn.push(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
-  }
-  const quoteShare = 10;
-  const solShare = 100 - quoteShare * drawn.length;
-  if (solShare < 10) {
-    notify('Not enough supply for that many flywheel pools');
-    return;
-  }
-
-  state.memeFlywheelMint = drawn[0];
-  state.customPools = drawn.slice(1).map((mint, index) => ({
-    id: `flywheel-ring-${index + 2}`,
-    quoteSymbol: `MEME${index + 2}`,
-    quoteMint: mint,
-    supplyPercent: quoteShare,
-    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
-    sliceShares: '100',
-    feeKeyRecipient: '',
-    ladderBands: 0,
-    ladderText: '',
-    supportSol: 0,
-    supportDepth: 12,
-  }));
-  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
-  if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
-  // SOL takes the rest, after any held-back or airdrop share.
-  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(mainPoolRemainderPercent());
-
-  renderFlywheelPick();
-  renderVortexControl();
-  scheduleLaunchAutoSave();
-  notify(`Four-token vortex: SOL ${solShare}% + ${drawn.length} memecoins at ${quoteShare}%`);
 }
 
 // The token being launched cannot be its own flywheel pairing: a pool with the
@@ -5110,17 +4931,18 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === launchPresetSelected() : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';
   target.title = '';
 }
 
-function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
+function applyLaunchBudgetRecommendation(value, { announce = true, fromInput = false } = {}) {
   const budgetSol = Math.max(0, Number(value) || 0);
   const strategy = launchBudgetRecommendation(budgetSol);
-  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(budgetSol);
+  // While the amount is being typed it is left alone: rewriting "0." as "0" would make 0.1 untypable.
+  if ($('#liquidityBudgetSol') && !fromInput) $('#liquidityBudgetSol').value = String(budgetSol);
   if ($('#launchSol')) $('#launchSol').value = String(strategy.coreSol);
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
   // SOL takes the rest: held-back tokens, airdrop, and added pairs stay.
@@ -5129,6 +4951,8 @@ function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(strategy.ladderBands);
   if ($('#supportSol')) $('#supportSol').value = String(strategy.supportSol);
   state.baseManualLadderText = '';
+  state.baseSupportLayersText = '';
+  state.launchPresetId = null;
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderLaunchBudgetRecommendation();
@@ -5149,6 +4973,7 @@ function currentClassicModel() {
   const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 25000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
   const supportDepth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
+  const supportLayers = parseSupportLayers(state.baseSupportLayersText);
   const airdrop = currentAirdropPlan();
   const preallocation = currentPreallocationPlan();
 
@@ -5170,7 +4995,7 @@ function currentClassicModel() {
       ? classicSimpleLadderConfig(ladderBands)
       : { mode: 'off' },
     support: supportSol > 0
-      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth }
+      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
   const pools = [solPool];
@@ -5233,8 +5058,27 @@ function currentClassicModel() {
           mode: 'custom',
           solValue: customSupportSol,
           depthPct: clampNumber(parseNumericInput(pool.supportDepth, 12), 1, 50),
+          ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
+    });
+  });
+
+  // A pool set to Meteora is one locked position: no slices, ladder or support.
+  pools.forEach((pool) => {
+    const custom = state.customPools.find((item) => item.id === pool.id) || null;
+    const choice = pool.id === 'sol-main'
+      ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
+      : String(pool.id || '').endsWith('-flywheel')
+        ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+    if (choice?.venue !== 'meteora-damm-v2') return;
+    Object.assign(pool, {
+      venue: 'meteora-damm-v2',
+      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      distribution: [{ sharePercent: 100, recipient: null }],
+      ladder: { mode: 'off' },
+      support: { mode: 'off' },
     });
   });
 
@@ -5333,6 +5177,171 @@ function currentLaunchConfig() {
   };
 }
 
+// Four starting presets, each a bigger network than the last: Spark (token only), Anchor (one market
+// and a funded bid), Constellation (three markets) and Vortex (five markets). They are starting
+// points, not strategies tuned for return. The budget is the quote deposited into liquidity; setup
+// costs (rent, fees, locking) come on top. 1x is a pair's start price.
+//
+// Per market: `share` is its % of the liquidity supply; `quoteSol` is the quote deposited, in SOL
+// (a partner token's amount is its SOL value); `bands` are NEW-side ranges as [supply % of the
+// market, low x, high x] (the main position takes the rest, from the start price up); `layers` are
+// quote-side bids as [quote share %, low x, high x] below the start price. Every market uses the
+// 0.25% fee tier and opens at the same price (no premium), so the markets agree at the start.
+const LAUNCH_PRESET_TIER_INDEX = 1;
+
+const CONSTELLATION_BANDS = [[35, 1, 3], [25, 2, 10], [10, 8, 40]];
+const CONSTELLATION_LAYERS = [[70, 0.7, 1], [30, 0.25, 0.7]];
+const VORTEX_BANDS = [[30, 1, 2], [25, 1.5, 5], [15, 4, 20], [10, 15, 100]];
+const VORTEX_LAYERS = [[50, 0.8, 1], [30, 0.5, 0.8], [20, 0.2, 0.5]];
+
+const LAUNCH_PRESETS = Object.freeze([
+  {
+    id: 'spark', name: 'Spark', budgetSol: 0, tagline: 'token-only launch',
+    markets: [{ role: 'sol', share: 100, quoteSol: 0, bands: [], layers: [] }],
+  },
+  {
+    id: 'anchor', name: 'Anchor', budgetSol: 1, tagline: 'single market + support',
+    markets: [{ role: 'sol', share: 100, quoteSol: 1, bands: [[40, 1, 3], [20, 2, 10]], layers: [[100, 0.4, 1]] }],
+  },
+  {
+    id: 'constellation', name: 'Constellation', budgetSol: 10, tagline: 'three connected markets',
+    markets: [
+      { role: 'sol', share: 80, quoteSol: 8, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+      { role: 'partner', share: 10, quoteSol: 1, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+      { role: 'partner', share: 10, quoteSol: 1, bands: CONSTELLATION_BANDS, layers: CONSTELLATION_LAYERS },
+    ],
+  },
+  {
+    id: 'vortex', name: 'Vortex', budgetSol: 100, tagline: 'five markets + layered liquidity',
+    markets: [
+      { role: 'sol', share: 80, quoteSol: 80, bands: VORTEX_BANDS, layers: VORTEX_LAYERS },
+      ...[0, 1, 2, 3].map(() => ({ role: 'partner', share: 5, quoteSol: 5, bands: VORTEX_BANDS, layers: VORTEX_LAYERS })),
+    ],
+  },
+]);
+
+function launchPresetById(id) {
+  return LAUNCH_PRESETS.find((preset) => preset.id === id) || null;
+}
+
+// Distinct market-shaping positions: per market, the main position, each NEW-side band and each
+// quote-side layer. (The tiny bootstrap that opens trading is not counted.)
+function launchPresetPositionCount(preset) {
+  return preset.markets.reduce((sum, market) => sum + 1 + market.bands.length + market.layers.length, 0);
+}
+
+function launchPresetBandsText(market) {
+  return market.bands.map(([share, low, high]) => `${share}, ${low}, ${high}`).join('\n');
+}
+
+function launchPresetLayersText(market) {
+  return market.layers.map(([share, low, high]) => `${share}, ${low}, ${high}`).join('\n');
+}
+
+// What each market gets, with its supply share scaled to the supply the pools may use.
+function launchPresetMarketPlan(preset, liquidityPercent) {
+  return preset.markets.map((market) => ({
+    ...market,
+    percent: Math.round(liquidityPercent * market.share) / 100,
+    bandsText: launchPresetBandsText(market),
+    layersText: launchPresetLayersText(market),
+  }));
+}
+
+function launchPresetSummary(preset) {
+  const markets = preset.markets.length;
+  const positions = launchPresetPositionCount(preset);
+  return `${markets} market${markets === 1 ? '' : 's'} · ${positions} position${positions === 1 ? '' : 's'}`;
+}
+
+// Partner tokens come from the hub list: the default hubs, then any token found in Discovery.
+async function launchPresetPartners(count) {
+  if (count <= 0) return [];
+  try {
+    const catalog = await state.apiClient?.listFlywheelHubs?.();
+    const rows = hubPickerRows(catalog || {}, state.discovery?.records || []);
+    return rows.slice(0, count).map((hub) => ({ mint: hub.mint, symbol: String(hub.symbol || hub.name || '').toUpperCase() }));
+  } catch {
+    return [];
+  }
+}
+
+// What identifies the pools a preset builds, so the picker can tell when they have been edited.
+function launchPoolsSignature() {
+  return JSON.stringify(currentClassicModel().pools.map((pool) => [
+    pool.quoteMint || pool.quoteToken, pool.supplyPercent, pool.ammConfigIndex, pool.distribution, pool.ladder, pool.support,
+  ]));
+}
+
+// The preset the pools still match, or 'custom' once they have been changed (or never came from one).
+function launchPresetSelected() {
+  return state.launchPresetId && state.launchPresetId !== 'custom' && state.launchPresetSignature === launchPoolsSignature()
+    ? state.launchPresetId
+    : 'custom';
+}
+
+async function applyLaunchPreset(id, { announce = true } = {}) {
+  if (id === 'custom') {
+    // Custom keeps the pools as they are and opens the page where they are edited.
+    state.launchPresetId = 'custom';
+    renderLaunchBudgetRecommendation();
+    setPlanSlide('pairs');
+    return;
+  }
+  const preset = launchPresetById(id);
+  if (!preset) return;
+  const partnerMarkets = preset.markets.filter((market) => market.role === 'partner');
+  const partners = await launchPresetPartners(partnerMarkets.length);
+  // Pools may use everything that is not held back for the team or an airdrop.
+  const held = supplyEditorRows().filter((row) => row.kind === 'hold').reduce((sum, row) => sum + (Number(row.percent) || 0), 0);
+  const plan = launchPresetMarketPlan(preset, Math.max(1, 100 - held));
+  const solMarket = plan.find((market) => market.role === 'sol');
+
+  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(preset.budgetSol);
+  if ($('#launchSol')) $('#launchSol').value = '0';
+  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
+  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(solMarket.percent);
+  if ($('#sliceShares')) $('#sliceShares').value = '100';
+  if ($('#ladderBands')) $('#ladderBands').value = '0';
+  if ($('#supportSol')) $('#supportSol').value = String(solMarket.quoteSol);
+  state.baseManualLadderText = solMarket.bandsText;
+  state.baseSupportLayersText = solMarket.layersText;
+  state.baseSupportDepth = '12';
+  state.solPoolConfigIndex = LAUNCH_PRESET_TIER_INDEX;
+  state.launchPresetId = preset.id;
+
+  state.customPools = plan.filter((market) => market.role === 'partner').map((market, index) => {
+    const partner = partners[index] || null;
+    return {
+      id: nextCustomPoolId(),
+      quoteSymbol: partner?.symbol || 'QUOTE',
+      quoteMint: partner?.mint || '',
+      supplyPercent: market.percent,
+      ammConfigIndex: LAUNCH_PRESET_TIER_INDEX,
+      startPremiumPct: 0,
+      sliceShares: '100',
+      feeKeyRecipient: '',
+      ladderBands: 0,
+      ladderText: market.bandsText,
+      supportSol: market.quoteSol,
+      supportDepth: 12,
+      supportLayersText: market.layersText,
+    };
+  });
+  state.quoteTokenInfo = {};
+  invalidateClassicOutputs();
+  refreshClassicPreview({ includePoolEditor: true });
+  renderAll();
+  state.launchPresetSignature = launchPoolsSignature();
+  scheduleLaunchAutoSave();
+  renderLaunchBudgetRecommendation();
+  if (!announce) return;
+  const missing = partnerMarkets.length - partners.length;
+  notify(missing > 0
+    ? `${preset.name} applied · pick ${missing} partner token${missing === 1 ? '' : 's'} on Pairs`
+    : `${preset.name} applied · ${launchPresetSummary(preset)}`);
+}
+
 function recoveryLaunchConfig(journal = {}) {
   if (journal.launchConfig && typeof journal.launchConfig === 'object') {
     return journal.launchConfig;
@@ -5423,6 +5432,10 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     ladderText: manualLadderText,
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
+    supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
+    venue: pool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium',
+    dammFeeBps: Number(pool?.damm?.feeBps) || 25,
+    dammRange: Number(pool?.damm?.rangeMultiple) || 1000,
   };
 }
 
@@ -5446,6 +5459,13 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() === 'SOL');
   const restoredFlywheelPool = pools.find((pool) => String(pool.id || '').endsWith('-flywheel'));
   // Before per-launch tiers, the SOL pool used config 8 and pairs config 5.
+  state.solPoolVenue = restoredSolPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.solPoolDamm = {
+    feeBps: Number(restoredSolPool?.damm?.feeBps) || 25,
+    rangeMultiple: Number(restoredSolPool?.damm?.rangeMultiple) || 1000,
+  };
+  state.quotePoolVenue = restoredFlywheelPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.quotePoolDamm = { feeBps: Number(restoredFlywheelPool?.damm?.feeBps) || 25, rangeMultiple: Number(restoredFlywheelPool?.damm?.rangeMultiple) || 1000 };
   state.solPoolConfigIndex = restoredSolPool
     ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
     : DEFAULT_POOL_CONFIG_INDEX;
@@ -5457,10 +5477,20 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
   )) || pools[0] || null;
   const nonSolPools = pools.filter((pool) => pool !== solPool);
-  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool));
+  // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
+  // one that has any is kept as an ordinary pair so none of those settings are lost.
+  const isPlainPair = (pool) => pool.venue !== 'meteora-damm-v2'
+    && (!pool.ladder || pool.ladder.mode === 'off')
+    && (!pool.support || pool.support.mode !== 'custom')
+    && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
+  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
+  if (builtInPool) {
+    state.quotePoolVenue = builtInPool.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    state.quotePoolDamm = { feeBps: Number(builtInPool.damm?.feeBps) || 25, rangeMultiple: Number(builtInPool.damm?.rangeMultiple) || 1000 };
+  }
 
   if ($('#tokenName') && token.name != null) $('#tokenName').value = String(token.name).slice(0, 32);
   if ($('#tokenSymbol') && token.symbol != null) $('#tokenSymbol').value = String(token.symbol).slice(0, 10).toUpperCase();
@@ -5477,6 +5507,10 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       animated: token.logo.animated === true,
     };
     state.launchIdentity = null;
+    // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
+    if (!journal?.token?.metadataUri) {
+      fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
+    }
   }
   if ($('#mintFormat')) $('#mintFormat').value = token.mintFormat === 'classic-spl'
     ? 'classic-spl'
@@ -5500,12 +5534,26 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(solPool?.ladder?.mode === 'simple' ? Number(solPool.ladder.bandCount || 0) : 0);
   state.baseManualLadderText = manualLadderTextFromPool(solPool || {});
   state.baseSupportDepth = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.depthPct || 12) : 12);
+  state.baseSupportLayersText = solPool?.support?.mode === 'custom' ? supportLayersText(solPool.support.layers) : '';
   if ($('#supportSol')) $('#supportSol').value = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.solValue || 0) : 0);
 
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
   if ($('#quotePoolVenue') && builtInVenue) $('#quotePoolVenue').value = builtInVenue.key;
   state.customPools = customPools.map(customPoolFromRecovery);
-  state.customPoolCounter = Math.max(state.customPoolCounter, state.customPools.length);
+  // Keep the id counter past every restored id (pairs may be numbered 2 and 3 after one was
+  // removed), and give a pair that was saved with a repeated id its own, so each pair edits itself.
+  state.customPoolCounter = Math.max(
+    state.customPoolCounter,
+    state.customPools.length,
+    ...state.customPools.map((pool) => Number(/^custom-pool-(\d+)$/.exec(pool.id)?.[1] || 0)),
+  );
+  const seenPoolIds = new Set();
+  state.customPools.forEach((pool) => {
+    if (seenPoolIds.has(pool.id)) {
+      do { state.customPoolCounter += 1; pool.id = `custom-pool-${state.customPoolCounter}`; } while (seenPoolIds.has(pool.id));
+    }
+    seenPoolIds.add(pool.id);
+  });
 
   const feeKeyRecipient = String(
     topology.feeKeyRecipient
@@ -5528,7 +5576,6 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
   };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
-  if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
   if ($('#airdropAutoFit')) $('#airdropAutoFit').checked = airdrop.autoFit !== false;
 
@@ -5688,7 +5735,7 @@ function setView(view) {
     state.approvalOpen = false;
   }
   // A coin's creation steps are part of its coin page, under Coins.
-  const navView = view === 'launch' || view === 'lean' ? 'coins' : view;
+  const navView = view === 'launch' ? 'coins' : view;
   $$('.nav-item').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -5697,8 +5744,7 @@ function setView(view) {
   });
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
-  if (view === 'nfts') window.TrebuchetNfts?.onShow();
-  if (view === 'lean') window.TrebuchetLean?.onShow();
+  if (view === 'wallet') refreshHeldWallets();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -5734,9 +5780,12 @@ function coinFacts() {
     || (mint && proofToken.mintAuthorityRenounced === true && proofToken.freezeAuthorityDisabled === true)
   );
   const recordedPools = launchProofPoolIds(proof).length;
+  // Recorded pools are not finished liquidity: when the server says the next step is to create or
+  // resume liquidity (positions or locks still missing), that wins, or only a sweep would be offered.
+  const liquidityPending = ['/api/create-lp', '/api/resume-launch'].includes(readiness?.nextEndpoint || '');
   const liquidityComplete = Boolean(
     isReadinessPhaseComplete('liquidity')
-    || (poolCount > 0 && recordedPools >= poolCount)
+    || (poolCount > 0 && recordedPools >= poolCount && !liquidityPending)
   );
   const revealPending = readiness?.nextEndpoint === '/api/reveal-sealed-metadata'
     || (liquidityComplete && (readiness?.completion?.metadataRevealPending === true || proofToken.sealedMetadataPending === true));
@@ -5763,9 +5812,13 @@ function coinFacts() {
   const walletKey = practice
     ? state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || ''
     : selectedLaunchWalletPublicKey();
+  // Wallets stay hidden while the Recovery PIN is locked, so say Unlock, not Create.
+  const pinLocked = state.secretPin?.locked === true;
   const signer = practice && walletKey
     ? { state: 'done', value: `${shortAddress(walletKey)} · test mode` }
-    : !walletKey
+    : pinLocked && !walletKey
+      ? { state: 'todo', value: 'PIN locked', action: 'Unlock' }
+      : !walletKey
       ? { state: 'todo', value: 'None chosen', action: state.managedWallets.length ? 'Choose a launch wallet' : 'Create a launch wallet' }
       : walletIsUnlocked()
         ? { state: 'done', value: `${shortAddress(walletKey)} · unlocked` }
@@ -5825,7 +5878,9 @@ function coinFacts() {
           ? { state: 'running', value: 'Being opened' }
           : !mint && !tokenComplete
             ? { state: 'todo', value: 'No pools yet', action: 'Open the pools' }
-            : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
+            : recordedPools >= poolCount && poolCount > 0
+              ? { state: 'todo', value: `${pools} open · positions or locks unfinished`, action: 'Finish liquidity' }
+              : { state: 'todo', value: `${Math.min(recordedPools, poolCount)} of ${pools} open`, action: 'Open the pools' },
     'pools', 'locks', 'reveal',
   );
 
@@ -5877,21 +5932,28 @@ function refreshLaunchChainCheck(facts) {
 }
 
 function renderLaunchWorkspace() {
-  const facts = coinFacts();
+  dropUsedVanitySelection();
+  const stale = launchedCoinForWorkspaceDraft();
+  if (stale) {
+    openCoin(stale.key);
+    return;
+  }
+  const chainCoin = chainCoinOnPage();
+  document.body.dataset.coinMode = chainCoin ? 'onchain' : 'create';
+  const facts = chainCoin ? onchainCoinFacts(chainCoin) : coinFacts();
   const next = nextCoinFact(facts);
-  const previous = state.launchFactStates || {};
-  const open = launchWorkspaces.some((item) => item.id === state.launchWorkspace) ? state.launchWorkspace : null;
-  // The open row stays open while you look at it. When what it shows becomes
-  // true, the row that needs doing opens instead: that is the only "next".
-  const openFact = facts.find((fact) => fact.id === open);
-  const openJustHeld = openFact && previous[open] && previous[open] !== openFact.state && ['done', 'recorded'].includes(openFact.state);
-  let workspace = !open || openJustHeld ? (next?.id || open || 'finish') : open;
+  const rows = chainCoin ? ['wallet', 'mint', 'liquidity', 'finish'] : launchWorkspaces.map((item) => item.id);
+  const open = rows.includes(state.launchWorkspace) ? state.launchWorkspace : null;
+  // The open row stays open while you look at it, even once it is done: the
+  // rail says what is next, and moving the screen out from under you is not.
+  let workspace = open || (chainCoin && next?.state === 'running' ? null : next?.id) || (chainCoin ? 'liquidity' : 'finish');
   // Naming the token is the first thing the Token phase asks: Plan is not a phase of its own.
   if (workspace === 'configure') {
     workspace = 'mint';
     state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
   }
-  state.launchWorkspace = workspace;
+  // While an on-chain coin is still being read, no row is chosen for it yet.
+  if (!chainCoin || chainCoinDetail(chainCoin)) state.launchWorkspace = workspace;
   state.launchFactStates = Object.fromEntries(facts.map((fact) => [fact.id, fact.state]));
   document.body.dataset.launchWorkspace = workspace;
 
@@ -5904,11 +5966,16 @@ function renderLaunchWorkspace() {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
     const icon = button.querySelector('.coin-fact-mark');
     if (icon) icon.className = `fa-solid ${mark.icon} coin-fact-mark`;
+    const label = button.querySelector('strong');
+    if (label) {
+      label.dataset.createLabel ||= label.textContent;
+      label.textContent = chainCoin ? CHAIN_FACT_LABELS[fact.id] || label.dataset.createLabel : label.dataset.createLabel;
+    }
     const value = button.querySelector('[data-coin-fact-value]');
     // Until the token is on chain, its row says what is drafted, not only what is missing.
-    const draft = facts.find((item) => item.id === 'configure');
+    const draft = chainCoin ? null : facts.find((item) => item.id === 'configure');
     const shown = fact.id === 'mint' && fact.state === 'todo' && draft
-      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · not on-chain` : 'Not named yet')
+      ? (draft.state === 'draft' ? `${String(draft.value).split(' · ')[0]} · draft` : 'Not named yet')
       : fact.id === 'liquidity' && fact.state === 'todo' && fact.value === 'No pools yet' && draft?.state === 'draft'
         ? `${String(draft.value).split(' · ')[1] || ''} · not open`.trim()
         : fact.value;
@@ -5917,7 +5984,7 @@ function renderLaunchWorkspace() {
   }
   // The one action the coin's state asks for, offered wherever it isn't already open.
   $$('[data-next-fact]').forEach((button) => {
-    const show = Boolean(next && next.action && next.id !== workspace && next.state !== 'running');
+    const show = Boolean(!chainCoin && next && next.action && next.id !== workspace && next.state !== 'running');
     button.hidden = !show;
     if (!show) return;
     button.dataset.launchWorkspace = next.id;
@@ -5925,13 +5992,15 @@ function renderLaunchWorkspace() {
   });
   $$('[data-launch-pane]').forEach((panel) => {
     const workspaces = String(panel.dataset.launchPane || '').split(/\s+/).filter(Boolean);
-    const active = workspaces.includes(workspace);
+    const active = !chainCoin && workspaces.includes(workspace);
     panel.hidden = !active;
     panel.classList.toggle('is-active-launch-pane', active);
   });
   $$('[data-classic-workspace]').forEach((panel) => {
-    panel.hidden = panel.dataset.classicWorkspace !== workspace;
+    panel.hidden = Boolean(chainCoin) || panel.dataset.classicWorkspace !== workspace;
   });
+  renderChainCoinPane(chainCoin, workspace);
+  if (chainCoin) return;
 
   renderVortexControl();
   const selectedWorkspace = launchWorkspaces.find((item) => item.id === workspace);
@@ -5942,6 +6011,41 @@ function renderLaunchWorkspace() {
   renderLaunchNextRail(facts, next, workspace);
   renderPlanSlides(workspace, facts.find((fact) => fact.id === workspace));
   refreshLaunchChainCheck(facts);
+}
+
+// A blocker the app can fix itself carries the fix; it is offered as one button beside it.
+function blockerFixHtml(item) {
+  const fix = item?.fix;
+  if (fix?.action === 'add-sol-support' && Number(fix.sol) > 0) {
+    return `<button class="secondary-button compact" type="button" data-action="add-sol-support" data-sol="${escapeHtml(String(fix.sol))}">Add ${escapeHtml(String(fix.sol))} SOL support</button>`;
+  }
+  return '';
+}
+
+// Raise the SOL pool's buy support by the amount a blocker asked for, then check again.
+function addSolPoolSupport(sol) {
+  const input = $('#supportSol');
+  const amount = Number(sol);
+  if (!input || !(amount > 0)) return;
+  const current = Math.max(0, parseNumericInput(input.value, 0));
+  input.value = String(Math.round((current + amount) * 100) / 100);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  invalidateClassicOutputs();
+  renderAll();
+  checkExecutionReadiness().catch(() => null);
+}
+
+// "Get the pair tokens" is the buy button itself, so when buying can't run it is greyed out with
+// the reason beside it (see the start-quote-acquire guard), never a press that does nothing.
+// A pair token whose check failed (often a rate-limited RPC) offers to check it again instead.
+function pairTokensRailButton() {
+  const failed = state.customPools.find((pool) => Number(pool.supplyPercent || 0) > 0 && customQuoteInfoRecord(pool)?.error);
+  if (failed) {
+    const symbol = failed.quoteSymbol ? `$${failed.quoteSymbol}` : 'the pair token';
+    return `<button class="primary-button rail-act" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(failed.id)}">Check ${escapeHtml(symbol)} again</button>`;
+  }
+  return '<button class="primary-button rail-act" type="button" data-action="start-quote-acquire">Get the pair tokens</button>';
 }
 
 // The right-hand column. One button, then the wallet it acts on: balances, what
@@ -5975,15 +6079,49 @@ function renderLaunchNextRail(facts, next, workspace) {
   const spend = observedExecutionSpendSummary();
   const row = (label, value, tone = '') => `<div class="rail-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(label)}</span><b>${value}</b></div>`;
 
-  const action = next
-    ? (canAct
-      ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
-      : `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`)
-    : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>';
+  // Funding has no row of its own: the rail estimates it and says what to send. Once the plan is
+  // set, the rail is two buttons: Launch (red when funded and ready, since it cannot be undone)
+  // and Sweep (amber when the launch wallet still holds something to send back).
+  const factOf = (id) => facts.find((fact) => fact.id === id) || null;
+  const fundFact = factOf('fund');
+  const sweepFact = factOf('finish');
+  const beforePlan = !next || ['wallet', 'configure'].includes(next.id);
+  const busy = next && next.state === 'running';
+  const liquidityDone = ['done', 'recorded'].includes(factOf('liquidity')?.state);
+  const leftovers = Boolean(walletKey) && !practice && sweepFact?.state !== 'done'
+    && ((holds != null && holds > 0.001) || tokens.length > 0);
+  // A readiness check that found blockers greys Launch out and lists them, rather than offering a
+  // button that only answers with a toast.
+  const readiness = state.executionReadiness;
+  const blockers = !practice && readiness?.status === 'blocked' && Array.isArray(readiness.blockers) ? readiness.blockers : [];
+  const launchReady = fundFact?.state === 'done' && next && ['mint', 'liquidity'].includes(next.id) && !busy && !blockers.length;
+  const fundingTodo = !practice && fundFact && fundFact.state !== 'done' && next?.id === 'fund';
+  const fundingButton = !fundingTodo ? ''
+    : !estimate || estimateStatus.stale
+      ? `<button class="primary-button rail-act" type="button" data-action="estimate-funding" data-stay="1" ${state.fundingEstimating ? 'disabled' : ''}>${state.fundingEstimating ? 'Estimating…' : estimateStatus.stale ? 'Estimate funding again' : 'Estimate funding'}</button>`
+      // A "Send SOL" button copies the launch wallet's address: that is where the SOL goes.
+      : /^Send /.test(fundFact.action || '') && walletKey
+        ? `<button class="primary-button rail-act" type="button" data-action="copy-wallet-address" title="${escapeHtml(`${fundFact.action}: copies ${walletKey}`)}"><i class="fa-regular fa-copy" aria-hidden="true"></i> ${escapeHtml(fundFact.action.replace(/ to the launch wallet$/, ''))}</button>`
+        : fundFact.action === 'Get the pair tokens'
+          ? pairTokensRailButton()
+          : `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(fundFact.action || 'Fund the launch wallet')}</button>`;
+  // One button at a time: Launch, which reads Resume once the token exists and the launch is
+  // unfinished, and Sweep only once the launch is complete (a sweep mid-launch empties the wallet
+  // the remaining steps need).
+  const resuming = !practice && Boolean(mint) && !liquidityDone;
+  const launchButton = `<button class="rail-act rail-launch${launchReady ? ' is-ready' : ''}" type="button" data-action="${practice ? 'launch-rail-act' : 'run-full-launch'}" ${launchReady ? '' : 'disabled'}>${resuming ? 'Resume' : 'Launch'}</button>`;
+  const sweepButton = `<button class="rail-act rail-sweep${leftovers ? ' has-leftovers' : ''}" type="button" data-action="${liquidityDone ? 'launch-rail-act' : 'cancel-refund-launch'}" ${leftovers ? '' : 'disabled'}>Sweep</button>`;
+  const action = busy
+    ? `<div class="rail-busy" role="status"><span class="rail-spin" aria-hidden="true"></span>${escapeHtml(next.value || 'Working')}</div>`
+    : beforePlan
+      ? (next && canAct
+        ? `<button class="primary-button rail-act" type="button" data-action="launch-rail-act">${escapeHtml(next.action)}</button>`
+        : '<div class="rail-done"><i class="fa-solid fa-check" aria-hidden="true"></i>Nothing left to do</div>')
+      : `${fundingButton}<div class="rail-pair is-single">${liquidityDone && !practice ? sweepButton : launchButton}</div>`;
 
   const walletBlock = `
     <section class="rail-block">
-      <div class="rail-head"><span class="rail-label">Wallet</span><code title="${escapeHtml(walletKey)}">${walletKey ? escapeHtml(shortAddress(walletKey)) : 'none'}</code></div>
+      <div class="rail-head"><span class="rail-label">Wallet</span>${walletKey ? walletChipHtml(walletKey) : '<code>none</code>'}</div>
       ${practice ? '<div class="rail-balance"><b>Test</b><span>no SOL used</span></div>'
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
@@ -5991,14 +6129,30 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
     </section>`;
 
-  // The Funding row's own panel shows what is needed; the rail repeats it nowhere.
-  const fundingBlock = practice || workspace === 'fund' || (needs == null && !estimateStatus.stale)
-    ? ''
-    : `<section class="rail-block">
-        <div class="rail-head"><span class="rail-label">Funding</span><small>${estimate ? '' : estimateStatus.stale ? 'Out of date' : 'Not estimated'}</small></div>
-        ${needs != null ? `<div class="rail-meter" role="img" aria-label="Wallet holds ${sol(holds)} of ${sol(needs)} SOL"><i style="width:${fill.toFixed(1)}%"></i></div>
-        ${row('Needs', `${sol(needs)} <i>SOL</i>`)}${short != null ? row('Short', short ? `${sol(short)} <i>SOL</i>` : '0', short ? 'warn' : 'ok') : ''}` : ''}
-      </section>`;
+  // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch
+  // started from draining, never "short". Before that, what the launch costs against what the wallet holds.
+  const launched = !practice && (Boolean(mint) || Boolean(state.fullRunRunning || state.realExecutionRunning));
+  const budget = launched ? Number(state.classicFundingEstimate?.totalSol || 0) || null : null;
+  const drainBlock = launched && budget && holds != null ? `
+    <section class="rail-block rail-cost is-draining">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch budget: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch budget</span><small>${escapeHtml(`${sol(Math.min(Math.max(0, budget - holds), budget))} used`)}</small></span>
+        <span class="rail-balance is-amount"><b>${sol(Math.max(0, holds))}</b><span>of ${sol(budget)} SOL left</span></span>
+        <span class="rail-meter" aria-hidden="true"><i style="width:${Math.min(100, (Math.max(0, holds) / budget) * 100).toFixed(1)}%"></i></span>
+      </button>
+    </section>` : '';
+  const costStatus = needs == null
+    ? (estimateStatus.stale ? 'out of date' : 'not estimated')
+    : holds == null ? 'balance not checked'
+      : short > 0.0001 ? `short ${sol(short)} SOL` : 'covered';
+  const fundingBlock = practice ? '' : drainBlock || `
+    <section class="rail-block rail-cost">
+      <button class="rail-cost-open" type="button" data-launch-workspace="fund" aria-label="Launch cost: open the breakdown">
+        <span class="rail-head"><span class="rail-label">Launch cost</span><small class="${needs != null && holds != null ? (short > 0.0001 ? 'is-warn' : 'is-ok') : ''}">${escapeHtml(costStatus)}</small></span>
+        <span class="rail-balance${needs != null ? ' is-amount' : ''}"><b>${needs != null ? sol(needs) : '—'}</b>${needs != null ? '<span>SOL</span>' : ''}</span>
+        ${needs != null && holds != null ? `<span class="rail-meter" aria-hidden="true"><i style="width:${fill.toFixed(1)}%"></i></span>` : ''}
+      </button>
+    </section>`;
 
   const lockedCount = results.reduce((count, pool) => count + [
     ...(pool?.mainPositions || []), ...(pool?.ladderPositions || []), ...(pool?.supportPositions || []), ...(pool?.bootstrap ? [pool.bootstrap] : []),
@@ -6014,19 +6168,26 @@ function renderLaunchNextRail(facts, next, workspace) {
   rail.innerHTML = `
     <section class="rail-next${next?.state === 'running' ? ' is-running' : ''}" aria-live="polite">
       ${action}
-      ${irreversible ? '<p class="rail-warn">Cannot be undone.</p>' : ''}
+      ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
+      ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
+        <span class="rail-label">Can't launch yet</span>
+        <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}${blockerFixHtml(item)}</li>`).join('')}</ul>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+      </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
 }
 
-// Each phase owns the settings that belong to it, as at most three tabs, the last
-// being the phase's own action: Token (Details, Address, Create), Liquidity
-// (Price & pool, Pairs, Create), Leftovers (Return & report, Airdrop, Finish).
+// Each phase owns the settings that belong to it as tabs: Launch setup (Fund, Recover,
+// Airdrop), Token setup (Details, Address, Create), Liquidity (Price & pool, Pairs,
+// Create), Recovery (Finish, plus Record and Recover). The 'run' tab shows the phase's own panel.
 // The tab shown is a view: nothing is saved, and nothing counts toward progress.
 const PHASE_TABS = {
+  wallet: [{ id: 'run', label: 'Fund' }, { id: 'return', label: 'Recover' }, { id: 'airdrop', label: 'Airdrop' }],
   mint: [{ id: 'details', label: 'Details' }, { id: 'address', label: 'Address' }, { id: 'run', label: 'Create' }],
-  liquidity: [{ id: 'price', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }, { id: 'run', label: 'Create' }],
-  finish: [{ id: 'return', label: 'Return & report' }, { id: 'airdrop', label: 'Airdrop' }, { id: 'run', label: 'Finish' }],
+  // Price & pool and Create are one page: the price and preset on top, the picture and the Create button under it.
+  liquidity: [{ id: 'run', label: 'Price & pool' }, { id: 'pairs', label: 'Pairs' }],
+  finish: [{ id: 'run', label: 'Finish' }],
 };
 // Funding's two parts are tabs only when there are pair tokens to acquire; its panel is
 // built by the bridge, so these tabs just choose which part shows.
@@ -6034,12 +6195,24 @@ function fundTabs() {
   const config = currentLaunchConfig();
   const estimate = classicFundingEstimateStatus(config).matchesConfig ? state.classicFundingEstimate : null;
   const pairTokens = (estimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount();
-  return estimate && pairTokens
-    ? [{ id: 'cost', label: 'Cost' }, { id: 'tokens', label: 'Pair tokens' }]
-    : null;
+  if (!estimate) return null;
+  return [
+    { id: 'cost', label: 'Cost' },
+    { id: 'breakdown', label: 'Breakdown' },
+    ...(pairTokens ? [{ id: 'acquire', label: 'Pair tokens' }] : []),
+    ...(quoteAcquireManualCount() ? [{ id: 'prefund', label: 'Send yourself' }] : []),
+  ];
+}
+// Recovery gains a Record page, and a Recover page when there is something to recover: each
+// exists only when the panel built it, so the strip never offers an empty page.
+function finishTabs() {
+  const has = (part) => Boolean($(`#classicBridge [data-finish-part="${part}"]`));
+  return [...PHASE_TABS.finish, ...(has('record') ? [{ id: 'record', label: 'Record' }] : []), ...(has('recover') ? [{ id: 'recover', label: 'Recover' }] : [])];
 }
 function phaseTabsFor(workspace) {
-  return workspace === 'fund' ? fundTabs() : PHASE_TABS[workspace] || null;
+  if (workspace === 'fund') return fundTabs();
+  if (workspace === 'finish') return finishTabs();
+  return PHASE_TABS[workspace] || null;
 }
 const PLAN_SLIDE_ORDER = ['details', 'address', 'price', 'pairs', 'return', 'airdrop'];
 
@@ -6053,10 +6226,14 @@ function phaseTabValue(id, runValue) {
     case 'address': return text('#vanitySummary').replace(' · recommended', '') || 'Random address';
     case 'price': return `$${String($('#targetMarketCapUsd')?.value || '').trim() || '—'} · ${Number($('#liquidityBudgetSol')?.value || 0)} SOL`;
     case 'pairs': return text('#classicSummary') || '—';
-    case 'return': return [text('#returnWalletCard .return-wallet-head .badge, #returnWalletCard .risk-badge'), text('#reportSummary')].filter(Boolean).join(' · ') || '—';
+    case 'return': return launchWalletHoldingsSummary();
     case 'airdrop': return text('#airdropSummary') || 'Off';
+    case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
+    case 'record': return state.launchProof ? 'Saved' : 'Not ready';
+    case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'tokens': return `${(state.classicFundingEstimate?.autoSwapPlan?.length || 0) + quoteAcquireManualCount()} to acquire`;
+    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }
 }
@@ -6068,7 +6245,8 @@ function currentPhaseSlide(workspace, runDone) {
   const chosen = state.phaseSlide[workspace];
   if (chosen && tabs.some((tab) => tab.id === chosen)) return chosen;
   // A phase that already holds its fact opens on its action, which shows the result.
-  return runDone ? 'run' : tabs[0].id;
+  // Funding has no action tab: its parts are Cost, Pair tokens and Send yourself.
+  return runDone && workspace !== 'fund' ? 'run' : tabs[0].id;
 }
 
 function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
@@ -6080,15 +6258,43 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
   const hideRunOnly = ['#launchConsole', '#signaturePanel'];
   const dock = $('.setup-dock');
   if (dock) dock.hidden = !tabs;
+  $('#launchWorkspaceViewport')?.classList.remove('is-combined');
   if (!tabs) {
-    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; }
+    if (bridge) { bridge.hidden = false; bridge.dataset.fundTab = ''; bridge.dataset.finishTab = ''; }
     return;
   }
   const current = currentPhaseSlide(workspace, ['done', 'recorded'].includes(fact?.state));
   // Funding shows its own panel always; its tabs only choose the part.
-  const running = current === 'run' || workspace === 'fund';
-  if (bridge) bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+  const running = ['run', 'record', 'recover'].includes(current) || workspace === 'fund';
+  // Price & pool shows its settings slide and the phase panel together.
+  const combined = workspace === 'liquidity' && current === 'run';
+  // Moving between tabs slides the page in from the side it lies on. The slides share one
+  // track that already slides; the action page is a separate panel, so it slides itself.
+  const tabIndex = tabs.findIndex((tab) => tab.id === current);
+  const previous = strip.dataset.phase === workspace && strip.dataset.index !== undefined ? Number(strip.dataset.index) : null;
+  const wasRunning = strip.dataset.running === '1';
+  const direction = previous == null ? 0 : Math.sign(tabIndex - previous);
+  strip.dataset.phase = workspace;
+  strip.dataset.index = String(tabIndex);
+  strip.dataset.running = running ? '1' : '0';
+  const slideIn = (node) => {
+    if (!node || !direction) return;
+    node.classList.remove('slide-in-right', 'slide-in-left');
+    void node.offsetWidth;
+    node.classList.add(direction > 0 ? 'slide-in-right' : 'slide-in-left');
+    node.addEventListener('animationend', () => node.classList.remove('slide-in-right', 'slide-in-left'), { once: true });
+  };
+  if (bridge) {
+    bridge.dataset.fundTab = workspace === 'fund' ? current : '';
+    bridge.dataset.finishTab = workspace === 'finish' ? current : '';
+  }
   strip.style.setProperty('--tabs', String(tabs.length));
+  if (workspace === 'wallet' && ['run', 'return'].includes(current)) {
+    ensureLaunchWalletBalance();
+    renderRecoverLedger();
+  }
+  // One tab is just the panel itself; a strip with a single button says nothing.
+  strip.hidden = tabs.length < 2;
   // Built once per phase and then updated in place, so the focused tab stays focused.
   const structure = `${workspace}|${tabs.map((tab) => tab.id).join(',')}`;
   if (strip.dataset.structure !== structure) {
@@ -6102,23 +6308,28 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-selected', selected ? 'true' : 'false');
     button.tabIndex = selected ? 0 : -1;
-    const value = phaseTabValue(tab.id, fact?.value);
+    const value = phaseTabValue(tab.id === 'run' && workspace === 'liquidity' ? 'price' : tab.id, fact?.value);
     const small = button.querySelector('small');
     if (small.textContent !== value) small.textContent = value;
   });
   // The action tab shows the phase's own panel; every other tab slides a settings page in.
   const frame = $('#planSlides');
-  if (frame) frame.hidden = running;
+  if (frame) frame.hidden = running && !combined;
   if (bridge) bridge.hidden = !running;
+  if (running && !combined && (previous == null || previous !== tabIndex)) slideIn(bridge);
+  else if ((!running || combined) && wasRunning) slideIn(frame);
   hideRunOnly.forEach((selector) => { const node = $(selector); if (node && !running) node.hidden = true; });
   if (!running) $$('[data-classic-workspace]').forEach((panel) => { panel.hidden = true; });
-  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running);
-  if (running) return;
-  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(current));
+  $('#advancedLaunchControls')?.classList.toggle('is-running-tab', running && !combined);
+  $('#launchWorkspaceViewport')?.classList.toggle('is-combined', combined);
+  if (running && !combined) return;
+  const slideId = combined ? 'price' : current;
+  track.dataset.active = slideId;
+  const index = Math.max(0, PLAN_SLIDE_ORDER.indexOf(slideId));
   track.style.transform = `translateX(-${index * 100}%)`;
   let active = null;
   $$('#planTrack > [data-plan-slide]').forEach((slide) => {
-    const on = slide.dataset.planSlide === current;
+    const on = slide.dataset.planSlide === slideId;
     slide.toggleAttribute('inert', !on);
     if (on) active = slide;
   });
@@ -6134,12 +6345,22 @@ function renderPlanSlides(workspace = state.launchWorkspace, fact = null) {
     }
     if (!frame.dataset.watching && window.ResizeObserver) {
       frame.dataset.watching = '1';
-      new ResizeObserver(() => {
-        const live = $(`#planTrack > [data-plan-slide="${(state.phaseSlide || {})[state.launchWorkspace]}"]`);
+      const observer = new ResizeObserver(() => {
+        const live = $(`#planTrack > [data-plan-slide="${track.dataset.active || ''}"]`);
         if (live) frame.style.height = `${live.offsetHeight}px`;
-      }).observe(track);
+      });
+      // Each slide is watched itself: a page that grows after it is shown (the Add pair list loads
+      // its tokens, a section opens) must grow the frame with it, or its lower rows are cut off.
+      observer.observe(track);
+      $$('#planTrack > [data-plan-slide]').forEach((slide) => observer.observe(slide));
     }
   }
+}
+
+// Re-applies the open phase's tabs after something redrew the panel under them.
+function syncPlanSlides() {
+  const workspace = state.launchWorkspace;
+  renderPlanSlides(workspace, coinFacts().find((fact) => fact.id === workspace));
 }
 
 function setPlanSlide(id) {
@@ -6167,6 +6388,15 @@ function runLaunchRailAction() {
     setLaunchWorkspace('mint', { focus: false });
     $('#tokenName')?.focus();
     return;
+  }
+  if (next.id === 'wallet' && state.secretPin?.locked === true && !selectedLaunchWalletPublicKey()) {
+    openRecoveryPinGate({ reason: 'unlock' });
+    return;
+  }
+  // Funding has no row: press its panel's own button where it is, without opening the panel.
+  if (next.id === 'fund') {
+    const fundPrimary = $('[data-classic-workspace="fund"] .primary-button:not([data-next-fact]):not(:disabled)');
+    if (fundPrimary) { fundPrimary.click(); return; }
   }
   if (state.launchWorkspace !== next.id) {
     setLaunchWorkspace(next.id, { focus: false });
@@ -6217,12 +6447,8 @@ function renderGlobalStrip() {
   const metrics = [
     state.realExecutionRunning ? ['Launch', `${signed} of ${total} steps done`] : null,
     state.apiStatus === 'connected' ? null : ['App', apiLabel],
-    state.recovery.activeJournalCount + recoveryWallets > 0
-      ? ['Recovery', [
-        state.recovery.activeJournalCount ? `${state.recovery.activeJournalCount} unfinished launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}` : null,
-        recoveryWallets ? `${recoveryWallets} old launch wallet${recoveryWallets === 1 ? '' : 's'}` : null,
-      ].filter(Boolean).join(' · ')]
-      : null,
+    state.recovery.activeJournalCount ? ['Unfinished', `${state.recovery.activeJournalCount} launch${state.recovery.activeJournalCount === 1 ? '' : 'es'}`] : null,
+    recoveryWallets ? ['To sweep', `${recoveryWallets} wallet${recoveryWallets === 1 ? '' : 's'}`] : null,
   ].filter(Boolean);
   const strip = $('#globalStrip');
   strip.hidden = metrics.length === 0;
@@ -6330,7 +6556,6 @@ function renderLiveLaunchMonitor() {
     monitor.hidden = true;
     monitor.innerHTML = '';
     document.body.dataset.launchFocus = 'idle';
-    state.launchDetailsExpanded = false;
     return;
   }
 
@@ -6355,8 +6580,7 @@ function renderLiveLaunchMonitor() {
   // What exists so far, as facts: the same rows the coin shows, not a percentage.
   const chainFacts = coinFacts().filter((fact) => ['mint', 'liquidity', 'finish'].includes(fact.id));
   const factLabels = { mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
-  const expanded = state.launchDetailsExpanded === true;
-  document.body.dataset.launchFocus = expanded ? 'details' : 'active';
+  document.body.dataset.launchFocus = 'active';
   monitor.hidden = false;
   monitor.className = `live-launch-monitor ${blocked ? 'is-blocked' : 'is-running'}`;
   monitor.innerHTML = `
@@ -6383,10 +6607,6 @@ function renderLiveLaunchMonitor() {
         <span><small>${escapeHtml(factLabels[fact.id])}</small><strong>${escapeHtml(fact.value || '')}</strong></span>
       </li>`).join('')}
     </ul>
-    <button class="live-launch-details-button" type="button" data-action="toggle-launch-details" aria-expanded="${expanded}">
-      <span>${expanded ? 'Focus on current action' : 'Show launch details'}</span>
-      <i class="fa-solid fa-chevron-${expanded ? 'up' : 'down'}" aria-hidden="true"></i>
-    </button>
   `;
 }
 
@@ -6968,20 +7188,10 @@ function vanityCandidateTarget(candidate) {
   return prefix || suffix || candidate?.mode || 'vanity';
 }
 
-function vanityCandidateDetail(candidate) {
-  if (!candidate) return 'Fresh random mint keypair';
-  const parts = [];
-  const rarity = String(candidate.rarity || '').trim();
-  const attempts = Number(candidate.attempts);
-  parts.push(vanityCandidateTarget(candidate));
-  if (rarity) parts.push(`local grind grade: ${rarity}`);
-  if (Number.isFinite(attempts) && attempts > 0) parts.push(`${attempts.toLocaleString()} local tries`);
-  if (candidate.persisted) parts.push('saved');
-  return parts.join(' / ');
-}
-
 const VANITY_BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const VANITY_PLANNING_RATE = 50000;
+// The live rate is measured over this window: the grinder reports in per-thread bursts.
+const VANITY_RATE_WINDOW_MS = 10000;
+const VANITY_RATE_STORAGE_KEY = 'trebuchet:v2:vanity-rate';
 const VANITY_VISIBLE_CANDIDATE_LIMIT = 4;
 
 function vanityRarityGrade(rarity) {
@@ -7035,6 +7245,21 @@ function vanityExpectedAttempts(start, end, caseInsensitive, length = null) {
   return TrebuchetCore.expectedVanityAttempts(start, end, { caseInsensitive, length });
 }
 
+// The speed to plan with: what this computer measured (Calibrate, or its last grind). Machines
+// differ too much to guess, so until then there is none.
+function vanityPlanningRate() {
+  try {
+    const saved = Number(window.localStorage?.getItem(VANITY_RATE_STORAGE_KEY));
+    if (Number.isFinite(saved) && saved > 0) return saved;
+  } catch { /* storage is optional */ }
+  return null;
+}
+
+function rememberVanityRate(rate) {
+  if (!(Number(rate) > 0)) return;
+  try { window.localStorage?.setItem(VANITY_RATE_STORAGE_KEY, String(Math.round(rate))); } catch { /* storage is optional */ }
+}
+
 function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats) {
   const start = String(prefix || '').trim();
   const end = String(suffix || '').trim();
@@ -7047,7 +7272,8 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
   const p95 = expectedAttempts * -Math.log(0.05);
   const liveRate = Number(stats?.rate);
   const attempts = Number(stats?.attempts || 0);
-  const planningSeconds = expectedAttempts > 0 ? expectedAttempts / VANITY_PLANNING_RATE : 0;
+  const planningRate = vanityPlanningRate();
+  const planningSeconds = expectedAttempts > 0 && planningRate ? expectedAttempts / planningRate : null;
   const liveEtaSeconds = liveRate > 0 && expectedAttempts > attempts
     ? (expectedAttempts - attempts) / liveRate
     : null;
@@ -7061,6 +7287,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
     p95,
     attempts: Number.isFinite(attempts) ? attempts : 0,
     rate: Number.isFinite(liveRate) ? liveRate : null,
+    planningRate,
     planningSeconds,
     liveEtaSeconds,
     difficulty: invalid.length ? 'invalid' : vanityPatternDifficulty(expectedAttempts),
@@ -7068,7 +7295,7 @@ function vanityPatternEstimate(prefix, suffix, stats = state.vanityProgressStats
 }
 
 function vanityEstimateSummary(prefix, suffix) {
-  const estimate = vanityPatternEstimate(prefix, suffix);
+  const estimate = vanityPatternEstimate(prefix, suffix, null);
   if (estimate.invalid.length) {
     return {
       label: 'Not allowed',
@@ -7096,7 +7323,7 @@ function vanityEstimateSummary(prefix, suffix) {
   }
   const live = estimate.rate
     ? `Live ${formatVanityRate(estimate.rate)}/s, ETA ${formatVanityDuration(estimate.liveEtaSeconds)}`
-    : `At ${formatVanityAttempts(VANITY_PLANNING_RATE)}/s: ~${formatVanityDuration(estimate.planningSeconds)}`;
+    : estimate.planningRate ? `~${formatVanityDuration(estimate.planningSeconds)} at ${formatVanityRate(estimate.planningRate)}/s` : 'Speed not measured';
   return {
     label: { easy: 'Quick', moderate: 'Takes a while', hard: 'Slow', extreme: 'Very slow' }[estimate.difficulty] || 'Estimate',
     detail: `About ${formatVanityAttempts(estimate.expectedAttempts)} tries (95% by ${formatVanityAttempts(estimate.p95)}). ${live}.`,
@@ -7105,9 +7332,6 @@ function vanityEstimateSummary(prefix, suffix) {
 }
 
 function vanityAvailabilityMeta() {
-  if (state.vanityRunning) {
-    return { label: 'Grinding', detail: state.vanityProgress || 'Searching…', className: 'warn', icon: 'fa-spinner fa-spin' };
-  }
   if (state.apiStatus === 'connected' && !state.vanityAvailable) {
     return {
       label: 'Grinder unavailable',
@@ -7134,6 +7358,24 @@ const ACTIVE_LAUNCH_KEY = 'trebuchet-v2-active-launch';
 // Stored in place of a launch id when the operator closes the open launch, so
 // the next load starts blank instead of re-opening the first saved launch.
 const NO_ACTIVE_LAUNCH = '__none__';
+
+// A saved address a launch has already minted can't be a new coin's address. Its key stays saved.
+function vanityAddressUsedReason(publicKey) {
+  const address = String(publicKey || '').trim();
+  if (!address) return null;
+  const candidate = (state.vanityCandidates || []).find((item) => item.publicKey === address);
+  const launched = (state.coins?.list || []).find((coin) => coin.kind === 'onchain' && coin.launchedHere && coin.mint === address);
+  if (!candidate?.usedBy && !launched) return null;
+  // The launch wallet's own interrupted mint is still this launch's address.
+  const owner = candidate?.usedBy?.walletPublicKey || launched?.walletPublicKey || null;
+  if (owner && owner === selectedLaunchWalletPublicKey()) return null;
+  const symbol = candidate?.usedBy?.symbol || launched?.symbol || '';
+  return symbol ? `Used by $${symbol}` : 'Already used';
+}
+
+function freeVanityCandidates() {
+  return (state.vanityCandidates || []).filter((candidate) => !vanityAddressUsedReason(candidate.publicKey));
+}
 
 function rememberActiveLaunchId(id) {
   try {
@@ -7223,11 +7465,6 @@ function renderSavedLaunchList() {
 function switchActiveLaunch(id) {
   if (launchIsInProgress()) return;
   rememberActiveLaunchId(id || NO_ACTIVE_LAUNCH);
-  try {
-    v2LocalStorage()?.removeItem(GUIDED_DRAFT_STORAGE_KEY);
-  } catch {
-    // A stale draft only matters when storage works, and then removeItem works too.
-  }
   window.location.reload();
 }
 
@@ -7290,30 +7527,66 @@ function scheduleLaunchAutoSave() {
   }, 900);
 }
 
+// The grind area: this computer's speed, what the typed pattern would take, and the jobs:
+// the one running, the ones queued after it, and the ones that ended, with their stats.
+function grindJobHtml(job) {
+  const tries = (value) => `${formatVanityAttempts(value)} tries`;
+  const elapsed = ((job.endedAt || Date.now()) - (job.startedAt || Date.now())) / 1000;
+  const average = elapsed > 0 && job.attempts ? job.attempts / elapsed : null;
+  const pct = job.expected ? Math.round((job.attempts / job.expected) * 100) : null;
+  const target = `<code>${escapeHtml(job.target)}</code>${job.caseInsensitive ? ' <small>any case</small>' : ''}${job.length ? ` <small>${escapeHtml(String(job.length))} chars</small>` : ''}`;
+  const button = (action, label, inner) => `<button class="icon-button grind-job-close" type="button" data-action="${action}" data-job="${escapeHtml(job.id)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${inner}</button>`;
+  const dismiss = button('dismiss-grind-job', 'Dismiss', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>');
+  if (job.status === 'running') {
+    const left = job.rate && job.attempts < job.expected
+      ? `~${formatVanityDuration((job.expected - job.attempts) / job.rate)} to expected`
+      : job.rate ? 'past expected' : 'measuring speed';
+    return `<li class="grind-job is-running"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span>${target}<small>${tries(job.attempts)} · ${pct ?? 0}% of expected · ${job.rate ? `${formatVanityRate(job.rate)}/s` : '—'} · ${escapeHtml(left)} · ${formatVanityDuration(elapsed)} so far</small></span>${button('stop-grind-job', 'Stop this grind', '<i class="fa-solid fa-stop" aria-hidden="true"></i> Stop')}</li>`;
+  }
+  if (job.status === 'queued') {
+    const rate = vanityPlanningRate();
+    return `<li class="grind-job is-queued"><i class="fa-regular fa-clock" aria-hidden="true"></i><span>${target}<small>Queued · about ${tries(job.expected)}${rate ? ` · ~${formatVanityDuration(job.expected / rate)}` : ''}</small></span>${button('stop-grind-job', 'Remove from the queue', '<i class="fa-solid fa-xmark" aria-hidden="true"></i>')}</li>`;
+  }
+  const stats = `${tries(job.attempts)} in ${formatVanityDuration(elapsed)}${average ? ` · ${formatVanityRate(average)}/s` : ''}${pct != null ? ` · ${pct}% of expected` : ''}`;
+  if (job.status === 'found') {
+    return `<li class="grind-job is-found"><i class="fa-solid fa-check" aria-hidden="true"></i><span>${target}<small>Found <code>${escapeHtml(fullAddress(job.publicKey))}</code> · ${stats}</small></span>${dismiss}</li>`;
+  }
+  if (job.status === 'stopped') {
+    return `<li class="grind-job is-stopped"><i class="fa-solid fa-stop" aria-hidden="true"></i><span>${target}<small>Stopped · ${stats}</small></span>${dismiss}</li>`;
+  }
+  return `<li class="grind-job is-failed"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i><span>${target}<small>${escapeHtml(job.error || 'Failed')} · ${stats}</small></span>${dismiss}</li>`;
+}
+
+function grindAreaHtml({ canGrind, estimate }) {
+  const running = runningGrindJob();
+  const rate = vanityPlanningRate();
+  const pattern = estimate.prefix && estimate.suffix ? `${estimate.prefix}...${estimate.suffix}` : estimate.prefix || estimate.suffix;
+  const typed = estimate.targetLength && !estimate.invalid.length && Number.isFinite(estimate.expectedAttempts) && estimate.expectedAttempts > 0
+    ? `<p class="grind-estimate"><code>${escapeHtml(pattern)}</code> about ${formatVanityAttempts(estimate.expectedAttempts)} tries${rate ? ` · ~${formatVanityDuration(estimate.expectedAttempts / rate)}, 95% by ~${formatVanityDuration(estimate.p95 / rate)}` : ''}</p>`
+    : '';
+  const jobs = state.grindJobs || [];
+  return `
+    <div class="grind-area">
+      <div class="grind-head">
+        <button class="primary-button compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}><i class="fa-solid ${running ? 'fa-plus' : 'fa-hammer'}" aria-hidden="true"></i><span>${running ? 'Add to queue' : 'Grind'}</span></button>
+        <span class="grind-speed">${state.vanityCalibrating ? 'Measuring this computer…' : rate ? `This computer: ${formatVanityRate(rate)}/s` : 'Speed not measured'}</span>
+        <button class="secondary-button compact" type="button" data-action="calibrate-vanity" ${state.vanityCalibrating || running ? 'disabled' : ''}><i class="fa-solid fa-gauge-high" aria-hidden="true"></i><span>${state.vanityCalibrating ? 'Calibrating…' : 'Calibrate'}</span></button>
+      </div>
+      ${state.vanityCalibrationError ? `<p class="grind-estimate is-error">${escapeHtml(state.vanityCalibrationError)}</p>` : ''}
+      ${typed}
+      ${jobs.length ? `<ul class="grind-jobs" aria-label="Grinds">${jobs.map(grindJobHtml).join('')}</ul>` : ''}
+    </div>`;
+}
+
 function renderVanityCandidates() {
-  // A running grind cannot change mode: lock the toggle to what is running.
-  const caseToggle = $('#vanityCaseInsensitive');
-  const lengthSelect = $('#vanityLength');
-  if (lengthSelect) {
-    lengthSelect.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      lengthSelect.value = state.vanityProgressStats.length ? String(state.vanityProgressStats.length) : '';
-    }
-  }
-  if (caseToggle) {
-    caseToggle.disabled = state.vanityRunning === true;
-    if (state.vanityRunning && state.vanityProgressStats) {
-      caseToggle.checked = state.vanityProgressStats.caseInsensitive === true;
-    }
-  }
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   const meta = vanityAvailabilityMeta();
   const vanity = currentVanityConfig();
-  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix);
+  const rawEstimate = vanityPatternEstimate(vanity.prefix, vanity.suffix, null);
   const estimate = vanityEstimateSummary(vanity.prefix, vanity.suffix);
   const candidates = state.vanityCandidates.slice(-VANITY_VISIBLE_CANDIDATE_LIMIT).reverse();
   const hiddenCount = Math.max(0, state.vanityCandidates.length - candidates.length);
-  const canGrind = state.vanityRunning || (!rawEstimate.invalid.length && (state.apiStatus !== 'connected' || state.vanityAvailable));
+  const canGrind = !rawEstimate.invalid.length && rawEstimate.difficulty !== 'impossible' && (state.apiStatus !== 'connected' || state.vanityAvailable);
   const canRemoveSelected = Boolean(selected?.publicKey);
   const candidateButtons = candidates.map((candidate) => {
     const isActive = candidate.publicKey === state.selectedVanityPublicKey;
@@ -7344,11 +7617,26 @@ function renderVanityCandidates() {
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.detail)}</span>
       </li>`;
+  // Only what needs saying: a problem with the grinder or the pattern. The grind area says the rest.
+  const statusItems = [
+    meta.label === 'Ready to grind' ? null : meta,
+    ['Not allowed', 'Impossible'].includes(estimate.label) ? { ...estimate, icon: 'fa-triangle-exclamation' } : null,
+  ].filter(Boolean);
+  const statuses = $('#vanityStatuses');
+  if (statuses) {
+    statuses.innerHTML = statusItems.length
+      ? `<ul class="grinder-statuses" aria-label="Grinder status">${statusItems.map(statusLine).join('')}</ul>`
+      : '';
+  }
+  const preview = $('#vanityPreview');
+  if (preview) preview.innerHTML = vanityPreviewHtml(vanity, selected);
+  const grind = $('#vanityGrind');
+  if (grind) {
+    grind.innerHTML = grindAreaHtml({ canGrind, estimate: rawEstimate });
+  }
+  const savedCount = state.vanityCandidates.length;
   $('#vanityCandidates').innerHTML = `
-    <ul class="grinder-statuses" aria-label="Grinder status">
-      ${statusLine(meta)}
-      ${statusLine({ ...estimate, icon: 'fa-gauge-high' })}
-    </ul>
+    <div class="grinder-results-head"><span>Addresses</span><span class="grinder-count">${savedCount} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span></div>
     ${state.vanityInputError
       ? `<p class="grinder-note is-error" id="vanityFeedback" role="alert">${escapeHtml(state.vanityInputError)}</p>`
       : '<p class="grinder-note" id="vanityFeedback"></p>'}
@@ -7361,14 +7649,27 @@ function renderVanityCandidates() {
       ${candidateButtons}
     </div>
     <div class="grinder-actions">
-      <button class="${state.vanityRunning ? 'secondary-button' : 'primary-button'} compact" type="button" data-action="start-vanity" ${canGrind ? '' : 'disabled'}>
-        <i class="fa-solid ${state.vanityRunning ? 'fa-stop' : 'fa-hammer'}" aria-hidden="true"></i><span>${state.vanityRunning ? 'Stop grinding' : 'Grind'}</span>
-      </button>
       <button class="secondary-button compact" type="button" data-action="remove-selected-vanity" ${canRemoveSelected ? '' : 'disabled'}>Remove selected</button>
       ${hiddenCount ? `<button class="text-button" type="button" data-action="prune-hidden-vanity">Delete ${hiddenCount} older</button>` : ''}
-      <span class="grinder-count">${state.vanityCandidates.length} saved${hiddenCount ? `, ${hiddenCount} not shown` : ''}</span>
     </div>
   `;
+}
+
+// The address as it will read: the chosen start and end bright, the rest as dots.
+// With a ground address selected it shows the real address, matching part marked.
+function vanityPreviewHtml(vanity, selected) {
+  const prefix = String(vanity.prefix || '');
+  const suffix = String(vanity.suffix || '');
+  const length = Number(vanity.length) || 44;
+  if (selected?.publicKey) {
+    const address = selected.publicKey;
+    const head = Math.min(prefix.length, address.length);
+    const tail = Math.min(suffix.length, address.length - head);
+    const middle = address.slice(head, address.length - tail);
+    return `<small>Contract address</small><code class="grinder-mask is-real"><b>${escapeHtml(address.slice(0, head))}</b>${escapeHtml(middle)}<b>${escapeHtml(tail ? address.slice(-tail) : '')}</b></code>`;
+  }
+  const fill = Math.max(0, length - prefix.length - suffix.length);
+  return `<small>${prefix || suffix ? 'Pattern' : 'Random address'}</small><code class="grinder-mask"><b>${escapeHtml(prefix)}</b><span>${'·'.repeat(fill)}</span><b>${escapeHtml(suffix)}</b></code>`;
 }
 
 function poolLadderCount(pool) {
@@ -7446,6 +7747,142 @@ const SUPPLY_PAIR_COLORS = ['#78a8ff', '#e07ab0', '#5fc7c7', '#f08a5d', '#8fd06a
 
 // One row per place the supply goes. Pool % inputs write through to the
 // existing form fields (or custom pool state), so the launch model is unchanged.
+// What a fee tier means for a pool: the swap fee, and how coarse its price steps are
+// (one tick is 0.01%, a tier's spacing is that many ticks).
+// A small picture of a pool's shape, in the pool's colour: its main position, its ladder bands above
+// the start price, and its support (layers or one range) below it. The same drawing as the price map,
+// without the words.
+function poolGlyphSvg(pool, color) {
+  if (!pool) return '<span class="supply-glyph" aria-hidden="true"></span>';
+  const W = 72, H = 28, START = 26, BASE = 23, RIGHT = 70;
+  const tint = (pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(1000));
+  const parts = [`<rect x="${START}" y="${BASE - 3}" width="${RIGHT - START}" height="3" style="fill:${tint(45)}"/>`];
+  let bands = [];
+  if (pool.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent }));
+  } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1 }));
+  }
+  const top = Math.max(1e-9, ...bands.map((band) => band.weight));
+  bands.forEach((band) => {
+    const h = 4 + 13 * (band.weight / top);
+    const x = xOf(band.lo);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - 3 - h).toFixed(1)}" width="${Math.max(1.5, xOf(band.hi) - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(60)}"/>`);
+  });
+  const support = pool.support?.mode === 'custom' ? pool.support : null;
+  if (support) {
+    const layers = Array.isArray(support.layers) && support.layers.length
+      ? support.layers
+      : [{ sharePercent: 100, lowerMultiplier: 1 - (Number(support.depthPct) || 12) / 100, upperMultiplier: 1 }];
+    const reach = Math.max(12, ...layers.map((layer) => (1 - layer.lowerMultiplier) * 100)) * 1.05;
+    const xDown = (pct) => START - (START - 2) * (pct / reach);
+    const topShare = Math.max(...layers.map((layer) => layer.sharePercent));
+    layers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 5 + 14 * (layer.sharePercent / topShare);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(1.5, x2 - x1 - 0.8).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(34)};stroke:${color};stroke-width:.6"/>`);
+    });
+  }
+  parts.push(`<line x1="${START}" x2="${START}" y1="3" y2="${BASE + 2}" style="stroke:${color};stroke-width:1.2"/>`);
+  parts.push(`<line x1="1" x2="${RIGHT}" y1="${BASE}" y2="${BASE}" style="stroke:var(--line-strong);stroke-width:.8"/>`);
+  return `<svg class="supply-glyph" viewBox="0 0 ${W} ${H}" aria-hidden="true" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+}
+
+function feeTierInfo(index) {
+  const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+  const tier = tiers.find((item) => item.index === Math.floor(Number(index)));
+  if (!tier) return null;
+  return {
+    index: tier.index,
+    fee: Number(tier.tradeFeeRate) / 10000,
+    spacing: tier.tickSpacing,
+    step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
+    rank: tiers.indexOf(tier),
+    count: tiers.length,
+  };
+}
+
+function rowTierIndex(row) {
+  if (row.key === 'sol') return state.solPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  if (row.key === 'quote') return state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+}
+
+// The fee tier on the pool's own line: a short select showing the fee, so it reads and changes
+// without opening the pool.
+const METEORA_FEES = [25, 50, 100, 200];
+const METEORA_RANGES_UI = [[100, '×100'], [1000, '×1,000'], [10000, '×10,000']];
+const RAYDIUM_ROW_TIERS = [4, 5, 1, 3];
+
+// Where a pool's venue and its fee live: the SOL pool and the preset pair in state, an added pair on the pair itself.
+function poolVenueFor(row) {
+  if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
+  if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
+}
+
+function rowIsMeteora(row) {
+  return poolVenueFor(row).venue === 'meteora-damm-v2';
+}
+
+function setPoolVenueChoice(rowKey, patch) {
+  if (rowKey === 'sol') {
+    if (patch.venue) state.solPoolVenue = patch.venue;
+    state.solPoolDamm = { ...state.solPoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.solPoolConfigIndex = patch.tierIndex;
+    return;
+  }
+  if (rowKey === 'quote') {
+    if (patch.venue) state.quotePoolVenue = patch.venue;
+    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
+    return;
+  }
+  const pool = state.customPools.find((item) => `custom:${item.id}` === rowKey);
+  if (!pool) return;
+  if (patch.venue) pool.venue = patch.venue;
+  if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
+  if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
+}
+
+
+// A row of buttons, one pressed: the venue (Raydium or Meteora) and the fee, under the pool's name.
+function toggleGroupHtml({ label, action, rowKey, options, selected, extra = '' }) {
+  return `<span class="pool-toggle" role="group" aria-label="${escapeHtml(label)}">${options.map(([value, text, title]) => (
+    `<button type="button" class="${String(value) === String(selected) ? 'is-on' : ''}" data-action="${action}" data-row-key="${escapeHtml(rowKey)}" data-value="${escapeHtml(String(value))}" data-supply-key="${escapeHtml(rowKey)}:${action}:${escapeHtml(String(value))}" aria-pressed="${String(value) === String(selected)}"${title ? ` title="${escapeHtml(title)}"` : ''}${extra}>${escapeHtml(text)}</button>`
+  )).join('')}</span>`;
+}
+
+function rowSwitchesHtml(row) {
+  const meteora = rowIsMeteora(row);
+  const venue = toggleGroupHtml({
+    label: `${row.label} venue`, action: 'set-pool-venue', rowKey: row.key, selected: meteora ? 'meteora-damm-v2' : 'raydium',
+    options: [['raydium', 'Raydium', 'Ranges: slices, ladder bands and support'], ['meteora-damm-v2', 'Meteora', 'One position, locked when the pool is made']],
+  });
+  let fee;
+  if (meteora) {
+    const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
+    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+  } else {
+    const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+    const selected = Math.floor(Number(rowTierIndex(row)));
+    const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
+    fee = toggleGroupHtml({
+      label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+        .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
+    });
+  }
+  return `<span class="pool-switches">${venue}${fee}</span>`;
+}
+
 function supplyEditorRows() {
   const topology = currentClassicModel();
   const rows = [];
@@ -7506,7 +7943,6 @@ const SUPPLY_SHARE_INPUT_IDS = new Set([
   'preallocationSupplyPercent',
   'airdropSupplyPercent',
   'airdropCsvText',
-  'airdropWallets',
   'airdropAutoFit',
   'tokenSupply',
 ]);
@@ -7565,6 +8001,12 @@ function renderSupplyEditor() {
 
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const rows = supplyEditorRows();
+  const planPools = currentClassicModel().pools;
+  const planPoolFor = (row) => (row.key === 'sol'
+    ? planPools.find((pool) => pool.id === 'sol-main')
+    : row.key === 'quote'
+      ? planPools.find((pool) => String(pool.id).endsWith('-flywheel'))
+      : planPools.find((pool) => pool.id === row.poolId));
   const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 100) / 100;
   const remainder = Math.round((100 - total) * 100) / 100;
   const pools = rows.filter((row) => row.kind === 'pool');
@@ -7594,10 +8036,12 @@ function renderSupplyEditor() {
     const poolsHead = target.querySelector('[data-supply-pools-head]');
     if (poolsHead) poolsHead.textContent = `${pools.length} · ${pct(poolPercent)}`;
     rows.forEach((row) => {
-      const amount = target.querySelector(`[data-supply-amount="${CSS.escape(row.key)}"]`);
-      if (amount) amount.textContent = compactAmount(supply * row.percent / 100);
-      const percentInput = target.querySelector(`input[data-supply-key="${CSS.escape(row.key)}"]`);
-      if (percentInput && percentInput !== active) percentInput.value = String(row.percent);
+      target.querySelectorAll(`[data-supply-amount="${CSS.escape(row.key)}"]`).forEach((amount) => {
+        amount.textContent = compactAmount(supply * row.percent / 100);
+      });
+      target.querySelectorAll(`input[data-supply-key="${CSS.escape(row.key)}"]`).forEach((percentInput) => {
+        if (percentInput !== active) percentInput.value = String(row.percent);
+      });
     });
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
@@ -7631,6 +8075,13 @@ function renderSupplyEditor() {
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
     const mapHost = '<div class="supply-field-wide pool-map" data-pool-map></div>';
+    if (rowIsMeteora(row)) {
+      const range = Number(poolVenueFor(row).damm?.rangeMultiple) || 1000;
+      return `
+        ${mapHost}
+        <div class="supply-field supply-field-wide"><span>Price range</span>${toggleGroupHtml({ label: `${row.label} price range`, action: 'set-pool-range', rowKey: row.key, selected: range, options: METEORA_RANGES_UI.map(([value, text]) => [value, text]) })}</div>
+        <p class="supply-field-wide supply-settings-empty">One position with this share of the supply, locked when the pool is made. No slices, ladder or support; buyers bring the ${escapeHtml(row.label)}.</p>`;
+    }
     if (row.key === 'sol') {
       return `
         ${mapHost}
@@ -7638,8 +8089,18 @@ function renderSupplyEditor() {
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
+        ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
+    }
+    // The flywheel pair comes from a preset, not a custom pair: it has the two settings the preset
+    // exposes, and can become a custom pair when it needs slices, a ladder or support.
+    if (row.key === 'quote') {
+      return `
+        ${mapHost}
+        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
     if (!pool) return '<p class="supply-settings-empty">This pool uses the default settings.</p>';
@@ -7652,10 +8113,18 @@ function renderSupplyEditor() {
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
       ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
+      ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
       ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
   };
+
+  // An accordion: the open pool's settings open under its row and every other row stays put.
+  // A panel that is opening starts closed and one that is closing starts open, so the height
+  // eases whichever way it goes, even when the app redraws more than once per click.
+  const shownKey = target.dataset.rendered === '1' ? (target.dataset.shownKey || '') : (state.supplyOpenRow || '');
+  const wantsOpen = (row) => state.supplyOpenRow === row.key;
+  const wasOpen = (row) => shownKey === row.key;
 
   const rowHtml = (row) => {
     const input = row.poolId
@@ -7668,33 +8137,58 @@ function renderSupplyEditor() {
         : '<span class="supply-remove-spacer"></span>';
     const editingMint = row.poolId && (row.needsMint || focusKey === `${row.key}:mint`);
     const detail = editingMint
-      ? `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`
+      ? (`<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`)
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
       <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
-        <i class="supply-swatch" style="background:${row.color}"></i>
+        ${supplyRowMarkHtml(row)}
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
+        ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
           : '<span class="supply-remove-spacer"></span>'}
         ${remove}
+        ${row.kind === 'pool' ? rowSwitchesHtml(row) : ''}
       </li>
-      ${row.kind === 'pool' && state.supplyOpenRow === row.key ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
+      ${row.kind === 'pool' && (wantsOpen(row) || wasOpen(row)) ? `<li class="supply-settings-wrap${wasOpen(row) ? ' is-open' : ''}" data-settings-for="${escapeHtml(row.key)}"><div class="supply-settings">${settingsHtml(row)}</div></li>` : ''}`;
   };
 
   target.innerHTML = `
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
-    <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
-    <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
+      <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pools as CSV"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
+      <button class="pill-button" type="button" data-action="import-pool-config" title="Load pools from CSV on the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
+      <span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></span></div>
+    <ol class="supply-list">${pools.map((row) => rowHtml(row)).join('')}</ol>
     ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
-    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
+    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map((row) => rowHtml(row)).join('')}</ol>
     ${totalHtml}`;
+  const nextKey = state.supplyOpenRow || '';
+  if (shownKey !== nextKey) {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      if (!target.isConnected) return;
+      target.querySelectorAll('.supply-settings-wrap').forEach((wrap) => {
+        wrap.classList.toggle('is-open', wrap.dataset.settingsFor === nextKey);
+      });
+      target.dataset.shownKey = nextKey;
+    }));
+    window.setTimeout(() => {
+      target.querySelectorAll('.supply-settings-wrap:not(.is-open)').forEach((wrap) => wrap.remove());
+    }, 360);
+  } else {
+    target.dataset.shownKey = nextKey;
+  }
 
   target.dataset.rendered = '1';
+  // A logo that fails to load gives way to the initials.
+  target.querySelectorAll('.supply-logo img').forEach((image) => {
+    image.addEventListener('error', () => { const mark = image.parentElement; if (mark) mark.textContent = mark.dataset.initials || ''; }, { once: true });
+  });
+  requestHubLogos(pools.map((row) => supplyRowMint(row)).filter(Boolean));
   renderPoolControlFeedback(target);
   renderReturnWalletCard();
 }
@@ -7704,9 +8198,9 @@ function renderSupplyEditor() {
 // pair, where the SOL pool's price sits. Right of it, price in multiples of the
 // start (log scale): the main position covers all of it, ladder bands add
 // liquidity at their own ranges. Below: the positions the pool is split into.
-function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null, supportLayers = [], meteora = null }) {
   const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
-  const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
+  const maxMult = meteora ? Math.max(10, Number(meteora.rangeMultiple) || 1000) : Math.max(1000, ...bands.map((band) => band.hi));
   const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
   const premiumDrop = premiumPct > 0 ? (premiumPct / (100 + premiumPct)) * 100 : 0;
   const reach = Math.max(depthPct, premiumDrop, 10) * 1.1;
@@ -7715,7 +8209,16 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   const parts = [];
   // main position: the whole range above the start price
   parts.push(`<rect class="pm-main" x="${START}" y="${BASE - 22}" width="${RIGHT - START}" height="22"/>`);
-  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
+  // The fee tier's price steps, drawn as the lattice the position is cut into: wide spacing, few steps.
+  if (tier) {
+    const steps = Math.min(60, Math.max(4, Math.round(480 / tier.spacing)));
+    for (let i = 1; i < steps; i += 1) {
+      const x = START + ((RIGHT - START) * i) / steps;
+      parts.push(`<line class="pm-tick" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${BASE - 22}" y2="${BASE}"/>`);
+    }
+  }
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">${meteora ? `Locked position · up to ×${Number(meteora.rangeMultiple).toLocaleString('en-US')}` : 'Main position · all prices above the start'}</text>`);
+  if (meteora) parts.push(`<text class="pm-tag pm-strong" x="${RIGHT}" y="12" text-anchor="end">Meteora · ${Number(meteora.feeBps) / 100}% fee</text>`);
   // ladder bands
   const top = Math.max(...bands.map((band) => band.weight), 1);
   bands.forEach((band) => {
@@ -7725,13 +8228,27 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
     parts.push(`<rect class="pm-band" x="${x.toFixed(1)}" y="${(BASE - 22 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/>`);
     if (band.label && w > 26) parts.push(`<text class="pm-tag" x="${(x + w / 2).toFixed(1)}" y="${(BASE - 22 - h - 5).toFixed(1)}" text-anchor="middle">${band.label}</text>`);
   });
-  // support SOL, just below the start price
+  // support SOL, just below the start price: one range, or a layer per range, each as tall as its
+  // share of the quote
   const xs = xDown(depthPct);
   const supportW = START - xs;
   const supportText = `${fmt(supportSol)} SOL · −${fmt(depthPct)}%`;
-  parts.push(supportSol > 0
-    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
-    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  if (supportSol > 0 && supportLayers.length) {
+    const totalShare = supportLayers.reduce((sum, layer) => sum + layer.sharePercent, 0) || 100;
+    const topShare = Math.max(...supportLayers.map((layer) => layer.sharePercent));
+    supportLayers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 14 + 46 * (layer.sharePercent / topShare);
+      const sol = supportSol * (layer.sharePercent / totalShare);
+      parts.push(`<rect class="pm-support" x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+      if (x2 - x1 > 38) parts.push(`<text class="pm-tag" x="${((x1 + x2) / 2).toFixed(1)}" y="${(BASE - h - 4).toFixed(1)}" text-anchor="middle">${fmt(sol)} SOL</text>`);
+    });
+  } else {
+    parts.push(supportSol > 0
+      ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
+      : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  }
   // the SOL pool's price, for a pair
   if (premiumDrop > 0) {
     const xp = xDown(premiumDrop);
@@ -7755,29 +8272,119 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
     if (w > 34) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${BASE + 43}" text-anchor="middle">${fmt(share)}%</text>`);
     at += w;
   });
+  // The fee tier as a meter: one notch per tier from the cheapest to the dearest, this one lit.
+  if (tier) {
+    // The meter is 40 wide however many tiers there are.
+    const slot = 40 / tier.count;
+    const mx = RIGHT - 40;
+    for (let i = 0; i < tier.count; i += 1) {
+      const h = 5 + (i * 14) / Math.max(1, tier.count - 1);
+      parts.push(`<rect class="${i === tier.rank ? 'pm-tier-on' : 'pm-tier-off'}" x="${(mx + i * slot).toFixed(1)}" y="${(24 - h).toFixed(1)}" width="${Math.max(1.5, slot - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+    }
+    parts.push(`<text class="pm-tag pm-strong" x="${RIGHT - 44}" y="12" text-anchor="end">${fmt(tier.fee)}% fee</text>`
+      + `<text class="pm-note" x="${RIGHT - 44}" y="24" text-anchor="end">$${fmt(tier.fee * 10)} per $1,000 · steps ${fmt(Number(tier.step.toFixed(2)))}%</text>`);
+  }
   const title = 'Price map: where this pool\'s liquidity sits';
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
 
-// The same picture for a pool as the launch will build it (Create liquidity tab).
-function poolMapForPool(pool) {
-  const support = pool?.support?.mode === 'custom' ? pool.support : null;
-  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
-  let bands = [];
-  if (pool?.ladder?.mode === 'manual') {
-    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
-  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
-    const count = pool.ladder.bandCount;
-    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
-    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
-  }
-  return poolMapSvg({
-    premiumPct: 0,
-    supportSol: support ? Number(support.solValue) || 0 : 0,
-    depthPct: support ? Number(support.depthPct) || 12 : 12,
-    slices: slices.length ? slices : [100],
-    bands,
+// Every pool of the plan on one price axis, one colour per pool (the supply bar's colours).
+// Each pool's main position is a stripe, support sits left of the start price, ladder bands stand
+// above, and the bar below is every position, its width that position's share of the supply.
+function poolsMapForPlan(pools = []) {
+  const rows = supplyEditorRows();
+  const colorOf = (pool) => {
+    const key = pool.id === 'sol-main' ? 'sol' : pool.id.endsWith('-flywheel') ? 'quote' : `custom:${pool.id}`;
+    return rows.find((row) => row.key === key)?.color || 'var(--green)';
+  };
+  const layers = pools.map((pool) => {
+    const share = Math.max(0, Number(pool.supplyPercent) || 0);
+    const slices = (pool.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((value) => value > 0);
+    const sliceTotal = slices.reduce((sum, value) => sum + value, 0) || 100;
+    let bands = [];
+    if (pool.ladder?.mode === 'manual') {
+      bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: share * (Number(band.supplyPercent) || 0) / 100 }));
+    } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+      const count = pool.ladder.bandCount;
+      const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+      bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: share / count }));
+    }
+    return {
+      symbol: String(pool.quoteSymbol || pool.quoteToken || 'SOL').toUpperCase(),
+      tier: feeTierInfo(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
+      color: colorOf(pool),
+      share,
+      support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12, layers: Array.isArray(pool.support.layers) ? pool.support.layers : [] } : null,
+      slices: (slices.length ? slices : [100]).map((value) => (value / sliceTotal) * share),
+      bands,
+    };
+  }).filter((layer) => layer.share > 0);
+  if (!layers.length) return '';
+  const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 168;
+  const maxMult = Math.max(1000, ...layers.flatMap((layer) => layer.bands.map((band) => band.hi)));
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(maxMult));
+  const maxDepth = Math.max(12, ...layers.map((layer) => layer.support?.depth || 0)) * 1.1;
+  const xDown = (pct) => START - (START - LEFT) * (pct / maxDepth);
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n.toFixed(2)).toString());
+  const tint = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const totalShare = layers.reduce((sum, layer) => sum + layer.share, 0) || 100;
+  const parts = [];
+  // main positions: one stripe per pool, thickness by share, stacked on the axis
+  let stackTop = BASE;
+  layers.forEach((layer) => {
+    const h = Math.max(3, 30 * (layer.share / totalShare));
+    stackTop -= h;
+    parts.push(`<rect x="${START}" y="${stackTop.toFixed(1)}" width="${RIGHT - START}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 38)};stroke:${layer.color}" stroke-width="1"/>`);
   });
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${(BASE - 4).toFixed(1)}">Main positions</text>`);
+  // ladder bands, tallest = the largest share of supply
+  const maxWeight = Math.max(1e-9, ...layers.flatMap((layer) => layer.bands.map((band) => band.weight)));
+  layers.forEach((layer) => {
+    layer.bands.forEach((band) => {
+      const h = 12 + 70 * (band.weight / maxWeight);
+      const x = xOf(band.lo);
+      const w = Math.max(3, xOf(band.hi) - x);
+      parts.push(`<rect x="${x.toFixed(1)}" y="${(stackTop - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+    });
+  });
+  // support SOL, left of the start price
+  const maxSol = Math.max(1e-9, ...layers.map((layer) => layer.support?.sol || 0));
+  layers.forEach((layer) => {
+    if (!layer.support || layer.support.sol <= 0) return;
+    if (layer.support.layers.length) {
+      const total = layer.support.layers.reduce((sum, item) => sum + item.sharePercent, 0) || 100;
+      layer.support.layers.forEach((item) => {
+        const x1 = xDown((1 - item.lowerMultiplier) * 100);
+        const x2 = xDown((1 - item.upperMultiplier) * 100);
+        const h = 8 + 52 * ((layer.support.sol * item.sharePercent / total) / maxSol);
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(2, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+      });
+      return;
+    }
+    const x = xDown(layer.support.depth);
+    const h = 14 + 52 * (layer.support.sol / maxSol);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, START - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+  });
+  const supportSol = layers.reduce((sum, layer) => sum + (layer.support?.sol || 0), 0);
+  if (supportSol > 0) parts.push(`<text class="pm-tag" x="${START - 6}" y="${BASE + 30}" text-anchor="end">${fmt(supportSol)} SOL support</text>`);
+  parts.push(`<line class="pm-start" x1="${START}" x2="${START}" y1="22" y2="${BASE + 6}"/><text class="pm-tag pm-strong" x="${START}" y="14" text-anchor="middle">Start price</text>`);
+  parts.push(`<line class="pm-axis" x1="${LEFT}" x2="${RIGHT}" y1="${BASE}" y2="${BASE}"/>`);
+  for (let m = 1; m <= maxMult; m *= 10) {
+    parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
+  }
+  // every position, its width its share of the supply
+  let at = LEFT;
+  const barY = BASE + 40;
+  layers.forEach((layer) => {
+    layer.slices.forEach((share) => {
+      const w = (RIGHT - LEFT) * (share / totalShare);
+      parts.push(`<rect x="${at.toFixed(1)}" y="${barY}" width="${Math.max(1, w - 2).toFixed(1)}" height="18" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+      if (w > 40) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${barY + 13}" text-anchor="middle">${fmt(share)}%</text>`);
+      at += w;
+    });
+  });
+  const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b>${layer.tier ? ` · ${fmt(layer.tier.fee)}% fee` : ''}</span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${barY + 28}" role="img" aria-label="Where every pool's liquidity sits" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg><div class="pool-legend">${legend}</div>`;
 }
 
 function renderPoolMap(panel) {
@@ -7787,7 +8394,10 @@ function renderPoolMap(panel) {
   const number = (text, fallback = 0) => { const n = parseNumericInput(String(text), NaN); return Number.isFinite(n) ? n : fallback; };
   const premiumPct = Math.min(500, Math.max(0, number(value(':premium'), 0)));
   const supportSol = Math.max(0, number(value(':support'), 0));
-  const depthPct = Math.min(50, Math.max(1, number(value(':depth'), 12)));
+  const layerInput = analyzeSupportLayers(value(':layers')).layers;
+  const depthPct = layerInput.length
+    ? Math.min(99, Math.max(1, (1 - Math.min(...layerInput.map((layer) => layer.lowerMultiplier))) * 100))
+    : Math.min(50, Math.max(1, number(value(':depth'), 12)));
   const slices = describeSliceInput(value(':slices')).slices;
   const manual = analyzeManualLadder(value(':manual')).bands;
   const count = Math.floor(Math.min(CLASSIC_LADDER_MAX_BANDS, Math.max(0, number(value(':ladder'), 0))));
@@ -7803,7 +8413,14 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
+  const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value
+    ?? panel.closest('li')?.previousElementSibling?.querySelector('[data-action="set-pool-tier"].is-on')?.dataset.value;
+  const rowKey = panel.closest('.supply-settings-wrap')?.dataset.settingsFor;
+  const venueRow = rowKey ? supplyEditorRows().find((item) => item.key === rowKey) : null;
+  const meteora = venueRow && rowIsMeteora(venueRow) ? poolVenueFor(venueRow).damm : null;
+  const html = meteora
+    ? poolMapSvg({ premiumPct: 0, supportSol: 0, depthPct: 12, slices: [100], bands: [], meteora: { feeBps: Number(meteora.feeBps) || 25, rangeMultiple: Number(meteora.rangeMultiple) || 1000 } })
+    : `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, supportLayers: layerInput, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -7848,6 +8465,27 @@ function renderPoolControlFeedback(target) {
       say('manual', parts.join(' '), ladder.rejected.length ? 'warn' : 'ok');
       flag(manual, ladder.rejected.length > 0);
     }
+
+    const layersField = input(':layers');
+    const supportLayers = analyzeSupportLayers(layersField?.value);
+    if (layersField) {
+      const parts = [];
+      if (supportLayers.layers.length) {
+        const total = supportLayers.layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+        const lowest = Math.min(...supportLayers.layers.map((layer) => layer.lowerMultiplier));
+        parts.push(`${supportLayers.layers.length} layer${supportLayers.layers.length === 1 ? '' : 's'} down to ${Number((lowest * 100).toFixed(1))}% of the start price.`);
+        if (Math.abs(total - 100) > 0.01) parts.push(`Shares add up to ${Number(total.toFixed(2))}%; they are scaled to 100%.`);
+      }
+      if (supportLayers.rejected.length) {
+        const shown = supportLayers.rejected.slice(0, 3).map((item) => `line ${item.line} "${item.text.slice(0, 24)}"`).join(', ');
+        parts.push(`Skipped ${shown}${supportLayers.rejected.length > 3 ? ` and ${supportLayers.rejected.length - 3} more` : ''}. Each layer needs share %, low× above 0 and high× up to 1.`);
+      }
+      if (supportLayers.overflow) parts.push(`Only the first ${SUPPORT_LAYERS_MAX} layers are used.`);
+      say('layers', parts.join(' '), supportLayers.rejected.length || supportLayers.overflow ? 'warn' : 'ok');
+      flag(layersField, supportLayers.rejected.length > 0);
+    }
+    const depthField = input(':depth');
+    if (depthField) depthField.disabled = supportLayers.layers.length > 0;
 
     const bands = input(':ladder');
     if (bands) {
@@ -8043,7 +8681,50 @@ function renderClassicPhaseTree(topology) {
   `;
 }
 
+// Lists to airdrop to: the bundled KOL wallets (public labels, copied from runner-watch with
+// their source), and each earlier launch's airdrop, read once a session. Each loads as this
+// coin's CSV. A launch list with the same wallets as the KOL list is not offered twice.
+function loadAirdropLists() {
+  if (state.airdropLists || state.apiStatus !== 'connected' || !state.apiClient?.listAirdropLists) return;
+  state.airdropLists = [];
+  state.apiClient.listAirdropLists()
+    .then(({ lists, kol }) => {
+      state.airdropLists = Array.isArray(lists) ? lists : [];
+      state.kolWallets = kol && Array.isArray(kol.wallets) ? kol : null;
+      renderAirdropListButtons();
+    })
+    .catch(() => { state.airdropLists = null; });
+}
+
+function renderAirdropListButtons() {
+  const host = document.getElementById('airdropListButtons');
+  if (!host) return;
+  const kol = state.kolWallets?.wallets || [];
+  const kolSet = kol.map((wallet) => wallet.address).sort().join(',');
+  const lists = (state.airdropLists || []).filter((list) => list.recipients.map((row) => row.wallet).sort().join(',') !== kolSet);
+  const buttons = [
+    kol.length ? `<button class="pill-button" type="button" data-action="load-kol-wallets" title="${escapeHtml(`KOL labels from ${state.kolWallets.label_date || 'the source list'}`)}">KOL wallets · ${kol.length}</button>` : '',
+    ...lists.map((list) => `<button class="pill-button" type="button" data-action="load-airdrop-list" data-list="${escapeHtml(list.id)}" title="${escapeHtml(`${list.name || list.symbol || 'Earlier launch'} · ${list.createdAt ? formatDate(list.createdAt) : ''}`)}">${escapeHtml(list.symbol ? `$${list.symbol}` : 'Earlier')} list · ${list.recipients.length}</button>`),
+  ].filter(Boolean);
+  host.innerHTML = buttons.length ? buttons.join('') : '<button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>';
+}
+
+function loadAirdropList(id) {
+  const list = (state.airdropLists || []).find((item) => item.id === id);
+  if (!list) return;
+  setAirdropText(['wallet,tokens', ...list.recipients.map((row) => `${row.wallet},${row.tokens}`)].join('\n'));
+}
+
+// KOL wallets without amounts: the airdrop budget splits evenly across them.
+function loadKolWallets() {
+  const list = state.kolWallets;
+  if (!list?.wallets?.length) return;
+  setAirdropText(['wallet', `# KOL wallets, labels from ${list.label_date || 'the source list'}`, ...list.wallets.map((wallet) => wallet.address)].join('\n'));
+}
+
 function renderAirdropPanel() {
+  loadAirdropLists();
+  renderAirdropListButtons();
   const topology = currentClassicModel();
   const airdrop = topology.airdrop;
   const summary = $('#airdropSummary');
@@ -8077,13 +8758,255 @@ function renderAirdropPanel() {
   }
   const previewRows = airdrop.recipients.slice(0, 4).map((row) => `
     <div class="mini-row">
-      <span>${escapeHtml(shortAddress(row.wallet))}</span>
+      <span>${walletChipHtml(row.wallet)}</span>
       <strong>${compactAmount(row.tokens)} tokens</strong>
     </div>
   `).join('');
-  $('#airdropRecipientPreview').innerHTML = hasError
+  const valueRows = hasError ? '' : airdropValueHtml(airdrop);
+  $('#airdropRecipientPreview').innerHTML = valueRows || (hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
-    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`;
+    : previewRows || '<div class="mini-row"><span>No recipients</span></div>');
+}
+
+
+// Pool config as CSV, in the same plain style as the custom ladder field: a line per pool, and
+// `ladder,supply%,low×,high×` lines under a pool for its own bands. No token, wallet or key.
+//
+//   launch SOL,1
+//   market cap USD,25000
+//   symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %
+//   SOL,,85,8,,100,5,0.1,12
+//   RUG,RUGx1zSD…,5,4,25,50|50,0,0,12
+//   ladder,50,2,10
+//   bid,70,0.7,1       (a quote-side support layer: share % of the quote, low x, high x)
+//   meteora,25,1000    (the pool above is a Meteora pool: fee in basis points, price range multiple)
+const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
+const POOL_CONFIG_HEADER = 'symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %';
+
+function csvCell(value) {
+  return String(value ?? '').replace(/[,\r\n]+/g, ' ').trim();
+}
+
+function buildPoolConfigExport() {
+  const config = currentLaunchConfig();
+  const topology = config.poolTopology || {};
+  return {
+    launchSol: config.launchSol,
+    targetMarketCapUsd: topology.targetMarketCapUsd,
+    pools: topology.pools || [],
+  };
+}
+
+function poolConfigToCsv(data = buildPoolConfigExport()) {
+  const lines = [
+    '# Trebuchet pool config',
+    `launch SOL,${csvCell(data.launchSol)}`,
+    `market cap USD,${csvCell(data.targetMarketCapUsd)}`,
+    POOL_CONFIG_HEADER,
+  ];
+  (data.pools || []).forEach((pool) => {
+    const isSol = String(pool.quoteSymbol || pool.quoteToken || '').toUpperCase() === 'SOL' || pool.id === 'sol-main';
+    const slices = (Array.isArray(pool.distribution) && pool.distribution.length ? pool.distribution : [{ sharePercent: 100 }])
+      .map((slice) => Number(slice.sharePercent || 0)).join('|');
+    const manual = pool.ladder?.mode === 'manual' && Array.isArray(pool.ladder.bands) ? pool.ladder.bands : [];
+    const bandCount = manual.length ? 0 : (pool.ladder?.mode === 'simple' ? Number(pool.ladder.bandCount || 0) : 0);
+    const support = pool.support?.mode === 'custom';
+    lines.push([
+      isSol ? 'SOL' : csvCell(pool.quoteSymbol || 'PAIR'),
+      isSol ? '' : csvCell(pool.quoteMint || pool.quoteToken),
+      Number(pool.supplyPercent || 0),
+      Number(pool.ammConfigIndex ?? ''),
+      isSol ? '' : Number(pool.startPricePremiumPct ?? 0),
+      slices,
+      bandCount,
+      support ? Number(pool.support.solValue || 0) : 0,
+      support ? Number(pool.support.depthPct || 12) : 12,
+    ].join(','));
+    manual.forEach((band) => lines.push(`ladder,${band.supplyPercent},${band.lowerMultiplier},${band.upperMultiplier}`));
+    (support && Array.isArray(pool.support.layers) ? pool.support.layers : []).forEach((layer) => lines.push(`bid,${layer.sharePercent},${layer.lowerMultiplier},${layer.upperMultiplier}`));
+    if (pool.venue === 'meteora-damm-v2') lines.push(`meteora,${pool.damm?.feeBps || 25},${pool.damm?.rangeMultiple || 1000}`);
+  });
+  return `${lines.join('\n')}\n`;
+}
+
+function exportPoolConfig() {
+  return copyText(poolConfigToCsv(), 'Pool config');
+}
+
+function validatePoolConfigPools(pools) {
+  if (!Array.isArray(pools) || !pools.length || pools.length > 24) throw new Error('The pool config has no usable pools');
+  pools.forEach((pool) => {
+    const percent = Number(pool?.supplyPercent);
+    if (!pool || typeof pool !== 'object' || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw new Error('A pool in the config has a bad supply share');
+    }
+  });
+  if (pools.reduce((sum, pool) => sum + Number(pool.supplyPercent), 0) > 100.0001) {
+    throw new Error('The pool shares add up to more than 100%');
+  }
+}
+
+function parsePoolConfigCsv(text) {
+  const data = { launchSol: undefined, targetMarketCapUsd: undefined, pools: [] };
+  let current = null;
+  let ladderText = '';
+  let bidText = '';
+  const finish = () => {
+    if (!current) return;
+    const bands = ladderText ? parseManualLadderBands(ladderText) : [];
+    if (ladderText && !bands.length) throw new Error(`The ladder lines under ${current.quoteSymbol} have no usable band`);
+    if (bands.length) current.ladder = { mode: 'manual', bands };
+    const layers = bidText ? parseSupportLayers(bidText) : [];
+    if (bidText && !layers.length) throw new Error(`The bid lines under ${current.quoteSymbol} have no usable layer`);
+    if (layers.length) {
+      if (current.support.mode !== 'custom') throw new Error(`${current.quoteSymbol} has bid lines but no support SOL`);
+      current.support = { ...current.support, layers };
+    }
+    data.pools.push(current);
+    current = null;
+    ladderText = '';
+    bidText = '';
+  };
+  String(text || '').split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
+    const cells = line.split(',').map((cell) => cell.trim());
+    const key = cells[0].toLowerCase();
+    if (key === 'launch sol') { data.launchSol = Number(cells[1]); return; }
+    if (key === 'market cap usd') { data.targetMarketCapUsd = Number(cells[1]); return; }
+    if (key === 'symbol') return;
+    if (key === 'ladder') {
+      if (!current) throw new Error(`Line ${index + 1}: a ladder line needs a pool above it`);
+      ladderText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    if (key === 'meteora') {
+      if (!current) throw new Error(`Line ${index + 1}: a meteora line needs a pool above it`);
+      current.venue = 'meteora-damm-v2';
+      current.damm = { feeBps: Number(cells[1]) || 25, rangeMultiple: Number(cells[2]) || 1000 };
+      return;
+    }
+    if (key === 'bid') {
+      if (!current) throw new Error(`Line ${index + 1}: a bid line needs a pool above it`);
+      bidText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    finish();
+    const [symbol, mint, supply, tier, premium, slices, bands, supportSol, supportDepth] = cells;
+    const isSol = symbol.toUpperCase() === 'SOL' && !mint;
+    if (!isSol && !isProbablySolanaAddress(mint)) throw new Error(`Line ${index + 1}: ${symbol || 'the pool'} needs a token mint`);
+    const shares = (slices || '100').split(/[|\s]+/).filter(Boolean).map(Number);
+    if (!shares.length || shares.some((share) => !Number.isFinite(share) || share <= 0)) throw new Error(`Line ${index + 1}: the slices must be numbers like 50|50`);
+    const bandCount = Math.floor(Number(bands || 0));
+    const solValue = Number(supportSol || 0);
+    current = {
+      ...(isSol ? { id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL' } : { quoteToken: mint, quoteMint: mint, quoteSymbol: symbol.toUpperCase() }),
+      supplyPercent: Number(supply),
+      ammConfigIndex: Number.isFinite(Number(tier)) && tier !== '' ? Math.floor(Number(tier)) : undefined,
+      ...(isSol ? {} : { startPricePremiumPct: Number(premium || 0) }),
+      distribution: shares.map((share) => ({ sharePercent: share, recipient: null })),
+      bootstrap: { mode: 'minimal' },
+      ladder: bandCount > 0 ? classicSimpleLadderConfig(bandCount) : { mode: 'off' },
+      support: solValue > 0 ? { mode: 'custom', solValue, depthPct: Number(supportDepth || 12) } : { mode: 'off' },
+    };
+  });
+  finish();
+  return data;
+}
+
+function parsePoolConfigImport(text) {
+  const body = String(text || '').trim();
+  let data;
+  if (body.startsWith('{')) {
+    // The first export format was JSON; it still imports.
+    try { data = JSON.parse(body); } catch { throw new Error('That is not a pool config'); }
+    if (!data || data.format !== POOL_CONFIG_FORMAT || data.version !== 1) throw new Error('That is not a Trebuchet pool config');
+  } else {
+    if (!/^symbol\s*,/im.test(body)) throw new Error('That is not a Trebuchet pool config');
+    data = parsePoolConfigCsv(body);
+  }
+  validatePoolConfigPools(data.pools);
+  return data;
+}
+
+async function readPoolConfigText() {
+  try {
+    if (navigator.clipboard?.readText) return await navigator.clipboard.readText();
+  } catch {}
+  return openOperatorPrompt({
+    eyebrow: 'Import',
+    title: 'Paste a pool config',
+    detail: 'Automatic clipboard access is unavailable. Paste the exported CSV below.',
+    label: 'Pool config',
+    multiline: true,
+    confirmLabel: 'Import',
+  });
+}
+
+async function importPoolConfig() {
+  const text = await readPoolConfigText();
+  if (text == null) return;
+  try {
+    const data = parsePoolConfigImport(text);
+    const current = currentLaunchConfig();
+    // Only the pools, launch SOL and market cap change; token, vanity and
+    // airdrop stay as they are.
+    restoreLaunchConfigFromJournal({
+      launchConfig: {
+        ...current,
+        launchSol: Number.isFinite(Number(data.launchSol)) ? Number(data.launchSol) : current.launchSol,
+        poolTopology: {
+          ...current.poolTopology,
+          pools: data.pools,
+          targetMarketCapUsd: data.targetMarketCapUsd ?? current.poolTopology?.targetMarketCapUsd,
+        },
+      },
+    });
+    renderAll();
+    notify(`Imported ${data.pools.length} pool${data.pools.length === 1 ? '' : 's'}`);
+  } catch (error) {
+    notify(error.message || 'Could not import the pool config');
+  }
+}
+
+// A tier picked on a pool's line also moves the slider and the map inside its settings, so the
+// editor is drawn again in full, and the select that was used keeps the keyboard focus.
+function renderSupplyEditorAfterTier(control) {
+  const key = control?.dataset?.supplyKey;
+  const target = $('#supplyEditor');
+  if (target) target.dataset.rendered = '';
+  renderSupplyEditor();
+  if (key) document.querySelector(`[data-supply-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
+
+// A pool line's venue, fee or range button: set it, then redraw the editor and keep focus on the button.
+function applyPoolSwitch(action, control) {
+  const value = control.dataset.value;
+  const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+    : action === 'set-pool-fee' ? { feeBps: Number(value) }
+      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+        : { tierIndex: Math.floor(Number(value)) };
+  setPoolVenueChoice(control.dataset.rowKey, patch);
+  invalidateClassicOutputs();
+  refreshClassicPreview();
+  renderSupplyEditorAfterTier(control);
+}
+
+// The token a pool line trades against, for its logo: SOL, the preset pair's token, or an added pair's.
+function supplyRowMint(row) {
+  if (row.key === 'sol') return DEFAULT_SOL_MINT;
+  if (row.key === 'quote') return selectedClassicQuoteVenue()?.quoteMint || '';
+  return row.mint || '';
+}
+
+// A pool line's mark: the token's logo framed in the pool's colour, or its initials until the logo is known.
+// Held-back lines keep the plain colour square.
+function supplyRowMarkHtml(row) {
+  if (row.kind !== 'pool') return `<i class="supply-swatch" style="background:${row.color}"></i>`;
+  const mint = supplyRowMint(row);
+  const src = mint ? coinImageSrc(hubLogos.get(mint) || '') : '';
+  const initials = escapeHtml(String(row.label || '?').replace(/^\$/, '').slice(0, 2).toUpperCase());
+  return `<span class="supply-logo" style="--pool-color:${row.color}" data-initials="${initials}" aria-hidden="true">${src ? `<img src="${escapeHtml(src)}" alt="">` : initials}</span>`;
 }
 
 function buildReportPreview() {
@@ -8597,70 +9520,15 @@ function mergeLaunchConfigSnapshot(existing = null, incoming = null, existingPro
   return merged;
 }
 
-function classicComparisonResultObject(comparison = null) {
-  if (!comparison || typeof comparison !== 'object') return null;
-  if (
-    comparison.status
-    || comparison.proofFingerprint
-    || Array.isArray(comparison.rows)
-    || Number(comparison.fieldCount || 0) > 0
-  ) {
-    return comparison;
-  }
-  return null;
-}
-
-function reportParityClassicComparison(reportParity = null) {
+// Classic comparisons are no longer made or used; a saved proof's copy is dropped.
+function pruneLaunchProofReportParity(reportParity = null) {
   if (!reportParity || typeof reportParity !== 'object') return null;
-  const comparison = classicComparisonResultObject(reportParity.comparison);
-  if (comparison) return comparison;
-  const classicComparison = classicComparisonResultObject(reportParity.classicComparison);
-  if (classicComparison) return classicComparison;
-  return null;
-}
-
-function currentClassicComparisonForProof(proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const normalizedComparison = normalizeClassicReportComparison(state.classicReportComparison).result;
-  const proofComparison = reportParityClassicComparison(proof?.reportParity);
-  if (normalizedComparison && classicComparisonMatchesProof(normalizedComparison, proof, config)) {
-    return normalizedComparison;
-  }
-  if (proofComparison && classicComparisonMatchesProof(proofComparison, proof, config)) {
-    return proofComparison;
-  }
-  return normalizedComparison || proofComparison || null;
-}
-
-function pruneLaunchProofReportParity(reportParity = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  if (!reportParity || typeof reportParity !== 'object') return null;
-  const cleaned = { ...reportParity };
-  const comparison = classicComparisonResultObject(cleaned.comparison);
-  const classicComparison = classicComparisonResultObject(cleaned.classicComparison);
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'comparison') && !comparison) delete cleaned.comparison;
-  else if (comparison && !classicComparisonMatchesProof(comparison, proof, config)) delete cleaned.comparison;
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'classicComparison') && !classicComparison) delete cleaned.classicComparison;
-  else if (classicComparison && !classicComparisonMatchesProof(classicComparison, proof, config)) delete cleaned.classicComparison;
-  if (!cleaned.comparison && cleaned.classicComparison) cleaned.comparison = cleaned.classicComparison;
-  if (!reportParityClassicComparison(cleaned) && cleaned.classicArtifactCompared) {
-    cleaned.classicArtifactCompared = false;
-    cleaned.comparedAt = null;
-  }
+  const { comparison: _comparison, classicComparison: _classic, classicArtifactCompared: _compared, comparedAt: _comparedAt, ...cleaned } = reportParity;
   return Object.keys(cleaned).length ? cleaned : null;
 }
 
 function pruneLaunchProofReportParityForExport(reportParity = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const cleaned = pruneLaunchProofReportParity(reportParity, proof, config);
-  if (!cleaned || typeof cleaned !== 'object') return cleaned;
-  const comparison = classicComparisonResultObject(cleaned.comparison);
-  const classicComparison = classicComparisonResultObject(cleaned.classicComparison);
-  if (comparison && !classicComparisonIsRetirementGrade(comparison, proof, config)) delete cleaned.comparison;
-  if (classicComparison && !classicComparisonIsRetirementGrade(classicComparison, proof, config)) delete cleaned.classicComparison;
-  if (!cleaned.comparison && cleaned.classicComparison) cleaned.comparison = cleaned.classicComparison;
-  if (!reportParityClassicComparison(cleaned) && cleaned.classicArtifactCompared) {
-    cleaned.classicArtifactCompared = false;
-    cleaned.comparedAt = null;
-  }
-  return Object.keys(cleaned).length ? cleaned : null;
+  return pruneLaunchProofReportParity(reportParity, proof, config);
 }
 
 function pruneLaunchProofEvidenceArtifacts(proof = null, config = currentLaunchConfig()) {
@@ -8736,12 +9604,7 @@ function mergeLaunchProofEvidence(existing, incoming) {
   ) {
     delete merged.localDossier;
   }
-  if (!incoming.reportParity && existing.reportParity) {
-    const comparison = reportParityClassicComparison(existing.reportParity);
-    if (!comparison || classicComparisonMatchesProof(comparison, merged, mergedConfig)) {
-      merged.reportParity = existing.reportParity;
-    }
-  }
+  if (!incoming.reportParity && existing.reportParity) merged.reportParity = existing.reportParity;
   if (!incoming.transfer && existing.transfer) merged.transfer = existing.transfer;
   if (!incoming.destinationWallet && existing.destinationWallet) merged.destinationWallet = existing.destinationWallet;
   return pruneLaunchProofEvidenceArtifacts(merged, mergedConfig);
@@ -8971,15 +9834,7 @@ function v2ReportParityItem(id, label, state, detail) {
   return { id, label, state, detail };
 }
 
-function collectArtifactAddresses(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
-  return [...new Set(text.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g) || [])];
-}
 
-function collectArtifactSignatures(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
-  return [...new Set(text.match(/[1-9A-HJ-NP-Za-km-z]{60,100}/g) || [])];
-}
 
 function optionalBoolean(value) {
   if (value === true) return true;
@@ -8993,10 +9848,6 @@ const CLASSIC_AUTHORITY_COMPARISON_FIELDS = Object.freeze([
   { key: 'metadataUpdateAuthorityRevoked', label: 'Metadata update authority' },
   { key: 'metadataImmutable', label: 'Metadata immutability' },
 ]);
-
-function normalizedArtifactText(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
 
 function classicArtifactHasV2Marker(value, depth = 0) {
   if (!value || typeof value !== 'object' || depth > 8) return false;
@@ -9018,72 +9869,6 @@ function classicArtifactHasV2Marker(value, depth = 0) {
     return true;
   }
   return Object.values(value).some((item) => classicArtifactHasV2Marker(item, depth + 1));
-}
-
-function classicArtifactSourceKind(parsed, rawText) {
-  if (classicArtifactHasV2Marker(parsed)) {
-    return 'trebuchet-v2';
-  }
-  const normalized = normalizedArtifactText(rawText);
-  if (
-    normalized.includes('classic retirement gate')
-    || normalized.includes('classic report parity audit')
-    || normalized.includes('field verification packet')
-    || normalized.includes('field parity packet')
-    || normalized.includes('trebuchet-v2-field-verification')
-    || normalized.includes('trebuchet-v2-proof')
-  ) {
-    return 'trebuchet-v2';
-  }
-  return 'classic-or-external';
-}
-
-function artifactAuthorityFlag(direct, text, label, positiveWords = [], negativeWords = []) {
-  const bool = optionalBoolean(direct);
-  if (bool !== null) return bool;
-  const normalized = normalizedArtifactText(text);
-  const index = normalized.indexOf(String(label || '').toLowerCase());
-  if (index < 0) return null;
-  const snippet = normalized.slice(index, index + 180);
-  if (negativeWords.some((word) => snippet.includes(word))) return false;
-  if (positiveWords.some((word) => snippet.includes(word))) return true;
-  return null;
-}
-
-function authorityCount(authorities = {}, keys = ['mintAuthorityRenounced', 'freezeAuthorityDisabled', 'metadataUpdateAuthorityRevoked']) {
-  const values = keys.map((key) => optionalBoolean(authorities[key]));
-  return {
-    known: values.filter((value) => value !== null).length,
-    pass: values.filter((value) => value === true).length,
-    total: keys.length,
-  };
-}
-
-function authorityComparisonSummary(currentAuthorities = {}, artifactAuthorities = {}) {
-  const rows = CLASSIC_AUTHORITY_COMPARISON_FIELDS
-    .map((field) => {
-      const expected = optionalBoolean(currentAuthorities[field.key]);
-      if (expected === null) return null;
-      return {
-        ...field,
-        expected,
-        actual: optionalBoolean(artifactAuthorities[field.key]),
-      };
-    })
-    .filter(Boolean);
-  const pass = rows.filter((row) => row.actual === row.expected);
-  const missing = rows.filter((row) => row.actual === null);
-  const mismatch = rows.filter((row) => row.actual !== null && row.actual !== row.expected);
-  return {
-    known: rows.length,
-    pass: pass.length,
-    missing: missing.length,
-    mismatch: mismatch.length,
-    total: rows.length,
-    confirmedLabels: pass.map((row) => row.label),
-    missingLabels: missing.map((row) => row.label),
-    mismatchLabels: mismatch.map((row) => row.label),
-  };
 }
 
 function numberOrNull(value) {
@@ -9330,183 +10115,6 @@ function comparisonTransferEvidenceHash(transfer = {}) {
   return record ? stableHashString(JSON.stringify(record)) : null;
 }
 
-function decodeArtifactHtmlText(value) {
-  return String(value || '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/gi, "'");
-}
-
-function stripArtifactHtml(value) {
-  return decodeArtifactHtmlText(String(value || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-}
-
-function classicHtmlAddressRows(rawText = '') {
-  const rows = [];
-  const rowRegex = /<div\s+class=["'][^"']*\baddr-row\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
-  for (const match of String(rawText || '').matchAll(rowRegex)) {
-    const rowHtml = match[1] || '';
-    const label = stripArtifactHtml(rowHtml.match(/<span\s+class=["'][^"']*\baddr-label\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] || '');
-    const value = stripArtifactHtml(rowHtml.match(/<code\s+class=["'][^"']*\baddr-value\b[^"']*["'][^>]*>([\s\S]*?)<\/code>/i)?.[1] || '');
-    if (!label || !value || value === '—' || value === '-') continue;
-    rows.push({ label: normalizedArtifactText(label), value });
-  }
-  return rows;
-}
-
-function classicHtmlValuesForLabels(rows = [], labels = []) {
-  const normalizedLabels = new Set((Array.isArray(labels) ? labels : [labels]).map(normalizedArtifactText));
-  return rows
-    .filter((row) => normalizedLabels.has(row.label))
-    .map((row) => row.value)
-    .filter(Boolean);
-}
-
-function classicHtmlFirstValueForLabels(rows = [], labels = []) {
-  return classicHtmlValuesForLabels(rows, labels)[0] || null;
-}
-
-function classicHtmlPoolMetas(rawText = '') {
-  const metaRegex = /<div\s+class=["'][^"']*\bpool-meta\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
-  return [...String(rawText || '').matchAll(metaRegex)].map((match) => {
-    const text = stripArtifactHtml(match[1] || '');
-    const supplyMatch = text.match(/([0-9]+(?:\.[0-9]+)?)\s*%\s*of token supply/i);
-    const spacingMatch = text.match(/\bspacing\s+([0-9]+)/i);
-    return {
-      supplyPercent: supplyMatch ? numberOrNull(supplyMatch[1]) : null,
-      tickSpacing: spacingMatch ? numberOrNull(spacingMatch[1]) : null,
-    };
-  });
-}
-
-function classicHtmlPools(rawText = '') {
-  const rows = classicHtmlAddressRows(rawText);
-  const poolIds = classicHtmlValuesForLabels(rows, 'Pool ID');
-  const quoteMints = classicHtmlValuesForLabels(rows, ['Quote token mint', 'Quote mint']);
-  const createPoolTxs = classicHtmlValuesForLabels(rows, ['Create-pool TX', 'Create pool tx']);
-  const poolMetas = classicHtmlPoolMetas(rawText);
-  const count = Math.max(poolIds.length, quoteMints.length, createPoolTxs.length, poolMetas.length);
-  return Array.from({ length: count }, (_, index) => ({
-    poolId: poolIds[index] || null,
-    quoteMint: quoteMints[index] || null,
-    createPoolTx: createPoolTxs[index] || null,
-    supplyPercent: poolMetas[index]?.supplyPercent ?? null,
-    tickSpacing: poolMetas[index]?.tickSpacing ?? null,
-  })).filter((pool) => pool.poolId || pool.quoteMint || pool.createPoolTx || pool.supplyPercent !== null || pool.tickSpacing !== null);
-}
-
-function classicHtmlPositions(rawText = '') {
-  const rows = classicHtmlAddressRows(rawText);
-  const positionMints = classicHtmlValuesForLabels(rows, 'Position NFT');
-  const feeKeyMints = classicHtmlValuesForLabels(rows, 'Fee Key NFT');
-  const openTxs = classicHtmlValuesForLabels(rows, ['Open TX', 'Open tx']);
-  const lockTxs = classicHtmlValuesForLabels(rows, ['Lock TX', 'Lock tx']);
-  const recipients = classicHtmlValuesForLabels(rows, 'Fee Key recipient');
-  const deliveredRecipients = classicHtmlValuesForLabels(rows, ['Fee Key delivered to', 'Fee Key sent to', 'Transferred to']);
-  const transferTxs = classicHtmlValuesForLabels(rows, ['Fee Key transfer TX', 'Transfer tx']);
-  const count = Math.max(positionMints.length, feeKeyMints.length, openTxs.length, lockTxs.length, recipients.length, deliveredRecipients.length, transferTxs.length);
-  return Array.from({ length: count }, (_, index) => {
-    const recipient = recipients[index] || deliveredRecipients[index] || null;
-    const deliveredRecipient = deliveredRecipients[index] || null;
-    const transferTx = transferTxs[index] || null;
-    const lockTx = lockTxs[index] || null;
-    const feeKeyNftMint = feeKeyMints[index] || null;
-    return {
-      type: null,
-      positionNftMint: positionMints[index] || null,
-      feeKeyNftMint,
-      locked: lockTx || feeKeyNftMint ? true : null,
-      recipient,
-      transferredTo: deliveredRecipient || (recipient && transferTx ? recipient : null),
-      openTx: openTxs[index] || null,
-      lockTx,
-      transferTx,
-    };
-  }).filter((position) => (
-    position.positionNftMint
-    || position.feeKeyNftMint
-    || position.openTx
-    || position.lockTx
-    || position.recipient
-    || position.transferTx
-  ));
-}
-
-function classicHtmlTableCells(rowHtml = '') {
-  return [...String(rowHtml || '').matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
-    .map((match) => stripArtifactHtml(match[1] || ''));
-}
-
-function classicHtmlTxSignatures(rowHtml = '') {
-  const fromLinks = [...String(rowHtml || '').matchAll(/\/tx\/([1-9A-HJ-NP-Za-km-z]{60,100})/g)]
-    .map((match) => match[1]);
-  return [...new Set([...fromLinks, ...collectArtifactSignatures(rowHtml)])];
-}
-
-function classicHtmlCountFromHeading(headingText = '') {
-  const match = String(headingText || '').replace(/,/g, '').match(/(\d+)\s+recipient/i);
-  if (!match) return null;
-  return numberOrNull(match[1]);
-}
-
-function classicHtmlAirdropRowsForHeading(rawText = '', labelPattern) {
-  const blocks = [];
-  const headingRegex = /<h3\b[^>]*class=["'][^"']*\bsubsection\b[^"']*["'][^>]*>([\s\S]*?)<\/h3>/gi;
-  for (const match of String(rawText || '').matchAll(headingRegex)) {
-    const headingText = stripArtifactHtml(match[1] || '');
-    if (!labelPattern.test(headingText)) continue;
-    const afterHeading = String(rawText || '').slice(match.index + match[0].length);
-    const tableHtml = afterHeading.match(/<table\b[\s\S]*?<\/table>/i)?.[0] || '';
-    if (!tableHtml) continue;
-    const rows = [...tableHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
-      .map((rowMatch) => {
-        const rowHtml = rowMatch[1] || '';
-        const cells = classicHtmlTableCells(rowHtml);
-        if (cells.length < 2) return null;
-        const wallet = stripArtifactHtml(rowHtml.match(/<code\b[^>]*>([\s\S]*?)<\/code>/i)?.[1] || '')
-          || collectArtifactAddresses(rowHtml)[0]
-          || null;
-        if (!wallet) return null;
-        const txId = classicHtmlTxSignatures(rowHtml)[0] || null;
-        const tokens = numberOrNull(String(cells[1] || '').replace(/,/g, ''));
-        return { wallet, tokens, txId };
-      })
-      .filter(Boolean);
-    blocks.push({
-      headingText,
-      declaredCount: classicHtmlCountFromHeading(headingText),
-      rows,
-    });
-  }
-  return blocks;
-}
-
-function classicHtmlAirdrop(rawText = '') {
-  const deliveredBlocks = classicHtmlAirdropRowsForHeading(rawText, /^delivered\b/i);
-  const failedBlocks = classicHtmlAirdropRowsForHeading(rawText, /^failed\b/i);
-  const pendingBlocks = classicHtmlAirdropRowsForHeading(rawText, /^(to be delivered|pending recipients)\b/i);
-  const transferred = deliveredBlocks.flatMap((block) => block.rows);
-  const failed = failedBlocks.flatMap((block) => block.rows);
-  const recipients = pendingBlocks.flatMap((block) => block.rows);
-  const deliveredCount = deliveredBlocks.reduce((sum, block) => sum + Number(block.declaredCount ?? block.rows.length), 0);
-  const failedCount = failedBlocks.reduce((sum, block) => sum + Number(block.declaredCount ?? block.rows.length), 0);
-  const pendingCount = pendingBlocks.reduce((sum, block) => sum + Number(block.declaredCount ?? block.rows.length), 0);
-  const structuredEvidence = Boolean(transferred.length || failed.length || recipients.length || deliveredCount || failedCount || pendingCount);
-  return {
-    structuredEvidence,
-    plannedRecipientCount: deliveredCount || failedCount ? deliveredCount + failedCount : pendingCount || null,
-    deliveredCount: structuredEvidence ? deliveredCount : null,
-    failedCount: structuredEvidence ? failedCount : null,
-    recipients,
-    transferred,
-    failed,
-  };
-}
-
 function normalizeComparisonPosition(position = {}, type = null, poolId = null) {
   return {
     poolId: poolId || position.poolId || null,
@@ -9650,54 +10258,6 @@ function comparisonPositionFingerprint(positions = []) {
       b.lockTx || '',
       b.transferTx || '',
     ].join('|')));
-}
-
-function comparisonUniqueValues(positions = [], keys = []) {
-  const list = Array.isArray(keys) ? keys : [keys];
-  return [...new Set((Array.isArray(positions) ? positions : [])
-    .flatMap((position) => list.map((key) => position?.[key]))
-    .filter(Boolean)
-    .map(String))];
-}
-
-function comparisonMatchedValues(artifact, expectedValues = [], keys = []) {
-  const artifactValues = new Set(comparisonUniqueValues(artifact?.positions || [], keys));
-  return expectedValues.filter((value) => artifactValues.has(value) || artifactContainsAddress(artifact, value));
-}
-
-function comparisonMatchedStructuredValues(artifact, expectedValues = [], keys = [], hasStructuredEvidence = false) {
-  const artifactValues = new Set(comparisonUniqueValues(artifact?.positions || [], keys));
-  return expectedValues.filter((value) => (
-    artifactValues.has(value)
-    || (!hasStructuredEvidence && artifactContainsAddress(artifact, value))
-  ));
-}
-
-function comparisonExactEvidenceState({ expectedCount, matchedCount, actualCount = 0, hasStructuredEvidence = false }) {
-  const expected = Math.max(0, Number(expectedCount || 0));
-  const matched = Math.max(0, Number(matchedCount || 0));
-  const actual = Math.max(0, Number(actualCount || 0));
-  if (expected <= 0) return 'pass';
-  if (hasStructuredEvidence) {
-    if (matched === expected && actual === expected) return 'pass';
-    return matched > 0 ? 'mismatch' : 'missing';
-  }
-  return matched === expected ? 'pass' : matched > 0 ? 'warn' : 'missing';
-}
-
-function comparisonAirdropWallets(airdrop = {}) {
-  return [...new Set([
-    ...(Array.isArray(airdrop.recipients) ? airdrop.recipients : []),
-    ...(Array.isArray(airdrop.transferred) ? airdrop.transferred : []),
-    ...(Array.isArray(airdrop.failed) ? airdrop.failed : []),
-  ].map((row) => row?.wallet).filter(Boolean))];
-}
-
-function comparisonAirdropTxs(airdrop = {}) {
-  return [...new Set([
-    ...(Array.isArray(airdrop.transferred) ? airdrop.transferred : []),
-    ...(Array.isArray(airdrop.failed) ? airdrop.failed : []),
-  ].map((row) => row?.txId).filter(Boolean))];
 }
 
 function comparisonAirdropHasHashOnlyRows(airdrop = {}, key) {
@@ -9891,344 +10451,6 @@ function proofCanCreateLocalDossier(proof = {}, config = currentLaunchConfig()) 
   return launchProofPoolIds(proof).length >= plannedPoolCount;
 }
 
-function comparisonMatchedAirdropWallets(artifact, expectedWallets = []) {
-  const artifactWallets = new Set(comparisonAirdropWallets(artifact?.airdrop || {}));
-  const structured = comparisonHasStructuredAirdropEvidence(artifact);
-  return expectedWallets.filter((wallet) => artifactWallets.has(wallet) || (!structured && artifactContainsAddress(artifact, wallet)));
-}
-
-function comparisonMatchedAirdropTxs(artifact, expectedTxs = []) {
-  const artifactTxs = new Set(comparisonAirdropTxs(artifact?.airdrop || {}));
-  const structured = comparisonHasStructuredAirdropEvidence(artifact);
-  return expectedTxs.filter((tx) => artifactTxs.has(tx) || (!structured && (artifact.signatures.includes(tx) || artifact.text.includes(tx))));
-}
-
-function comparisonHasStructuredAirdropEvidence(artifact) {
-  const airdrop = artifact?.airdrop || {};
-  return airdrop.structuredEvidence === true
-    || artifact?.kind === 'json'
-    && (
-      Array.isArray(airdrop.recipients) && airdrop.recipients.length > 0
-      || Array.isArray(airdrop.transferred) && airdrop.transferred.length > 0
-      || Array.isArray(airdrop.failed) && airdrop.failed.length > 0
-      || numberOrNull(airdrop.plannedRecipientCount) !== null
-      || numberOrNull(airdrop.deliveredCount) !== null
-      || numberOrNull(airdrop.failedCount) !== null
-    );
-}
-
-function comparisonPoolById(pools = [], poolId = null, index = 0) {
-  return (Array.isArray(pools) ? pools : []).find((pool) => pool?.poolId && pool.poolId === poolId)
-    || (Array.isArray(pools) ? pools[index] : null)
-    || null;
-}
-
-function comparisonNumberMatches(expected, actual, tolerance = 0.000001) {
-  const left = numberOrNull(expected);
-  const right = numberOrNull(actual);
-  if (left === null || right === null) return left === right;
-  return Math.abs(left - right) <= tolerance;
-}
-
-function comparisonScalarMatches(expected, actual) {
-  if (expected == null || actual == null) return expected == null && actual == null;
-  const leftNumber = numberOrNull(expected);
-  const rightNumber = numberOrNull(actual);
-  if (leftNumber !== null && rightNumber !== null) return comparisonNumberMatches(leftNumber, rightNumber);
-  return String(expected) === String(actual);
-}
-
-const COMPARISON_POSITION_SHAPE_FIELDS = [
-  ['sharePercent', 'slice share'],
-  ['supplyPercent', 'supply share'],
-  ['lowerMultiplier', 'lower multiplier'],
-  ['upperMultiplier', 'upper multiplier'],
-  ['depthPct', 'support depth'],
-];
-
-function comparisonPositionShapeLabel(position = {}, index = 0) {
-  const type = position.type || 'position';
-  const indexLabel = position.bandIndex != null
-    ? `band ${Number(position.bandIndex) + 1}`
-    : position.sliceIndex != null
-      ? `slice ${Number(position.sliceIndex) + 1}`
-      : position.supportIndex != null
-        ? `support ${Number(position.supportIndex) + 1}`
-        : `#${index + 1}`;
-  return `${position.poolId || 'pool'} ${type} ${indexLabel}`;
-}
-
-function comparisonPositionShapeRecord(position = {}, index = 0) {
-  const fields = COMPARISON_POSITION_SHAPE_FIELDS.reduce((record, [key]) => {
-    record[key] = numberOrNull(position?.[key]);
-    return record;
-  }, {});
-  if (!COMPARISON_POSITION_SHAPE_FIELDS.some(([key]) => fields[key] !== null)) return null;
-  return {
-    ...fields,
-    poolId: position.poolId || null,
-    type: position.type || null,
-    positionNftMint: position.positionNftMint || null,
-    sliceIndex: numberOrNull(position.sliceIndex),
-    bandIndex: numberOrNull(position.bandIndex),
-    supportIndex: numberOrNull(position.supportIndex),
-    label: comparisonPositionShapeLabel(position, index),
-  };
-}
-
-function comparisonPositionShapeSlotMatches(expected = {}, actual = {}) {
-  return expected.poolId === actual.poolId
-    && expected.type === actual.type
-    && expected.sliceIndex === actual.sliceIndex
-    && expected.bandIndex === actual.bandIndex
-    && expected.supportIndex === actual.supportIndex;
-}
-
-function comparisonPositionShapeSummary(currentPositions = [], artifactPositions = []) {
-  const expectedRows = (Array.isArray(currentPositions) ? currentPositions : [])
-    .map(comparisonPositionShapeRecord)
-    .filter(Boolean);
-  if (!expectedRows.length) {
-    return {
-      total: 0,
-      pass: 0,
-      mismatch: 0,
-      missing: 0,
-      mismatched: [],
-      missingLabels: [],
-    };
-  }
-  const actualRows = (Array.isArray(artifactPositions) ? artifactPositions : [])
-    .map(comparisonPositionShapeRecord)
-    .filter(Boolean);
-  const actualByMint = new Map(actualRows
-    .filter((row) => row.positionNftMint)
-    .map((row) => [row.positionNftMint, row]));
-  let total = 0;
-  let pass = 0;
-  const mismatched = [];
-  const missingLabels = [];
-
-  expectedRows.forEach((expected, index) => {
-    const actual = (expected.positionNftMint && actualByMint.get(expected.positionNftMint))
-      || actualRows.find((row) => comparisonPositionShapeSlotMatches(expected, row))
-      || actualRows[index]
-      || null;
-    COMPARISON_POSITION_SHAPE_FIELDS.forEach(([key, label]) => {
-      const expectedValue = expected[key];
-      if (expectedValue === null) return;
-      total += 1;
-      if (!actual || actual[key] === null) {
-        missingLabels.push(`${expected.label} ${label}`);
-        return;
-      }
-      if (comparisonScalarMatches(expectedValue, actual[key])) {
-        pass += 1;
-        return;
-      }
-      mismatched.push(`${expected.label} ${label}`);
-    });
-  });
-
-  return {
-    total,
-    pass,
-    mismatch: mismatched.length,
-    missing: missingLabels.length,
-    mismatched,
-    missingLabels,
-  };
-}
-
-function comparisonPoolParameterSummary(currentPools = [], artifactPools = []) {
-  const rows = (Array.isArray(currentPools) ? currentPools : [])
-    .map((pool, index) => {
-      const artifactPool = comparisonPoolById(artifactPools, pool.poolId, index);
-      const checks = [
-        ['supplyPercent', 'supply'],
-        ['tickSpacing', 'tick spacing'],
-        ['initialPrice', 'initial price'],
-        ['launchedSide', 'launch side'],
-      ]
-        .filter(([key]) => pool?.[key] != null)
-        .map(([key, label]) => ({
-          key,
-          label,
-          expected: pool[key],
-          actual: artifactPool?.[key] ?? null,
-          matches: comparisonScalarMatches(pool[key], artifactPool?.[key] ?? null),
-        }));
-      if (!checks.length) return null;
-      return {
-        poolId: pool.poolId || `pool-${index + 1}`,
-        checks,
-      };
-    })
-    .filter(Boolean);
-  const total = rows.reduce((sum, row) => sum + row.checks.length, 0);
-  const mismatched = rows.flatMap((row) => row.checks
-    .filter((check) => !check.matches && check.actual != null)
-    .map((check) => `${row.poolId} ${check.label}`));
-  const missing = rows.flatMap((row) => row.checks
-    .filter((check) => check.actual == null)
-    .map((check) => `${row.poolId} ${check.label}`));
-  return {
-    total,
-    pass: Math.max(0, total - mismatched.length - missing.length),
-    mismatch: mismatched.length,
-    missing: missing.length,
-    mismatched,
-    missingLabels: missing,
-  };
-}
-
-function normalizeClassicReportArtifact(rawText) {
-  const text = String(rawText || '').trim();
-  if (!text) throw new Error('Paste a classic report JSON or HTML artifact first');
-  let parsed = null;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-  const launch = parsed?.launchData || parsed?.launch || parsed?.proof || parsed || null;
-  const proof = parsed?.proof || launch?.proof || null;
-  const token = launch?.token || proof?.token || {};
-  const liquidity = launch?.liquidity || proof?.liquidity || {};
-  const htmlRows = !parsed ? classicHtmlAddressRows(text) : [];
-  const htmlMint = classicHtmlFirstValueForLabels(htmlRows, ['Token mint', 'Mint']);
-  const htmlLaunchWallet = classicHtmlFirstValueForLabels(htmlRows, ['Launch wallet', 'Launch wallet public key']);
-  // Classic reports label it "sweep destination"; Trebuchet's own reports
-  // now say "return wallet".
-  const htmlDestinationWallet = classicHtmlFirstValueForLabels(htmlRows, [
-    'Planned sweep destination',
-    'Destination wallet',
-    'Sweep destination',
-    'Planned return wallet',
-    'Return wallet',
-  ]);
-  const poolsFromPayload = Array.isArray(launch?.pools)
-    ? launch.pools
-    : Array.isArray(liquidity?.results) ? liquidity.results : Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
-  const pools = poolsFromPayload.length ? poolsFromPayload : (!parsed ? classicHtmlPools(text) : []);
-  const normalizedPools = pools.map(normalizeComparisonPool);
-  const positionsFromPools = comparisonPositionsFromPools(pools);
-  const positions = positionsFromPools.length ? positionsFromPools : (!parsed ? classicHtmlPositions(text) : []);
-  const poolIds = [
-    ...(Array.isArray(launch?.poolIds) ? launch.poolIds : []),
-    ...(Array.isArray(liquidity?.poolIds) ? liquidity.poolIds : []),
-    ...pools.map((pool) => pool?.poolId || pool?.id).filter(Boolean),
-  ].filter((value, index, list) => value && list.indexOf(value) === index);
-  const addresses = collectArtifactAddresses(parsed || text);
-  const signatures = collectArtifactSignatures(parsed || text);
-  const htmlText = parsed ? '' : text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
-  const plainText = htmlText || text;
-  const tokenAuthorities = token?.authorities || {};
-  const airdrop = launch?.airdrop || proof?.airdrop || parsed?.airdrop || {};
-  const normalizedAirdrop = normalizeComparisonAirdrop(airdrop);
-  const htmlAirdrop = !parsed ? classicHtmlAirdrop(text) : {};
-  const normalizedHtmlAirdrop = normalizeComparisonAirdrop(htmlAirdrop);
-  const airdropAudit = launch?.airdropAudit || parsed?.airdropAudit || {};
-  const structuredEvidence = Boolean(
-    parsed
-      ? (
-        parsed.launchData
-        || parsed.launch
-        || parsed.proof
-        || launch?.dataVersion
-        || launch?.mint
-        || token?.mint
-        || poolIds.length
-        || normalizedPools.length
-        || positions.length
-        || normalizedAirdrop.recipients.length
-        || normalizedAirdrop.transferred.length
-        || normalizedAirdrop.failed.length
-      )
-      : (
-        htmlRows.length
-        || normalizedPools.length
-        || positions.length
-        || htmlAirdrop.structuredEvidence
-      )
-  );
-  const positionCount = Number(
-    launch?.liquidity?.positionCount
-    ?? liquidity?.positionCount
-    ?? launch?.summary?.totalPositions
-    ?? (positions.length || pools.reduce((sum, pool) => sum + Number(pool?.totalPositions || 0), 0)),
-  );
-  const lockedPositionCount = Number(
-    launch?.liquidity?.lockedPositionCount
-    ?? liquidity?.lockedPositionCount
-    ?? launch?.summary?.lockedPositions
-    ?? (positions.filter((position) => position.locked === true).length || pools.reduce((sum, pool) => sum + Number(pool?.lockedPositions || 0), 0)),
-  );
-  const feeKeyCount = Number(
-    launch?.liquidity?.feeKeyCount
-    ?? liquidity?.feeKeyCount
-    ?? positions.filter((position) => position.feeKeyNftMint).length,
-  );
-  return {
-    kind: parsed ? 'json' : 'html',
-    sourceKind: classicArtifactSourceKind(parsed, text),
-    structuredEvidence,
-    mint: launch?.mint || launch?.tokenMint || token?.mint || proof?.token?.mint || htmlMint || null,
-    symbol: launch?.symbol || token?.symbol || proof?.token?.symbol || null,
-    launchWallet: launch?.launchWallet || launch?.walletPublicKey || proof?.walletPublicKey || htmlLaunchWallet || null,
-    destinationWallet: launch?.transfer?.destinationWallet || launch?.destinationWallet || proof?.transfer?.destinationWallet || proof?.destinationWallet || htmlDestinationWallet || null,
-    poolIds,
-    pools: normalizedPools,
-    positionCount: Number.isFinite(positionCount) ? positionCount : null,
-    lockedPositionCount: Number.isFinite(lockedPositionCount) ? lockedPositionCount : null,
-    feeKeyCount: Number.isFinite(feeKeyCount) ? feeKeyCount : null,
-    positions,
-    authorities: {
-      mintAuthorityRenounced: artifactAuthorityFlag(
-        tokenAuthorities.mintAuthorityRenounced ?? token.mintAuthorityRenounced,
-        plainText,
-        'Mint authority',
-        ['renounced'],
-        ['not renounced', 'not confirmed'],
-      ),
-      freezeAuthorityDisabled: artifactAuthorityFlag(
-        tokenAuthorities.freezeAuthorityDisabled ?? token.freezeAuthorityDisabled,
-        plainText,
-        'Freeze authority',
-        ['disabled'],
-        ['not disabled', 'not confirmed'],
-      ),
-      metadataUpdateAuthorityRevoked: artifactAuthorityFlag(
-        tokenAuthorities.metadataUpdateAuthorityRevoked ?? token.metadataUpdateAuthorityRevoked,
-        plainText,
-        'Metadata update authority',
-        ['revoked'],
-        ['not revoked', 'not confirmed'],
-      ),
-      metadataImmutable: artifactAuthorityFlag(
-        tokenAuthorities.metadataImmutable ?? token.metadataImmutable,
-        plainText,
-        'Metadata immutability',
-        ['immutable'],
-        ['not immutable', 'not confirmed'],
-      ),
-    },
-    airdrop: {
-      plannedRecipientCount: numberOrNull(airdrop.plannedRecipientCount ?? airdrop.recipientCount ?? airdropAudit.plannedRecipientCount ?? htmlAirdrop.plannedRecipientCount),
-      deliveredCount: numberOrNull(airdrop.deliveredCount ?? htmlAirdrop.deliveredCount ?? (Array.isArray(airdrop.transferred) ? airdrop.transferred.length : null)),
-      failedCount: numberOrNull(airdrop.failedCount ?? htmlAirdrop.failedCount ?? (Array.isArray(airdrop.failed) ? airdrop.failed.length : null)),
-      ...normalizedAirdrop,
-      recipients: normalizedAirdrop.recipients.length ? normalizedAirdrop.recipients : normalizedHtmlAirdrop.recipients,
-      transferred: normalizedAirdrop.transferred.length ? normalizedAirdrop.transferred : normalizedHtmlAirdrop.transferred,
-      failed: normalizedAirdrop.failed.length ? normalizedAirdrop.failed : normalizedHtmlAirdrop.failed,
-      structuredEvidence: Boolean(htmlAirdrop.structuredEvidence),
-    },
-    reportParityAudit: launch?.reportParityAudit || parsed?.reportParityAudit || null,
-    addresses,
-    signatures,
-    text: plainText,
-  };
-}
 
 function currentClassicComparisonFields(proof = currentLaunchProof(), config = currentLaunchConfig()) {
   const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
@@ -10344,21 +10566,6 @@ function launchProofFingerprint(proof = currentLaunchProof(), config = currentLa
   return classicComparisonProofFingerprint(currentClassicComparisonFields(proof, effectiveConfig));
 }
 
-function classicComparisonMatchesProof(comparison, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  if (!comparison || typeof comparison !== 'object') return false;
-  if (!comparison.proofFingerprint) return false;
-  return comparison.proofFingerprint === launchProofFingerprint(proof, config);
-}
-
-function classicComparisonProofRows(results = []) {
-  return (Array.isArray(results) ? results : []).flatMap((pool) => [
-    ...(Array.isArray(pool?.mainPositions) ? pool.mainPositions : []),
-    ...(Array.isArray(pool?.ladderPositions) ? pool.ladderPositions : []),
-    ...(Array.isArray(pool?.supportPositions) ? pool.supportPositions : []),
-    ...(pool?.bootstrap ? [pool.bootstrap] : []),
-  ]);
-}
-
 function classicComparisonPoolRows(proof = currentLaunchProof(), config = currentLaunchConfig(), results = []) {
   const resultRows = Array.isArray(results) ? results : [];
   const planRows = buildV2ReportPoolPlan(config, resultRows, proof);
@@ -10379,114 +10586,6 @@ function classicComparisonPoolRows(proof = currentLaunchProof(), config = curren
       createPoolTx: recorded.createPoolTx || result.txIds?.createPool || result.createPoolTx || null,
     });
   });
-}
-
-function classicComparisonRequiredRows(proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
-  const comparisonPools = classicComparisonPoolRows(proof, config, results);
-  const positions = classicComparisonProofRows(results);
-  const poolIds = [
-    ...(Array.isArray(proof?.liquidity?.poolIds) ? proof.liquidity.poolIds : []),
-    ...results.map((pool) => pool?.poolId).filter(Boolean),
-  ].filter((value, index, list) => value && list.indexOf(value) === index);
-  const authorityFields = ['mintAuthorityRenounced', 'freezeAuthorityDisabled', 'metadataUpdateAuthorityRevoked', 'metadataImmutable'];
-  const configAirdropRows = Array.isArray(config?.poolTopology?.airdrop?.recipients)
-    ? config.poolTopology.airdrop.recipients
-    : [];
-  const proofAirdropRows = Array.isArray(proof?.airdrop?.recipients) && proof.airdrop.recipients.length
-    ? proof.airdrop.recipients
-    : configAirdropRows;
-  const proofAirdropEvidence = comparisonAirdropDeliveryEvidenceState({
-    ...(proof?.airdrop || {}),
-    recipients: proofAirdropRows,
-    plannedRecipientCount: proof?.airdrop?.plannedRecipientCount
-      || config?.poolTopology?.airdrop?.recipientCount
-      || proofAirdropRows.length
-      || 0,
-  });
-  const liquidityEvidence = comparisonLiquidityEvidenceState(proof);
-  const rows = [];
-  const add = (id, label, required) => {
-    if (required) rows.push({ id, label });
-  };
-  add('mint', 'Token mint', proof?.token?.mint);
-  add('launch-wallet', 'Launch wallet', proof?.walletPublicKey);
-  add('pools', 'Pool IDs', poolIds.length);
-  add('pool-quote-mints', 'Pool quote mints', comparisonPools.some((pool) => pool?.quoteMint));
-  add('pool-parameters', 'Pool parameters', comparisonPools.some((pool) => (
-    pool?.supplyPercent != null
-    || pool?.tickSpacing != null
-    || pool?.initialPrice != null
-    || pool?.launchedSide
-  )));
-  add('pool-create-transactions', 'Pool create transactions', results.some((pool) => pool?.txIds?.createPool || pool?.createPoolTx));
-  add('authority-posture', 'Authority posture', authorityFields.some((field) => optionalBoolean(proof?.token?.[field]) !== null));
-  add('positionCount', 'Position count', liquidityEvidence.positionCount > 0 || positions.length > 0);
-  add('lockedPositionCount', 'Locked positions', liquidityEvidence.lockedPositionCount > 0 || positions.some((position) => position?.locked === true));
-  add('feeKeyCount', 'Fee Keys', liquidityEvidence.feeKeyCount > 0 || positions.some((position) => position?.feeKeyNftMint || position?.feeKeyMint));
-  add('position-nfts', 'Position NFTs', positions.some((position) => position?.positionNftMint || position?.nftMint || position?.positionMint));
-  add('fee-key-nfts', 'Fee Key NFTs', positions.some((position) => position?.feeKeyNftMint || position?.feeKeyMint));
-  add('fee-key-recipients', 'Fee Key recipients', positions.some((position) => position?.recipient || position?.transferredTo));
-  add('position-transactions', 'Position transactions', positions.some((position) => (
-    position?.openTx
-    || position?.lockTx
-    || position?.transferTx
-    || position?.txIds?.open
-    || position?.txIds?.lock
-    || position?.txIds?.transfer
-  )));
-  add('position-liquidity-shape', 'Position liquidity shape', positions.some((position) => (
-    position?.sharePercent != null
-    || position?.supplyPercent != null
-    || position?.lowerMultiplier != null
-    || position?.upperMultiplier != null
-    || position?.depthPct != null
-  )));
-  add(
-    'destination',
-    'Destination wallet',
-    (transferHasWalletEmptyFinalSweepEvidence(proof?.transfer) ? proof?.transfer?.destinationWallet : null)
-      || proof?.destinationWallet
-      || config?.poolTopology?.sweepDestination,
-  );
-  add('airdrop-delivery', 'Airdrop delivery', proofAirdropEvidence.required);
-  add('airdrop-recipients', 'Airdrop recipients', proofAirdropEvidence.required);
-  add('airdrop-transactions', 'Airdrop transactions', proofAirdropEvidence.required);
-  return rows;
-}
-
-function classicComparisonRequiredEvidence(comparison, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const requiredRows = classicComparisonRequiredRows(proof, config);
-  const comparisonRows = Array.isArray(comparison?.rows) ? comparison.rows : [];
-  const rowsById = new Map(comparisonRows.map((row) => [row?.id, row]));
-  const missingRows = requiredRows.filter((row) => rowsById.get(row.id)?.state !== 'pass');
-  const fieldCount = Math.max(0, Math.floor(Number(comparison?.fieldCount || 0)) || 0);
-  const passCount = Math.max(0, Math.floor(Number(comparison?.passCount || 0)) || 0);
-  const enoughFields = fieldCount >= requiredRows.length && passCount >= requiredRows.length;
-  const structuredEvidence = comparison?.structuredEvidence === true;
-  return {
-    pass: Boolean(comparison && requiredRows.length > 0 && structuredEvidence && enoughFields && missingRows.length === 0),
-    requiredCount: requiredRows.length,
-    fieldCount,
-    passCount,
-    structuredEvidence,
-    missingRows,
-    detail: !structuredEvidence
-      ? 'Classic comparison is missing structured Classic report evidence; load a Classic JSON export or HTML launch record, not loose text.'
-      : missingRows.length
-      ? `Classic comparison is missing required passing row${missingRows.length === 1 ? '' : 's'}: ${missingRows.map((row) => row.label).slice(0, 4).join(', ')}${missingRows.length > 4 ? ', ...' : ''}.`
-      : enoughFields
-        ? `${requiredRows.length}/${requiredRows.length} required Classic evidence rows are passing.`
-        : `Classic comparison is too thin: ${passCount}/${requiredRows.length} required rows passing across ${fieldCount} field${fieldCount === 1 ? '' : 's'}.`,
-  };
-}
-
-function classicComparisonIsRetirementGrade(comparison, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  if (!comparison || typeof comparison !== 'object') return false;
-  if (comparison.status !== 'pass') return false;
-  if (comparison.artifactSource === 'trebuchet-v2') return false;
-  if (!classicComparisonMatchesProof(comparison, proof, config)) return false;
-  return classicComparisonRequiredEvidence(comparison, proof, config).pass;
 }
 
 function attachProofFingerprint(record, proof = currentLaunchProof(), config = currentLaunchConfig()) {
@@ -10700,456 +10799,6 @@ function staleReportPublishForProof(proof = currentLaunchProof(), config = curre
   )) || null;
 }
 
-function artifactContainsAddress(artifact, value) {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  return artifact.addresses.includes(text) || artifact.text.includes(text);
-}
-
-function compareClassicReportArtifact(rawText, proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const artifact = normalizeClassicReportArtifact(rawText);
-  const current = currentClassicComparisonFields(proof, config);
-  const rows = [];
-  const addRow = (id, label, expected, actual, state, detail) => {
-    rows.push({ id, label, expected, actual, state, detail });
-  };
-  if (artifact.sourceKind === 'trebuchet-v2') {
-    addRow(
-      'artifact-source',
-      'Artifact source',
-      'completed Classic artifact',
-      'Trebuchet proof or launch record',
-      'mismatch',
-      'Load a completed Classic artifact, not the current Trebuchet proof or launch record.',
-    );
-  }
-  if (!current.mint && !current.poolIds.length && Number(current.positionCount || 0) <= 0) {
-    addRow(
-      'current-proof',
-      'Current Trebuchet proof',
-      'token and liquidity proof',
-      null,
-      'missing',
-      'Run or load a completed Trebuchet launch record before comparing a Classic artifact.',
-    );
-  }
-  if (current.mint) {
-    const actual = artifact.mint || (!artifact.structuredEvidence && artifactContainsAddress(artifact, current.mint) ? current.mint : null);
-    addRow(
-      'mint',
-      'Token mint',
-      current.mint,
-      actual,
-      actual === current.mint ? 'pass' : actual ? 'mismatch' : 'missing',
-      actual === current.mint ? 'Mint matches.' : actual ? 'Classic artifact has a different mint.' : 'Current Trebuchet mint was not found in the artifact.',
-    );
-  }
-  if (current.launchWallet) {
-    const actual = artifact.launchWallet || (!artifact.structuredEvidence && artifactContainsAddress(artifact, current.launchWallet) ? current.launchWallet : null);
-    addRow(
-      'launch-wallet',
-      'Launch wallet',
-      current.launchWallet,
-      actual,
-      actual === current.launchWallet ? 'pass' : actual ? 'mismatch' : 'warn',
-      actual === current.launchWallet ? 'Launch wallet matches.' : actual ? 'Classic artifact has a different launch wallet.' : 'Launch wallet was not found directly; verify report custody manually.',
-    );
-  }
-  if (current.poolIds.length) {
-    const structuredPoolIds = artifact.poolIds.length > 0;
-    const matched = current.poolIds.filter((poolId) => (
-      artifact.poolIds.includes(poolId)
-      || (!structuredPoolIds && artifactContainsAddress(artifact, poolId))
-    ));
-    const poolState = comparisonExactEvidenceState({
-      expectedCount: current.poolIds.length,
-      matchedCount: matched.length,
-      actualCount: artifact.poolIds.length,
-      hasStructuredEvidence: structuredPoolIds,
-    });
-    addRow(
-      'pools',
-      'Pool IDs',
-      `${matched.length}/${current.poolIds.length}`,
-      String(artifact.poolIds.length || artifact.addresses.length),
-      poolState,
-      structuredPoolIds && poolState !== 'pass'
-        ? `${matched.length}/${current.poolIds.length} current Trebuchet pool IDs matched, but the Classic artifact records ${artifact.poolIds.length} pool ID${artifact.poolIds.length === 1 ? '' : 's'}; the counts must match exactly.`
-        : `${matched.length}/${current.poolIds.length} current Trebuchet pool IDs were found in the Classic artifact.`,
-    );
-  }
-  const currentQuoteMints = [...new Set(current.pools.map((pool) => pool.quoteMint).filter(Boolean))];
-  if (currentQuoteMints.length) {
-    const artifactQuoteMints = new Set(artifact.pools.map((pool) => pool.quoteMint).filter(Boolean));
-    const matched = currentQuoteMints.filter((quoteMint) => (
-      artifactQuoteMints.has(quoteMint)
-      || (artifactQuoteMints.size <= 0 && artifactContainsAddress(artifact, quoteMint))
-    ));
-    const quoteState = comparisonExactEvidenceState({
-      expectedCount: currentQuoteMints.length,
-      matchedCount: matched.length,
-      actualCount: artifactQuoteMints.size,
-      hasStructuredEvidence: artifactQuoteMints.size > 0,
-    });
-    addRow(
-      'pool-quote-mints',
-      'Pool quote mints',
-      `${matched.length}/${currentQuoteMints.length}`,
-      artifactQuoteMints.size ? String(artifactQuoteMints.size) : null,
-      quoteState,
-      quoteState === 'pass'
-        ? 'Every current pool quote mint was found in the Classic artifact.'
-        : artifactQuoteMints.size > 0
-          ? `${matched.length}/${currentQuoteMints.length} current pool quote mints matched, but the Classic artifact records ${artifactQuoteMints.size}; the sets must match exactly.`
-          : `${matched.length}/${currentQuoteMints.length} current pool quote mints were found in the Classic artifact.`,
-    );
-  }
-  const poolParameterSummary = comparisonPoolParameterSummary(current.pools, artifact.pools);
-  if (poolParameterSummary.total > 0) {
-    addRow(
-      'pool-parameters',
-      'Pool parameters',
-      `${poolParameterSummary.pass}/${poolParameterSummary.total}`,
-      artifact.pools.length ? `${artifact.pools.length} pool record${artifact.pools.length === 1 ? '' : 's'}` : null,
-      poolParameterSummary.mismatch > 0
-        ? 'mismatch'
-        : poolParameterSummary.missing > 0 ? 'missing' : 'pass',
-      [
-        `${poolParameterSummary.pass}/${poolParameterSummary.total} pool parameters match the current proof.`,
-        poolParameterSummary.mismatched.length ? `Mismatched: ${poolParameterSummary.mismatched.join(', ')}.` : '',
-        poolParameterSummary.missingLabels.length ? `Missing: ${poolParameterSummary.missingLabels.join(', ')}.` : '',
-      ].filter(Boolean).join(' '),
-    );
-  }
-  const currentCreatePoolTxs = [...new Set(current.pools.map((pool) => pool.createPoolTx).filter(Boolean))];
-  if (currentCreatePoolTxs.length) {
-    const artifactCreatePoolTxs = new Set(artifact.pools.map((pool) => pool.createPoolTx).filter(Boolean));
-    const matched = currentCreatePoolTxs.filter((tx) => (
-      artifactCreatePoolTxs.has(tx)
-      || (artifactCreatePoolTxs.size <= 0 && artifactContainsAddress(artifact, tx))
-    ));
-    const createPoolState = comparisonExactEvidenceState({
-      expectedCount: currentCreatePoolTxs.length,
-      matchedCount: matched.length,
-      actualCount: artifactCreatePoolTxs.size,
-      hasStructuredEvidence: artifactCreatePoolTxs.size > 0,
-    });
-    addRow(
-      'pool-create-transactions',
-      'Pool create transactions',
-      `${matched.length}/${currentCreatePoolTxs.length}`,
-      artifactCreatePoolTxs.size ? String(artifactCreatePoolTxs.size) : null,
-      createPoolState,
-      createPoolState === 'pass'
-        ? 'Every current pool-create transaction was found in the Classic artifact.'
-        : artifactCreatePoolTxs.size > 0
-          ? `${matched.length}/${currentCreatePoolTxs.length} current pool-create transactions matched, but the Classic artifact records ${artifactCreatePoolTxs.size}; the sets must match exactly.`
-          : `${matched.length}/${currentCreatePoolTxs.length} current pool-create transactions were found in the Classic artifact.`,
-    );
-  }
-  const currentAuthorityCount = authorityCount(current.authorities);
-  if (currentAuthorityCount.pass > 0) {
-    const artifactAuthorityCount = authorityComparisonSummary(current.authorities, artifact.authorities);
-    addRow(
-      'authority-posture',
-      'Authority posture',
-      `${currentAuthorityCount.pass}/${currentAuthorityCount.total}`,
-      artifactAuthorityCount.known ? `${artifactAuthorityCount.pass}/${artifactAuthorityCount.total}` : null,
-      artifactAuthorityCount.mismatch > 0
-        ? 'mismatch'
-        : artifactAuthorityCount.missing > 0 ? 'missing' : 'pass',
-      artifactAuthorityCount.known
-        ? [
-          `${artifactAuthorityCount.pass}/${artifactAuthorityCount.total} authority fields match the current proof.`,
-          artifactAuthorityCount.mismatchLabels.length ? `Mismatched: ${artifactAuthorityCount.mismatchLabels.join(', ')}.` : '',
-          artifactAuthorityCount.missingLabels.length ? `Missing: ${artifactAuthorityCount.missingLabels.join(', ')}.` : '',
-        ].filter(Boolean).join(' ')
-        : 'Classic artifact did not expose authority posture directly.',
-    );
-  }
-  [
-    ['positionCount', 'Position count'],
-    ['lockedPositionCount', 'Locked positions'],
-    ['feeKeyCount', 'Fee Keys'],
-  ].forEach(([key, label]) => {
-    const expected = Number(current[key] || 0);
-    const actual = Number(artifact[key]);
-    if (expected <= 0) return;
-    addRow(
-      key,
-      label,
-      expected,
-      Number.isFinite(actual) ? actual : null,
-      Number.isFinite(actual) ? actual === expected ? 'pass' : 'mismatch' : 'warn',
-      Number.isFinite(actual)
-        ? `${actual}/${expected} recorded in classic artifact; the count must match exactly.`
-        : 'Classic artifact did not expose this count directly; verify manually from rows.',
-    );
-  });
-  const currentPositionMints = comparisonUniqueValues(current.positions, 'positionNftMint');
-  if (currentPositionMints.length) {
-    const artifactPositionMints = comparisonUniqueValues(artifact.positions, 'positionNftMint');
-    const matched = comparisonMatchedStructuredValues(artifact, currentPositionMints, 'positionNftMint', artifact.positions.length > 0);
-    const positionState = comparisonExactEvidenceState({
-      expectedCount: currentPositionMints.length,
-      matchedCount: matched.length,
-      actualCount: artifactPositionMints.length,
-      hasStructuredEvidence: artifact.positions.length > 0,
-    });
-    addRow(
-      'position-nfts',
-      'Position NFTs',
-      `${matched.length}/${currentPositionMints.length}`,
-      artifact.positions.length ? String(artifactPositionMints.length) : null,
-      positionState,
-      positionState === 'pass'
-        ? 'Every current position NFT was found in the Classic artifact.'
-        : artifact.positions.length
-          ? `${matched.length}/${currentPositionMints.length} current position NFT mints matched, but the Classic artifact records ${artifactPositionMints.length}; the sets must match exactly.`
-          : `${matched.length}/${currentPositionMints.length} current position NFT mints were found in the Classic artifact.`,
-    );
-  }
-  const currentFeeKeyMints = comparisonUniqueValues(current.positions, 'feeKeyNftMint');
-  if (currentFeeKeyMints.length) {
-    const artifactFeeKeyMints = comparisonUniqueValues(artifact.positions, 'feeKeyNftMint');
-    const matched = comparisonMatchedStructuredValues(artifact, currentFeeKeyMints, 'feeKeyNftMint', artifact.positions.length > 0);
-    const feeKeyState = comparisonExactEvidenceState({
-      expectedCount: currentFeeKeyMints.length,
-      matchedCount: matched.length,
-      actualCount: artifactFeeKeyMints.length,
-      hasStructuredEvidence: artifact.positions.length > 0,
-    });
-    addRow(
-      'fee-key-nfts',
-      'Fee Key NFTs',
-      `${matched.length}/${currentFeeKeyMints.length}`,
-      artifact.positions.length ? String(artifactFeeKeyMints.length) : null,
-      feeKeyState,
-      feeKeyState === 'pass'
-        ? 'Every current Fee Key NFT was found in the Classic artifact.'
-        : artifact.positions.length
-          ? `${matched.length}/${currentFeeKeyMints.length} current Fee Key NFT mints matched, but the Classic artifact records ${artifactFeeKeyMints.length}; the sets must match exactly.`
-          : `${matched.length}/${currentFeeKeyMints.length} current Fee Key NFT mints were found in the Classic artifact.`,
-    );
-  }
-  const currentFeeKeyRecipientWallets = comparisonUniqueValues(current.positions, ['recipient', 'transferredTo']);
-  if (currentFeeKeyRecipientWallets.length) {
-    const artifactFeeKeyRecipientWallets = comparisonUniqueValues(artifact.positions, ['recipient', 'transferredTo']);
-    const matched = comparisonMatchedStructuredValues(artifact, currentFeeKeyRecipientWallets, ['recipient', 'transferredTo'], artifact.positions.length > 0);
-    const recipientState = comparisonExactEvidenceState({
-      expectedCount: currentFeeKeyRecipientWallets.length,
-      matchedCount: matched.length,
-      actualCount: artifactFeeKeyRecipientWallets.length,
-      hasStructuredEvidence: artifact.positions.length > 0,
-    });
-    addRow(
-      'fee-key-recipients',
-      'Fee Key recipients',
-      `${matched.length}/${currentFeeKeyRecipientWallets.length}`,
-      artifact.positions.length ? String(artifactFeeKeyRecipientWallets.length) : null,
-      recipientState,
-      recipientState === 'pass'
-        ? 'Every current Fee Key recipient or delivery wallet was found in the Classic artifact.'
-        : artifact.positions.length
-          ? `${matched.length}/${currentFeeKeyRecipientWallets.length} current Fee Key recipient or delivery wallets matched, but the Classic artifact records ${artifactFeeKeyRecipientWallets.length}; the sets must match exactly.`
-          : `${matched.length}/${currentFeeKeyRecipientWallets.length} current Fee Key recipient or delivery wallets were found in the Classic artifact.`,
-    );
-  }
-  const currentPositionTxs = comparisonUniqueValues(current.positions, ['openTx', 'lockTx', 'transferTx']);
-  if (currentPositionTxs.length) {
-    const artifactPositionTxs = comparisonUniqueValues(artifact.positions, ['openTx', 'lockTx', 'transferTx']);
-    const matched = comparisonMatchedStructuredValues(artifact, currentPositionTxs, ['openTx', 'lockTx', 'transferTx'], artifact.positions.length > 0);
-    const positionTxState = comparisonExactEvidenceState({
-      expectedCount: currentPositionTxs.length,
-      matchedCount: matched.length,
-      actualCount: artifactPositionTxs.length,
-      hasStructuredEvidence: artifact.positions.length > 0,
-    });
-    addRow(
-      'position-transactions',
-      'Position transactions',
-      `${matched.length}/${currentPositionTxs.length}`,
-      artifact.positions.length ? String(artifactPositionTxs.length) : null,
-      positionTxState,
-      positionTxState === 'pass'
-        ? 'Every current open/lock/transfer transaction was found in the Classic artifact.'
-        : artifact.positions.length
-          ? `${matched.length}/${currentPositionTxs.length} current open/lock/transfer transactions matched, but the Classic artifact records ${artifactPositionTxs.length}; the sets must match exactly.`
-        : `${matched.length}/${currentPositionTxs.length} current open/lock/transfer transactions were found in the Classic artifact.`,
-    );
-  }
-  const positionShapeSummary = comparisonPositionShapeSummary(current.positions, artifact.positions);
-  if (positionShapeSummary.total > 0) {
-    addRow(
-      'position-liquidity-shape',
-      'Position liquidity shape',
-      `${positionShapeSummary.pass}/${positionShapeSummary.total}`,
-      artifact.positions.length ? `${artifact.positions.length} position record${artifact.positions.length === 1 ? '' : 's'}` : null,
-      positionShapeSummary.mismatch > 0
-        ? 'mismatch'
-        : positionShapeSummary.missing > 0 ? 'missing' : 'pass',
-      [
-        `${positionShapeSummary.pass}/${positionShapeSummary.total} slice, ladder, and support shape fields match the current proof.`,
-        positionShapeSummary.mismatched.length ? `Mismatched: ${positionShapeSummary.mismatched.join(', ')}.` : '',
-        positionShapeSummary.missingLabels.length ? `Missing: ${positionShapeSummary.missingLabels.join(', ')}.` : '',
-      ].filter(Boolean).join(' '),
-    );
-  }
-  if (current.destinationWallet) {
-    const actual = artifact.destinationWallet || (!artifact.structuredEvidence && artifactContainsAddress(artifact, current.destinationWallet) ? current.destinationWallet : null);
-    addRow(
-      'destination',
-      'Destination wallet',
-      current.destinationWallet,
-      actual,
-      actual === current.destinationWallet ? 'pass' : actual ? 'mismatch' : 'warn',
-      actual === current.destinationWallet ? 'Destination matches.' : actual ? 'Classic artifact has a different destination.' : 'Destination was not found directly; final sweep may still be pending.',
-    );
-  }
-  const plannedAirdrop = Number(current.airdrop.plannedRecipientCount || 0);
-  const deliveredAirdrop = Number(current.airdrop.deliveredCount || 0);
-  const failedAirdrop = Number(current.airdrop.failedCount || 0);
-  const currentAirdropEvidence = comparisonAirdropDeliveryEvidenceState(current.airdrop);
-  const currentAirdropWallets = comparisonAirdropWallets(current.airdrop);
-  const matchedAirdropWallets = comparisonMatchedAirdropWallets(artifact, currentAirdropWallets);
-  const currentAirdropTxs = comparisonAirdropTxs(current.airdrop);
-  const matchedAirdropTxs = comparisonMatchedAirdropTxs(artifact, currentAirdropTxs);
-  const structuredAirdropEvidence = comparisonHasStructuredAirdropEvidence(artifact);
-  const artifactAirdropWallets = comparisonAirdropWallets(artifact.airdrop);
-  const artifactAirdropTxs = comparisonAirdropTxs(artifact.airdrop);
-  if (comparisonAirdropNeedsFullRows(current.airdrop)) {
-    addRow(
-      'airdrop-compact-evidence',
-      'Airdrop row evidence',
-      'full recipient and transaction rows',
-      'hash-only compact proof',
-      'missing',
-      'This imported HTML proof stores full airdrop hashes with capped samples. Load the full JSON proof export or the original launch session before running exact Classic airdrop comparison.',
-    );
-  }
-  if (plannedAirdrop > 0 || deliveredAirdrop > 0 || failedAirdrop > 0) {
-    const actualDelivered = numberOrNull(artifact.airdrop.deliveredCount);
-    const actualFailed = numberOrNull(artifact.airdrop.failedCount);
-    const hasAirdropCounts = actualDelivered !== null || actualFailed !== null;
-    const deliveredMatches = actualDelivered !== null && actualDelivered === deliveredAirdrop;
-    const failedMatches = actualFailed !== null && actualFailed === failedAirdrop;
-    const recipientEvidenceMatches = currentAirdropWallets.length > 0 && matchedAirdropWallets.length === currentAirdropWallets.length;
-    const txEvidenceMatches = currentAirdropTxs.length <= 0 || matchedAirdropTxs.length === currentAirdropTxs.length;
-    const structuredCountsMatch = structuredAirdropEvidence
-      && (actualDelivered === null || actualDelivered === deliveredAirdrop)
-      && (actualFailed === null || actualFailed === failedAirdrop)
-      && (!artifactAirdropWallets.length || artifactAirdropWallets.length === currentAirdropWallets.length)
-      && (!artifactAirdropTxs.length || artifactAirdropTxs.length === currentAirdropTxs.length);
-    const deliveryState = !currentAirdropEvidence.complete
-      ? 'missing'
-      : hasAirdropCounts
-        ? deliveredMatches && failedMatches && (!structuredAirdropEvidence || structuredCountsMatch) ? 'pass' : 'mismatch'
-        : structuredAirdropEvidence
-          ? recipientEvidenceMatches && txEvidenceMatches && structuredCountsMatch ? 'pass' : matchedAirdropWallets.length > 0 ? 'mismatch' : 'missing'
-          : recipientEvidenceMatches && txEvidenceMatches ? 'pass' : matchedAirdropWallets.length > 0 ? 'warn' : 'missing';
-    addRow(
-      'airdrop-delivery',
-      'Airdrop delivery',
-      `${deliveredAirdrop}/${plannedAirdrop} delivered, ${failedAirdrop} failed`,
-      hasAirdropCounts
-        ? `${actualDelivered ?? '?'} delivered, ${actualFailed ?? '?'} failed`
-        : recipientEvidenceMatches ? `${matchedAirdropWallets.length} recipient wallet${matchedAirdropWallets.length === 1 ? '' : 's'} found` : null,
-      deliveryState,
-      !currentAirdropEvidence.complete
-        ? `Current Trebuchet proof is missing exact airdrop evidence: ${currentAirdropEvidence.missing.join(', ')}.`
-      : deliveryState === 'pass'
-        ? `Artifact records ${actualDelivered ?? deliveredAirdrop} delivered and ${actualFailed ?? failedAirdrop} failed recipients.`
-        : structuredAirdropEvidence
-          ? `Classic structured airdrop evidence must match exactly; artifact records ${actualDelivered ?? '?'} delivered, ${actualFailed ?? '?'} failed, ${artifactAirdropWallets.length} wallet${artifactAirdropWallets.length === 1 ? '' : 's'}, and ${artifactAirdropTxs.length} transaction${artifactAirdropTxs.length === 1 ? '' : 's'}.`
-        : recipientEvidenceMatches && txEvidenceMatches
-          ? 'Classic artifact exposed the expected airdrop recipient wallets and delivered transaction signatures.'
-          : 'Classic artifact did not expose enough airdrop delivery evidence directly.',
-    );
-  }
-  if (currentAirdropEvidence.required && currentAirdropEvidence.recipientCount < currentAirdropEvidence.expectedCount) {
-    addRow(
-      'airdrop-recipients',
-      'Airdrop recipients',
-      `${currentAirdropEvidence.recipientCount}/${currentAirdropEvidence.expectedCount}`,
-      null,
-      'missing',
-      'Current Trebuchet proof is missing exact airdrop recipient wallet rows; load the full proof or original launch session before comparing Classic.',
-    );
-  } else if (currentAirdropWallets.length) {
-    const recipientState = comparisonExactEvidenceState({
-      expectedCount: currentAirdropWallets.length,
-      matchedCount: matchedAirdropWallets.length,
-      actualCount: artifactAirdropWallets.length,
-      hasStructuredEvidence: structuredAirdropEvidence && artifactAirdropWallets.length > 0,
-    });
-    addRow(
-      'airdrop-recipients',
-      'Airdrop recipients',
-      `${matchedAirdropWallets.length}/${currentAirdropWallets.length}`,
-      artifact.airdrop.transferred.length || artifact.airdrop.failed.length
-        ? `${comparisonAirdropWallets(artifact.airdrop).length} structured`
-        : artifact.addresses.length ? 'text evidence' : null,
-      recipientState,
-      recipientState === 'pass'
-        ? 'Every current airdrop recipient wallet was found in the Classic artifact.'
-        : structuredAirdropEvidence && artifactAirdropWallets.length > 0
-          ? `${matchedAirdropWallets.length}/${currentAirdropWallets.length} current airdrop recipient wallets matched, but the Classic artifact records ${artifactAirdropWallets.length}; the sets must match exactly.`
-          : `${matchedAirdropWallets.length}/${currentAirdropWallets.length} current airdrop recipient wallets were found in the Classic artifact.`,
-    );
-  }
-  if (currentAirdropEvidence.required && currentAirdropEvidence.transactionCount < currentAirdropEvidence.expectedCount) {
-    addRow(
-      'airdrop-transactions',
-      'Airdrop transactions',
-      `${currentAirdropEvidence.transactionCount}/${currentAirdropEvidence.expectedCount}`,
-      null,
-      'missing',
-      'Current Trebuchet proof is missing exact delivered airdrop transaction signatures; load the full proof or original launch session before comparing Classic.',
-    );
-  } else if (currentAirdropTxs.length) {
-    const txState = comparisonExactEvidenceState({
-      expectedCount: currentAirdropTxs.length,
-      matchedCount: matchedAirdropTxs.length,
-      actualCount: artifactAirdropTxs.length,
-      hasStructuredEvidence: structuredAirdropEvidence && artifactAirdropTxs.length > 0,
-    });
-    addRow(
-      'airdrop-transactions',
-      'Airdrop transactions',
-      `${matchedAirdropTxs.length}/${currentAirdropTxs.length}`,
-      artifact.airdrop.transferred.length || artifact.airdrop.failed.length
-        ? `${artifactAirdropTxs.length} structured`
-        : artifact.signatures.length ? 'text evidence' : null,
-      txState,
-      txState === 'pass'
-        ? 'Every current airdrop transaction signature was found in the Classic artifact.'
-        : structuredAirdropEvidence && artifactAirdropTxs.length > 0
-          ? `${matchedAirdropTxs.length}/${currentAirdropTxs.length} current airdrop transaction signatures matched, but the Classic artifact records ${artifactAirdropTxs.length}; the sets must match exactly.`
-          : `${matchedAirdropTxs.length}/${currentAirdropTxs.length} current airdrop transaction signatures were found in the Classic artifact.`,
-    );
-  }
-  const passCount = rows.filter((row) => row.state === 'pass').length;
-  const mismatchCount = rows.filter((row) => row.state === 'mismatch').length;
-  const missingCount = rows.filter((row) => row.state === 'missing').length;
-  const warnCount = rows.filter((row) => row.state === 'warn').length;
-  const status = classicComparisonStatusFromCounts({ mismatchCount, missingCount, warnCount });
-  return {
-    status,
-    comparedAt: new Date().toISOString(),
-    artifactKind: artifact.kind,
-    artifactSource: artifact.sourceKind,
-    structuredEvidence: artifact.structuredEvidence === true,
-    proofFingerprint: classicComparisonProofFingerprint(current),
-    passCount,
-    warnCount,
-    missingCount,
-    mismatchCount,
-    fieldCount: rows.length,
-    classicMint: artifact.mint || null,
-    classicPoolCount: artifact.poolIds.length,
-    rows,
-  };
-}
 
 function transferSweepErrorCount(transfer = {}) {
   const tokenErrors = Array.isArray(transfer.tokenTransferErrors)
@@ -11295,14 +10944,6 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
     deliveredCount: deliveredAirdrop,
     failedCount: failedAirdrop,
   });
-  const classicComparison = currentClassicComparisonForProof(proof, config);
-  const selfArtifactCompared = classicComparison?.artifactSource === 'trebuchet-v2';
-  const comparisonMatchesProof = classicComparisonMatchesProof(classicComparison, proof, config);
-  const comparisonEvidence = classicComparisonRequiredEvidence(classicComparison, proof, config);
-  const comparedToClassic = !selfArtifactCompared
-    && comparisonMatchesProof
-    && comparisonEvidence.pass
-    && classicComparison?.status === 'pass';
   const authorityValues = [
     token.mintAuthorityRenounced,
     token.freezeAuthorityDisabled,
@@ -11453,24 +11094,6 @@ function buildV2ReportParityAudit(proof = currentLaunchProof(), config = current
         : transfer
           ? 'Sweep record exists but is missing wallet-empty, error-free final-sweep evidence.'
         : proof?.canSweep ? 'Sweep is ready but not recorded.' : 'Final sweep is not recorded yet.',
-    ),
-    v2ReportParityItem(
-      'classic-comparison',
-      'Live classic comparison',
-      comparedToClassic ? 'pass' : 'warn',
-      comparedToClassic
-        ? 'A completed Classic artifact was compared against Trebuchet report output.'
-        : selfArtifactCompared
-          ? 'Loaded artifact was generated by Trebuchet; compare against completed Classic output.'
-          : classicComparison && !comparisonMatchesProof
-            ? 'Classic comparison belongs to another Trebuchet proof; rerun it for the current launch.'
-          : classicComparison
-            && classicComparison.status === 'pass'
-            && !comparisonEvidence.pass
-            ? comparisonEvidence.detail
-          : classicComparison
-            ? `Classic artifact compared with ${classicComparison.passCount || 0}/${classicComparison.fieldCount || 0} fields matching; ${classicComparison.mismatchCount || 0} mismatched, ${classicComparison.missingCount || 0} missing.`
-            : 'Compare the next completed live Trebuchet launch against a Classic launch artifact before retiring Classic.',
     ),
   ];
   const passCount = items.filter((item) => item.state === 'pass').length;
@@ -11627,17 +11250,9 @@ const V2_FIELD_VERIFICATION_REQUIREMENTS = Object.freeze({
     label: 'Report or launch record',
     action: 'attach-terminal-report',
   },
-  'classic-comparison': {
-    label: 'Classic artifact',
-    action: 'compare-classic-artifact',
-  },
   audit: {
     label: 'Proof audit',
     action: 'resolve-proof-audit',
-  },
-  'replacement-criteria': {
-    label: 'Replacement criteria',
-    action: 'complete-replacement-criteria',
   },
 });
 
@@ -11852,7 +11467,6 @@ function buildV2LaunchReportData(proof = currentLaunchProof(), config = currentL
     audit: reportParityAudit,
     retirementGate: classicRetirementGate,
   });
-  const classicReportComparison = normalizeClassicReportComparison(state.classicReportComparison).result;
   const allocatedPercent = results.reduce((sum, pool) => {
     const value = Number(pool?.supplyPercent);
     return sum + (Number.isFinite(value) ? value : 0);
@@ -11971,7 +11585,6 @@ function buildV2LaunchReportData(proof = currentLaunchProof(), config = currentL
     reportParityAudit,
     classicRetirementGate,
     fieldVerification,
-    classicReportComparison,
     transfer,
     transferEvidenceHash,
     finalSweep: {
@@ -13046,7 +12659,7 @@ function buildV2ReportPoolSections(results, config) {
         ${renderV2ReportFactRow('Initial price', pool.initialPrice ?? '-')}
         ${renderV2ReportFactRow('Launch side', pool.launchedSide || '-')}
         ${renderV2ReportFactRow('Ladder', ladder.mode === 'manual' ? `${(ladder.bands || []).length} manual bands` : ladder.mode === 'simple' ? `${ladder.bandCount || 0} bands` : 'off')}
-        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth` : 'off')}
+        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? (Array.isArray(support.layers) && support.layers.length ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL in ${support.layers.length} layers, down to ${reportPercent(support.depthPct)} depth` : `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth`) : 'off')}
       </div>
       <div class="slice-strip">${distributionRows}</div>
       <div class="pool-addresses">
@@ -13156,109 +12769,6 @@ function buildV2ReportRecoverySection(data) {
     <table class="report-table">
       <thead><tr><th>Journal</th><th>Status / stage</th><th>Pools</th><th>Resume plan</th></tr></thead>
       <tbody>${journalRows}</tbody>
-    </table>`;
-}
-
-function buildV2ReportFieldVerificationSection(fieldVerification = null) {
-  if (!fieldVerification || typeof fieldVerification !== 'object') return '';
-  const requirements = Array.isArray(fieldVerification.requirements) ? fieldVerification.requirements : [];
-  const criteriaBlockers = Array.isArray(fieldVerification.criteriaBlockers) ? fieldVerification.criteriaBlockers : [];
-  const rows = requirements.length
-    ? requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.action || (item.pass ? 'none' : 'review-blocker'))}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="4">No field verification rows were generated.</td></tr>';
-  const criteriaRows = criteriaBlockers.length
-    ? `<h3 class="subsection">Replacement blockers</h3>
-      <table class="report-table">
-        <thead><tr><th>Criterion</th><th>Action</th><th>Evidence</th></tr></thead>
-        <tbody>${criteriaBlockers.map((item) => `<tr>
-          <td>${escapeHtml(item.label || item.id || '-')}</td>
-          <td>${escapeHtml(item.action || 'review-replacement-criterion')}</td>
-          <td>${escapeHtml(item.detail || '-')}</td>
-        </tr>`).join('')}</tbody>
-      </table>`
-    : '';
-  const criteriaBlockerCount = Number(fieldVerification.criteriaBlockerCount || criteriaBlockers.length || 0);
-  const state = fieldVerification.ready ? 'ok' : 'warn';
-  return `<h3 class="subsection">Field verification packet</h3>
-    <div class="banner banner-${state}">
-      <strong>${escapeHtml(fieldVerification.ready ? 'Field parity packet complete.' : 'Field parity packet blocked.')}</strong>
-      ${escapeHtml(`${fieldVerification.passCount || 0}/${fieldVerification.itemCount || requirements.length || 0} field checks passing · ${criteriaBlockerCount} criterion blocker${criteriaBlockerCount === 1 ? '' : 's'} · next action: ${fieldVerification.nextAction || 'none'}.`)}
-    </div>
-    <div class="pool-facts">
-      ${renderV2ReportFactRow('Packet version', fieldVerification.version || 1)}
-      ${renderV2ReportFactRow('Proof fingerprint', fieldVerification.proofFingerprint || '-')}
-      ${renderV2ReportFactRow('Replacement criteria', `${fieldVerification.criteriaPassCount || 0}/${fieldVerification.criteriaItemCount || 0}`)}
-      ${renderV2ReportFactRow('Criterion blockers', criteriaBlockerCount)}
-      ${renderV2ReportFactRow('Next detail', fieldVerification.nextDetail || '-')}
-    </div>
-    <table class="report-table">
-      <thead><tr><th>Field check</th><th>State</th><th>Action</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    ${criteriaRows}`;
-}
-
-function buildV2ReportParityAuditSection(audit = buildV2ReportParityAudit(), retirementGate = null, fieldVerification = null) {
-  const items = Array.isArray(audit?.items) ? audit.items : [];
-  const rows = items.length
-    ? items.map((item) => `<tr>
-      <td>${escapeHtml(item.label)}</td>
-      <td>${escapeHtml(item.state)}</td>
-      <td>${escapeHtml(item.detail)}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No parity audit rows were generated.</td></tr>';
-  const gate = retirementGate || buildClassicRetirementGate(currentLaunchProof(), audit);
-  const gateRows = Array.isArray(gate?.requirements)
-    ? gate.requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No Classic retirement gate rows were generated.</td></tr>';
-  const criteria = Array.isArray(gate?.replacementCriteria) ? gate.replacementCriteria : [];
-  const criteriaRows = criteria.length
-    ? criteria.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'needs proof')}</td>
-      <td>${escapeHtml(`${item.evidence || '-'} ${item.detail || ''}`.trim())}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No replacement criteria audit rows were generated.</td></tr>';
-  return `<hr class="section-rule">
-    <div class="enum-badge">[ 07 ] &nbsp; Classic Parity</div>
-    <h2 class="section-title">Classic report parity audit</h2>
-    <div class="banner banner-${gate?.state === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(gate?.state === 'pass' ? 'Classic retirement ready.' : 'Classic retirement blocked.')}</strong>
-      ${escapeHtml(`${gate?.passCount || 0}/${gate?.itemCount || 0} retirement checks passing · ${gate?.detail || 'Review live proof before replacing Classic.'}`)}
-    </div>
-    <h3 class="subsection">Classic retirement gate</h3>
-    <table class="report-table">
-      <thead><tr><th>Requirement</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${gateRows}</tbody>
-    </table>
-    ${buildV2ReportFieldVerificationSection(fieldVerification)}
-    <h3 class="subsection">Replacement criteria</h3>
-    <table class="report-table">
-      <thead><tr><th>Criterion</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${criteriaRows}</tbody>
-    </table>
-    <div class="banner banner-${audit?.status === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete.' : 'Review before retiring Classic.')}</strong>
-      ${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass · ${audit?.missingCount || 0} missing · ${audit?.warnCount || 0} warning${Number(audit?.warnCount || 0) === 1 ? '' : 's'}.`)}
-    </div>
-    <div class="token-summary-grid">
-      <div class="token-stat"><div class="token-stat-label">Pass</div><div class="token-stat-value">${Number(audit?.passCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Warnings</div><div class="token-stat-value">${Number(audit?.warnCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Missing</div><div class="token-stat-value">${Number(audit?.missingCount || 0)}</div></div>
-    </div>
-    <h3 class="subsection">Evidence checklist</h3>
-    <table class="report-table">
-      <thead><tr><th>Classic field</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
     </table>`;
 }
 
@@ -13444,10 +12954,12 @@ function renderReportPanel() {
     : funder ? `Funding wallet · ${fullAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
-  summary.textContent = publish ? 'Publish on' : 'Local only';
+  summary.textContent = publish ? 'Saved on Arweave' : 'Local only';
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
+  const publishButton = document.querySelector('[data-action="toggle-report-publish"]');
+  if (publishButton) publishButton.setAttribute('aria-checked', String(Boolean(publish)));
   $('#reportPreview').innerHTML = `
-    <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
+    <div class="mini-row"><span>Launch report</span><strong>${publish ? 'Saved permanently on Arweave and on this computer' : 'Kept on this computer only'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
     <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(fullAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>
@@ -13669,14 +13181,14 @@ function manualPrefundStatus(item) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Not checked',
       className: 'warn',
-      detail: state.manualPrefund.polling ? 'Reading the selected wallet balance.' : 'Click Check balance or wait for the live poll.',
+      detail: state.manualPrefund.polling ? 'Reading the balance.' : 'Not checked yet.',
     };
   }
   if (!snapshot.fresh) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Recheck',
       className: 'warn',
-      detail: 'Balance snapshot is stale; wait for the live poll or click Check balance.',
+      detail: 'Out of date.',
     };
   }
 
@@ -13938,7 +13450,7 @@ function renderQuotePoolGuidance() {
           ? { label: `${autoCount} auto`, className: '' }
           : { label: 'Covered', className: '' };
   const detail = fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : fundingEstimateStatus.matchesConfig
       ? 'Every non-SOL pool is classified by the current funding estimate.'
       : 'Run the estimate before launch so flywheel quote-token funding is explicit.';
@@ -14069,11 +13581,11 @@ function renderQuoteAcquirePanel() {
   const savedAction = ['review_required', 'paused', 'recovery_required'].includes(job?.status) && job.walletPublicKey === selectedLaunchWalletPublicKey();
   const detail = savedAction ? (job.status === 'recovery_required' ? 'Review cleanup for the saved quote purchase.' : job.status === 'paused' ? 'Resume the saved purchase and verify its original receipts.' : 'Review the saved quote and its complete spending ceiling.')
     : fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
     : acquireStatus.stale
-      ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
+      ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
       ? (routes.length
         ? `${routes.length} route${routes.length === 1 ? '' : 's'} can be auto-acquired from the launch wallet.`
@@ -14097,8 +13609,10 @@ function renderQuoteAcquirePanel() {
     ? '<button class="pill-button" type="button" data-action="clear-quote-acquire">Clear</button>'
     : '';
 
+  const manualPanel = renderManualPrefundPanel();
+  // Two parts, each its own tab on the Funding row: the acquire routes, then the tokens you send yourself.
   return `
-    <div class="quote-acquire-panel">
+    <div class="quote-acquire-panel" data-fund-part="acquire">
       <div class="quote-acquire-head">
         <span>
           <span class="eyebrow">Quote-token acquire</span>
@@ -14121,10 +13635,143 @@ function renderQuoteAcquirePanel() {
         ${rows || '<article><i class="fa-solid fa-wallet"></i><span><strong>No route rows yet</strong><small>Estimate funding first</small></span></article>'}
       </div>
       <div class="operator-toolbar compact">${button}${clear}</div>
-      ${renderManualPrefundPanel()}
       ${state.quoteAcquire.error ? `<p class="quote-acquire-error">${escapeHtml(state.quoteAcquire.error)}</p>` : ''}
     </div>
+    ${manualPanel ? `<div data-fund-part="prefund">${manualPanel}</div>` : ''}
   `;
+}
+
+// The launch wallet's balances, laid against what the launch needs (Fund) or
+// what can be taken back (Recover), and the worth of each airdrop wallet.
+
+const LEDGER_FRESH_MS = 30000;
+
+// Reads the chain for the launch wallet at most every 30 seconds, only while the
+// Fund or Recover tab is open. The refresh redraws the panels that show it.
+function ensureLaunchWalletBalance() {
+  if (state.demoActive) return;
+  const walletPublicKey = selectedLaunchWalletPublicKey();
+  if (!walletPublicKey || state.apiStatus !== 'connected') return;
+  const prefund = state.manualPrefund || {};
+  if (prefund.polling) return;
+  const age = Date.now() - Date.parse(prefund.lastUpdatedAt || '');
+  if (prefund.walletPublicKey === walletPublicKey && Number.isFinite(age) && age < LEDGER_FRESH_MS) return;
+  window.setTimeout(() => { refreshManualPrefundBalance({ quiet: true }).catch(() => null); }, 0);
+}
+
+function ledgerTokenSymbol(mint, token = {}) {
+  const coin = (state.coins?.list || []).find((item) => item.mint === mint);
+  return coin?.symbol || token.symbol || shortAddress(mint);
+}
+
+function ledgerAmount(value, digits = 4) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '—';
+  if (amount >= 1000000) return compactAmount(amount);
+  return amount.toLocaleString(undefined, { maximumFractionDigits: amount >= 1000 ? 0 : digits });
+}
+
+function ledgerRowHtml({ symbol, held, needed = null, note = '', tone = '' }) {
+  const status = needed == null
+    ? (note ? `<em>${escapeHtml(note)}</em>` : '<em></em>')
+    : Number(held) + 1e-9 >= Number(needed)
+      ? '<em class="is-ok"><i class="fa-solid fa-check" aria-hidden="true"></i> enough</em>'
+      : `<em class="is-short">needs ${escapeHtml(ledgerAmount(Number(needed) - Number(held)))} more</em>`;
+  return `<div class="ledger-row${tone ? ` is-${tone}` : ''}"><span>${escapeHtml(symbol)}</span><b>${escapeHtml(ledgerAmount(held))}</b>${needed == null ? `<small></small>${status}` : `<small>of ${escapeHtml(ledgerAmount(needed))}</small>${status}`}</div>`;
+}
+
+function ledgerBalance() {
+  const snapshot = selectedWalletDetailedBalance();
+  return snapshot?.balance || null;
+}
+
+function ledgerShell(head, rows, foot = '') {
+  return `<section class="ledger" aria-label="${escapeHtml(head)}"><div class="ledger-head"><span>${escapeHtml(head)}</span></div>${rows}${foot}</section>`;
+}
+
+// Fund: SOL and every pair token the plan has to hold, against what the wallet holds.
+function fundLedgerHtml() {
+  if (state.demoActive) return '';
+  if (!selectedLaunchWalletPublicKey()) return '';
+  const balance = ledgerBalance();
+  if (!balance) return ledgerShell('In the wallet', '<div class="ledger-row"><span>Reading the chain…</span></div>');
+  const estimate = classicFundingEstimateStatus(currentLaunchConfig()).matchesConfig ? state.classicFundingEstimate : null;
+  const rows = [ledgerRowHtml({
+    symbol: 'SOL',
+    held: balance.sol,
+    needed: estimate?.totalSol != null ? Number(estimate.totalSol) : null,
+    note: estimate ? '' : 'not estimated',
+  })];
+  quoteManualPrefundItems().forEach((item) => {
+    const token = balance.tokens?.[item.mint];
+    rows.push(ledgerRowHtml({
+      symbol: item.symbol,
+      held: Number(token?.amountUi) || 0,
+      needed: item.amount,
+      note: item.amount == null ? 'not estimated' : '',
+    }));
+  });
+  return ledgerShell('In the wallet', rows.join(''));
+}
+
+// Recover: everything the wallet holds that a sweep would return.
+function recoverLedgerHtml() {
+  if (state.demoActive) return '';
+  if (!selectedLaunchWalletPublicKey()) return '';
+  const balance = ledgerBalance();
+  if (!balance) return ledgerShell('Can be returned', '<div class="ledger-row"><span>Reading the chain…</span></div>');
+  const launchMint = typeof proofTokenMint === 'function' ? proofTokenMint(currentLaunchProof()) : null;
+  const tokens = Object.entries(balance.tokens && typeof balance.tokens === 'object' ? balance.tokens : {})
+    .filter(([, token]) => Number(token?.amountUi) > 0)
+    .map(([mint, token]) => ({ mint, symbol: ledgerTokenSymbol(mint, token), amount: Number(token.amountUi) }))
+    .sort((a, b) => (b.mint === launchMint) - (a.mint === launchMint) || b.amount - a.amount);
+  const rows = [ledgerRowHtml({ symbol: 'SOL', held: balance.sol })]
+    .concat(tokens.map((token) => ledgerRowHtml({
+      symbol: token.symbol,
+      held: token.amount,
+      note: token.mint === launchMint ? 'launch token' : '',
+    })));
+  return ledgerShell('Can be returned', rows.join(''));
+}
+
+function renderRecoverLedger() {
+  const slot = $('#recoverLedger');
+  if (slot) slot.innerHTML = recoverLedgerHtml();
+}
+
+// Tab summary: what the wallet holds, in a few words.
+function launchWalletHoldingsSummary() {
+  if (!selectedLaunchWalletPublicKey()) return 'No wallet';
+  const balance = ledgerBalance();
+  if (!balance) return 'Not checked';
+  const tokenCount = Object.values(balance.tokens || {}).filter((token) => Number(token?.amountUi) > 0).length;
+  return `${ledgerAmount(balance.sol)} SOL${tokenCount ? ` · ${tokenCount} token${tokenCount === 1 ? '' : 's'}` : ''}`;
+}
+
+// Airdrop: each wallet's tokens, its share of the airdrop, and what that is worth
+// at the launch market cap.
+function airdropValueHtml(airdrop) {
+  const recipients = Array.isArray(airdrop?.recipients) ? airdrop.recipients : [];
+  if (!recipients.length) return '';
+  const supply = parseWholeNumber($('#tokenSupply')?.value) || 0;
+  const marketCap = Math.max(0, Number(currentClassicModel().targetMarketCapUsd) || 0);
+  const total = recipients.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0);
+  const usd = (tokens) => (supply > 0 && marketCap > 0 ? (tokens / supply) * marketCap : null);
+  const money = (value) => (value == null ? '—' : `$${value >= 100 ? Math.round(value).toLocaleString() : value.toFixed(2)}`);
+  const biggest = Math.max(...recipients.map((row) => Number(row.tokens) || 0), 1);
+  const shown = recipients.slice(0, 8).map((row) => {
+    const tokens = Number(row.tokens) || 0;
+    const share = total > 0 ? (tokens / total) * 100 : 0;
+    return `<div class="airdrop-value-row${row.source === 'funder' ? ' is-funder' : ''}" title="${escapeHtml(row.wallet || '')}">
+      <span class="airdrop-value-bar" style="width:${Math.max(2, (tokens / biggest) * 100)}%"></span>
+      ${walletChipHtml(row.wallet)}
+      <span>${escapeHtml(compactAmount(tokens))}</span>
+      <small>${escapeHtml(formatPercent(share))}%</small>
+      <b>${escapeHtml(money(usd(tokens)))}</b>
+    </div>`;
+  }).join('');
+  const more = recipients.length > 8 ? `<div class="airdrop-value-more">+${recipients.length - 8} more</div>` : '';
+  return `<div class="airdrop-value-head"><span>${recipients.length} wallet${recipients.length === 1 ? '' : 's'}</span><span>${escapeHtml(compactAmount(total))} tokens</span><b>${escapeHtml(money(usd(total)))} at launch price</b></div>${shown}${more}`;
 }
 
 function finalizationBadge(proof) {
@@ -14261,110 +13908,6 @@ function fieldVerificationHandoffLines(fieldVerification = {}) {
   return lines;
 }
 
-function reportParityClass(stateName) {
-  if (stateName === 'pass') return '';
-  if (stateName === 'mismatch') return 'danger';
-  if (stateName === 'missing') return 'danger';
-  return 'warn';
-}
-
-function renderClassicArtifactComparisonPanel() {
-  const comparison = state.classicReportComparison || {};
-  const inputResult = comparison.result || null;
-  const proof = currentLaunchProof();
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  const selectedResult = currentClassicComparisonForProof(proof, config);
-  const inputResultMatchesProof = Boolean(inputResult && classicComparisonMatchesProof(inputResult, proof, config));
-  const result = selectedResult || inputResult;
-  const usingProofSavedResult = Boolean(result && inputResult && !inputResultMatchesProof && result !== inputResult);
-  const staleResult = Boolean(result && !classicComparisonMatchesProof(result, proof, config));
-  const visibleComparisonError = usingProofSavedResult ? null : comparison.error;
-  const badgeClass = staleResult ? 'warn' : result ? reportParityClass(result.status) : visibleComparisonError ? 'danger' : 'warn';
-  const badgeLabel = usingProofSavedResult ? 'proof' : staleResult ? 'stale' : result ? result.status : visibleComparisonError ? 'error' : 'waiting';
-  const rows = Array.isArray(result?.rows) ? result.rows : [];
-  const resultSummary = result
-    ? staleResult
-      ? 'Comparison is for another Trebuchet proof'
-      : result.status === 'missing'
-      ? `${result.missingCount}/${result.fieldCount} proof fields missing`
-      : result.status === 'mismatch'
-        ? `${result.mismatchCount}/${result.fieldCount} fields mismatch`
-        : `${result.passCount}/${result.fieldCount} fields match`
-    : 'Paste classic report JSON or HTML';
-  return `
-    <details class="classic-compare-panel" ${result || visibleComparisonError ? 'open' : ''}>
-      <summary>
-        <span>
-          <small>Classic artifact compare</small>
-          <strong>${escapeHtml(resultSummary)}</strong>
-        </span>
-        <span class="risk-badge ${escapeHtml(badgeClass)}">${escapeHtml(badgeLabel)}</span>
-      </summary>
-      <textarea class="classic-artifact-text" rows="4" spellcheck="false" placeholder="Paste a completed classic report JSON export or HTML dossier">${escapeHtml(comparison.input || '')}</textarea>
-      <div class="operator-toolbar compact">
-        <button class="pill-button" type="button" data-action="load-classic-artifact">Load artifact</button>
-        <button class="pill-button" type="button" data-action="compare-classic-artifact">Compare artifact</button>
-        <button class="pill-button" type="button" data-action="clear-classic-artifact" ${comparison.input || result || visibleComparisonError ? '' : 'disabled'}>Clear</button>
-      </div>
-      ${usingProofSavedResult ? '<p class="classic-compare-note">Using the proof-saved Classic comparison; pasted artifact text is stale for this proof.</p>' : ''}
-      ${visibleComparisonError ? `<p class="classic-compare-error">${escapeHtml(visibleComparisonError)}</p>` : ''}
-      ${rows.length ? `<div class="classic-compare-list">
-        ${rows.slice(0, 6).map((row) => `
-          <article class="${escapeHtml(reportParityClass(row.state))}">
-            <i class="fa-solid ${row.state === 'pass' ? 'fa-check' : row.state === 'mismatch' ? 'fa-circle-xmark' : row.state === 'missing' ? 'fa-circle-exclamation' : 'fa-triangle-exclamation'}"></i>
-            <span>
-              <strong>${escapeHtml(row.label)}</strong>
-              <small>${escapeHtml(row.detail)}</small>
-            </span>
-          </article>
-        `).join('')}
-      </div>` : ''}
-    </details>
-  `;
-}
-
-function renderReportParityAuditPanel(audit = buildV2ReportParityAudit()) {
-  const items = Array.isArray(audit?.items) ? audit.items : [];
-  const orderedItems = [
-    ...items.filter((item) => item.state === 'missing'),
-    ...items.filter((item) => item.state === 'warn'),
-    ...items.filter((item) => item.state === 'pass'),
-  ];
-  const comparisonItem = items.find((item) => item.id === 'classic-comparison');
-  const focusItems = comparisonItem
-    ? [comparisonItem, ...orderedItems.filter((item) => item.id !== comparisonItem)].slice(0, 6)
-    : orderedItems.slice(0, 6);
-  return `
-    <div class="report-parity-audit ${escapeHtml(reportParityClass(audit?.status))}">
-      <div class="report-parity-head">
-        <span>
-          <span class="eyebrow">Classic report parity audit</span>
-          <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete' : audit?.status === 'missing' ? 'Proof fields missing' : 'Ready for review')}</strong>
-          <em>${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass`)}</em>
-        </span>
-        <span class="risk-badge ${escapeHtml(reportParityClass(audit?.status))}">${escapeHtml(audit?.status || 'missing')}</span>
-      </div>
-      <div class="report-parity-stats">
-        <span><small>Pass</small><strong>${Number(audit?.passCount || 0)}</strong></span>
-        <span><small>Warn</small><strong>${Number(audit?.warnCount || 0)}</strong></span>
-        <span><small>Missing</small><strong>${Number(audit?.missingCount || 0)}</strong></span>
-      </div>
-      <div class="report-parity-list">
-        ${focusItems.map((item) => `
-          <article class="${escapeHtml(reportParityClass(item.state))}">
-            <i class="fa-solid ${item.state === 'pass' ? 'fa-check' : item.state === 'missing' ? 'fa-circle-exclamation' : 'fa-triangle-exclamation'}"></i>
-            <span>
-              <strong>${escapeHtml(item.label)}</strong>
-              <small>${escapeHtml(item.detail)}</small>
-            </span>
-          </article>
-        `).join('')}
-      </div>
-      ${renderClassicArtifactComparisonPanel()}
-    </div>
-  `;
-}
-
 function finalizationNoticeRows({
   report,
   localDossier,
@@ -14377,12 +13920,12 @@ function finalizationNoticeRows({
   if (report?.status === 'failed' || report?.failed) {
     rows.push({
       state: 'danger',
-      text: `Report publish failed: ${report.error || 'retry after checking RPC, Arweave, and Recovery PIN state'}. Click Publish report to retry.`,
+      text: `Report not published: ${report.error || 'no reason given'}.`,
     });
   } else if (report?.status === 'skipped') {
     rows.push({
       state: 'warn',
-      text: `Report publish skipped: ${report.reason || 'server did not return a permanent report URI'}. Click Publish report to retry when proof is ready.`,
+      text: `Report not published: ${report.reason || 'no permanent address came back'}.`,
     });
   }
   if (staleReport) {
@@ -14403,7 +13946,7 @@ function finalizationNoticeRows({
       text: 'Report publishing is off. Download the saved launch record before treating the launch as reviewable.',
     });
   }
-  const airdropIssue = airdropCompletionIssue(airdropStatus, 'publishing the report or sweeping');
+  const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) {
     rows.push({
       state: airdropStatus?.retryRequired ? 'danger' : 'warn',
@@ -14550,20 +14093,19 @@ function renderFinalizationPanel() {
     canPublish || state.reportPublishing
       ? `<button class="pill-button" type="button" data-action="publish-v2-report" ${canPublish ? '' : 'disabled'}>${escapeHtml(reportLabel)}</button>`
       : '',
-    plannedAirdrop > 0
+    plannedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="run-v2-airdrop" ${canRunAirdrop ? '' : 'disabled'}>${escapeHtml(airdropLabel)}</button>`
       : '',
-    failedAirdrop > 0
+    failedAirdrop > 0 && !liveCoinFinishesOnCoinPage()
       ? `<button class="pill-button" type="button" data-action="retry-v2-airdrop" ${canRetryAirdrop ? '' : 'disabled'}>Retry failed</button>`
       : '',
     '<button class="pill-button" type="button" data-action="load-v2-proof">Load proof</button>',
   ].filter(Boolean).join('');
 
   return `
-    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}">
+    <div class="finalize-panel ${finalSweepComplete ? 'is-terminal' : ''}" role="group" aria-label="Launch completion">
       <div class="finalize-head">
         <span>
-          <span class="eyebrow">Launch completion</span>
           <h3>${finalSweepComplete ? 'Launch complete' : 'Report, airdrop, and proof'}</h3>
           <p>${finalSweepComplete
             ? `Mint ${tokenMint ? fullAddress(tokenMint) : 'recorded'} · ${poolCount} pool${poolCount === 1 ? '' : 's'} · launch wallet empty.`
@@ -14571,7 +14113,7 @@ function renderFinalizationPanel() {
         </span>
         <span class="finalize-head-status">
           <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
-          ${finalSweepComplete ? '<button class="text-button" type="button" data-view="history">Launch record</button>' : ''}
+          ${finalSweepComplete ? '<button class="text-button" type="button" data-action="inspect-recovery">Open coin</button>' : ''}
         </span>
       </div>
       <div class="finalize-grid">
@@ -14597,10 +14139,9 @@ function renderFinalizationPanel() {
         </span>
       </div>
       <div class="verify-panel-stage">
-      <div class="proof-review-panel" id="proofExplorer">
+      <div class="proof-review-panel" id="proofExplorer" role="group" aria-label="Proof review">
         <div class="proof-review-head">
           <span>
-            <span class="eyebrow">Proof review</span>
             <strong>${tokenMint ? 'Explorer bundle ready' : 'Waiting for launch record'}</strong>
           </span>
           <button class="pill-button" type="button" data-action="copy-v2-proof-summary" ${canDownload ? '' : 'disabled'}>Copy summary</button>
@@ -14615,12 +14156,8 @@ function renderFinalizationPanel() {
       </div>
       </div>
       <div class="operator-toolbar compact finalize-primary-actions">
-        ${primaryProofActions}
+        ${primaryProofActions}${supplementalProofActions}
       </div>
-      ${supplementalProofActions ? `<details class="drawer finalize-advanced-tools">
-        <summary><span>More proof tools</span><strong>Load${canPublish ? ' · publish' : ''}${plannedAirdrop > 0 ? ' · airdrop' : ''}</strong></summary>
-        <div class="operator-toolbar compact">${supplementalProofActions}</div>
-      </details>` : ''}
       ${notices.length ? `<div class="finalize-notices">
         ${notices.map((notice) => `<p class="finalize-warning ${escapeHtml(notice.state)}">${escapeHtml(notice.text)}</p>`).join('')}
       </div>` : ''}
@@ -14673,7 +14210,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
   const detail = state.cancelRefund.error
     || (result
       ? result.message
-      : 'Sweep the selected launch wallet back to your destination. Already-created token or pools remain on-chain.');
+      : '');
   return `
     <div class="cancel-refund-panel ${escapeHtml(badge.className)}">
       <div class="cancel-refund-head">
@@ -14685,8 +14222,8 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
       </div>
       <div class="cancel-refund-grid">
-        <span><small>Launch wallet</small><strong>${walletPublicKey ? escapeHtml(fullAddress(walletPublicKey)) : 'Select'}</strong></span>
-        <span><small>Destination</small><strong>${destinationWallet ? escapeHtml(fullAddress(destinationWallet)) : 'Set sweep'}</strong></span>
+        <span><small>Launch wallet</small><strong>${walletPublicKey ? walletChipHtml(walletPublicKey) : 'Select'}</strong></span>
+        <span><small>Destination</small><strong>${destinationWallet ? walletChipHtml(destinationWallet) : 'Set sweep'}</strong></span>
         <span><small>Tokens</small><strong>${metrics ? metrics.tokens : '-'}</strong></span>
         <span><small>NFTs</small><strong>${metrics ? metrics.nfts : '-'}</strong></span>
         <span><small>SOL</small><strong>${metrics ? metrics.sol.toFixed(4) : '-'}</strong></span>
@@ -14696,7 +14233,7 @@ function renderCancelRefundPanel(config = currentLaunchConfig()) {
         <button class="pill-button danger" type="button" data-action="cancel-refund-launch" ${canCancel ? '' : 'disabled'}>
           ${state.cancelRefund.running ? 'Refunding' : 'Cancel & refund'}
         </button>
-        <button class="pill-button" type="button" data-action="inspect-recovery">Recovery</button>
+        ${proofTokenMint(currentLaunchProof()) ? '<button class="pill-button" type="button" data-action="inspect-recovery">Open coin</button>' : ''}
       </div>
     </div>
   `;
@@ -14730,17 +14267,9 @@ function renderClassicBridge() {
       ? { label: readinessMeta.label === 'Ready' ? 'Review' : readinessMeta.label, className: 'warn' }
       : readinessMeta;
   const blockers = Array.isArray(readiness?.blockers) ? readiness.blockers : [];
-  const readinessNextDetail = {
-    '/api/create-token': 'Funding is verified. The next irreversible operation creates the mint, attaches metadata, and revokes token authorities.',
-    '/api/finish-token-creation': 'An on-chain mint exists, but metadata, supply, or authority safety is incomplete. Finish this mint before creating liquidity.',
-    '/api/create-lp': 'The token is complete. The next operation creates the planned markets, positions, and liquidity locks.',
-    '/api/resume-launch': 'Trebuchet found an incomplete liquidity operation and can resume only the missing work.',
-    '/api/reveal-sealed-metadata': 'Liquidity is locked. The next operation reveals the committed identity and makes metadata immutable.',
-    '/api/transfer-assets': 'Liquidity proof is complete. The next operation distributes assets, sweeps the launch wallet, and records final evidence.',
-  }[readiness?.nextEndpoint];
+  // Only why a step can't run: the panel's title and button already say what it does.
   const readinessDetail = quoteSafety.blockers[0]?.detail
     || blockers[0]?.detail
-    || readinessNextDetail
     || (state.apiStatus === 'connected' ? '' : 'Open the Trebuchet desktop app to continue.');
   const demoRunLabel = state.demoLaunchRunning
     ? 'Running test launch'
@@ -14789,7 +14318,7 @@ function renderClassicBridge() {
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
       <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
-      <button class="text-button" type="button" data-view="history">View record</button>
+      <button class="text-button" type="button" data-action="inspect-recovery">Open coin</button>
     </aside>
   ` : '';
   const classicBridge = $('#classicBridge');
@@ -14843,7 +14372,9 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: 'Buy or send the pair tokens listed below.',
+            detail: routeCount
+              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
+              : 'Send the pair tokens to the launch wallet, then check the balance.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }
@@ -14856,23 +14387,25 @@ function renderClassicBridge() {
           };
   const fundingPanel = `
     <section class="funding-task ${fundingReady ? 'is-ready' : ''}" aria-live="polite">
-      <div class="funding-task-main">
-        <span class="eyebrow">${escapeHtml(fundingNeed.eyebrow)}</span>
-        <strong>${escapeHtml(fundingNeed.title)}</strong>
-        <p>${escapeHtml(fundingNeed.detail)}</p>
+      <div class="funding-task-head">
+        <div class="funding-task-main">
+          <span class="eyebrow">${escapeHtml(fundingNeed.eyebrow)}</span>
+          <strong>${escapeHtml(fundingNeed.title)}</strong>
+          ${fundingNeed.detail ? `<p>${escapeHtml(fundingNeed.detail)}</p>` : ''}
+        </div>
+        <div class="funding-task-action">
+          ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) || (fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running ? 'Getting quotes…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${(fundingNeed.action === 'estimate-funding' && state.fundingEstimating) || (fundingNeed.action === 'start-quote-acquire' && state.quoteAcquire.running) ? 'fa-spinner fa-spin' : fundingNeed.action === 'start-quote-acquire' ? 'fa-right-left' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
+        </div>
       </div>
       ${estimate && fundingWallet && !state.demoActive ? `
         <div class="funding-task-address">
           <small>Launch wallet</small>
-          <code>${escapeHtml(fundingWallet)}</code>
-          <button class="secondary-button compact" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
+          <code title="${escapeHtml(fundingWallet)}">${escapeHtml(fundingWallet)}</code>
+          <button class="icon-button" type="button" data-action="copy-wallet-address" title="Copy address" aria-label="Copy address"><i class="fa-solid fa-copy"></i></button>
         </div>
       ` : ''}
       ${estimate ? renderFundingReceipt(estimate) : ''}
       ${renderPairTokenChecks()}
-      <div class="funding-task-action">
-        ${fundingNeed.action ? `<button class="primary-button" type="button" data-action="${escapeHtml(fundingNeed.action)}" ${state.manualPrefund.polling || (fundingNeed.action === 'estimate-funding' && state.fundingEstimating) ? 'disabled' : ''}><span>${escapeHtml(fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'Estimating…' : fundingNeed.actionLabel)}</span><i class="fa-solid ${fundingNeed.action === 'estimate-funding' && state.fundingEstimating ? 'fa-spinner fa-spin' : estimate ? 'fa-rotate' : 'fa-calculator'}"></i></button>` : '<span class="risk-badge">Ready</span>'}
-      </div>
     </section>
   `;
   const readinessPanel = ({
@@ -14946,11 +14479,7 @@ function renderClassicBridge() {
         : finalizationIssue
           ? String(finalizationIssue)
         : needsRunEnvelope
-          ? finalSweepAction
-            ? 'Confirm the return wallet, then approve the final sweep.'
-            : recoveringToken
-            ? 'Review the recovery once. Trebuchet will finish the existing mint, not create another.'
-            : 'Check what will be sent and the most it can spend.'
+          ? ''
         : readinessDetail;
     const panelBadge = state.demoActive && !complete ? '' : complete ? 'Done' : needsFunding || finalizationIssue ? 'Required' : needsRunEnvelope ? 'Review' : effectiveReadinessMeta.label;
     const panelClass = complete ? '' : needsFunding || finalizationIssue || needsRunEnvelope ? 'warn' : effectiveReadinessMeta.className;
@@ -15008,23 +14537,22 @@ function renderClassicBridge() {
         </span>
         ${walletPublicKey || hasManagedWallets ? `<span class="risk-badge ${walletReady ? '' : 'warn'}">${walletReady ? 'Continue' : walletPublicKey ? 'Unlock' : 'Choose'}</span>` : ''}
       </button>
-      <details class="drawer phase-options">
-        <summary><span>Wallet options</span><strong>Copy · lock · manage</strong></summary>
-        <div class="launch-phase-actions">
+      <div class="launch-phase-actions phase-options-row">
           ${walletPublicKey
             ? `<button class="secondary-button" type="button" data-action="copy-wallet-address"><i class="fa-solid fa-copy"></i><span>Copy address</span></button>
                <button class="secondary-button" type="button" data-action="${walletReady ? 'toggle-wallet' : 'unlock-wallet-and-continue'}"><i class="fa-solid ${walletReady ? 'fa-lock' : 'fa-unlock'}"></i><span>${walletReady ? 'Lock wallet' : 'Unlock'}</span></button>`
             : ''}
           <button class="secondary-button" type="button" data-view="wallet"><i class="fa-solid fa-wallet"></i><span>Manage wallets</span></button>
         </div>
-      </details>
+      ${fundLedgerHtml()}
     </section>
     <section class="classic-workspace-section classic-workspace-fund" data-classic-workspace="fund">
       <h2 class="visually-hidden" id="fundStepTitle">Fund</h2>
       <div data-fund-part="cost">
         ${completedJournal ? renderLaunchCompleteCard(completedJournal) : finishReturn.kind === 'unverified' ? renderFundingWalletHint({ compact: true }) : fundingPanel}
       </div>
-      ${estimate && (routeCount || manualQuoteCount) ? `<div data-fund-part="tokens">${renderQuoteAcquirePanel()}</div>` : ''}
+      ${estimate ? `<div data-fund-part="breakdown">${renderFundingBreakdown(estimate)}</div>` : ''}
+      ${estimate && (routeCount || manualQuoteCount) ? renderQuoteAcquirePanel() : ''}
       <div class="launch-phase-actions">
         <button class="primary-button" type="button" data-next-fact hidden></button>
       </div>
@@ -15053,7 +14581,7 @@ function renderClassicBridge() {
       </div>
       ${readinessPanel({
         title: tokenComplete ? 'Token created' : mintEndpoint === '/api/finish-token-creation' ? 'Finish interrupted token' : 'Create token',
-        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'The token was started but not finished. This finishes the same token; it does not make a new one.' : 'Checks the wallet, funding and token details first.',
+        detail: tokenComplete ? 'Mint and freeze control are removed.' : mintEndpoint === '/api/finish-token-creation' ? 'Started, not finished.' : '',
         canRun: mintCanRun,
         runLabel: mintEndpoint === '/api/finish-token-creation' ? 'Finish token safely' : 'Create token',
         complete: tokenComplete,
@@ -15069,21 +14597,21 @@ function renderClassicBridge() {
         ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="plan-preview is-liquidity">
-        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolMapForPool(topology.pools[0])}</div>
+        <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolsMapForPlan(topology.pools)}</div>
         <dl class="preview-rows">
-          <div><dt>Pair</dt><dd>${escapeHtml(String(topology.pools[0]?.quoteSymbol || topology.pools[0]?.quoteToken || 'SOL'))}${poolCount > 1 ? ` <i>+${poolCount - 1}</i>` : ''}</dd></div>
-          <div><dt>Support</dt><dd>${topology.pools[0]?.support?.mode === 'custom' ? `${Number(topology.pools[0].support.solValue || 0)} SOL <i>to −${Number(topology.pools[0].support.depthPct || 12)}%</i>` : 'Off'}</dd></div>
+          <div><dt>Pools</dt><dd>${poolCount}</dd></div>
+          <div><dt>Support</dt><dd>${(() => { const sol = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? Number(pool.support.solValue) || 0 : 0), 0); return sol > 0 ? `${Number(sol.toFixed(4))} SOL` : 'Off'; })()}</dd></div>
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
-          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}</dd></div>
+          <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}${(() => { const bids = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? (pool.support.layers?.length || 1) : 0), 0); return bids ? ` <i>+ ${bids} support</i>` : ''; })()}</dd></div>
           <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
         </dl>
       </div>
       ${readinessPanel({
         title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
         detail: metadataRevealPending
-          ? 'Liquidity is locked. Publish the name, symbol and logo, then lock them for good.'
-          : liquidityComplete ? 'Pools are open and positions are locked.' : 'Takes a few minutes. Keep Trebuchet open.',
+          ? ''
+          : liquidityComplete ? '' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
         complete: liquidityComplete && !metadataRevealPending,
@@ -15096,9 +14624,10 @@ function renderClassicBridge() {
       </details>
     </section>
     <section class="classic-workspace-section classic-workspace-verify" data-classic-workspace="finish">
+      <div data-finish-part="main">
       ${completedJournal && !finalSweepComplete ? '<h2 class="visually-hidden" id="finishStepTitle">Launch complete</h2>' : `<section class="launch-step-guide ${finalSweepComplete ? 'is-complete' : ''}" aria-labelledby="finishStepTitle">
         <div>
-          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Leftovers'}</h2>
+          <h2 id="finishStepTitle">${practiceComplete ? 'Test launch complete' : finalSweepComplete ? 'Launch complete' : 'Finish'}</h2>
           <p>${practiceComplete ? 'Nothing was sent.' : ''}</p>
         </div>
         ${practiceComplete ? '' : `<aside><i class="fa-solid ${finalSweepComplete ? 'fa-check' : finishDestinationReady ? 'fa-flag-checkered' : 'fa-wallet'}" aria-hidden="true"></i><span>${finalSweepComplete ? 'Launch record ready.' : !finishDestinationReady ? 'Return wallet needed below.' : finishCanRun ? 'Ready for the final sweep.' : 'Fix the item below.'}</span></aside>`}
@@ -15106,9 +14635,13 @@ function renderClassicBridge() {
       ${practiceComplete ? renderPracticeResultPanel() : ''}
       ${completedJournal && !finalSweepComplete ? renderLaunchCompleteCard(completedJournal) : ''}
       ${!completedJournal && !finalSweepComplete && !finishDestinationReady ? renderFundingWalletHint({ compact: true }) : ''}
-      ${!finalSweepComplete && finishDestinationReady ? readinessPanel({
+      ${!finalSweepComplete && liveCoinFinishesOnCoinPage() ? `<section class="readiness-panel is-primary" aria-label="Airdrop and sweep">
+        <div><h3>Airdrop and sweep</h3></div>
+        <button class="primary-button" type="button" data-action="inspect-recovery"><span>Open coin</span><i class="fa-solid fa-arrow-right"></i></button>
+      </section>` : ''}
+      ${!finalSweepComplete && finishDestinationReady && !liveCoinFinishesOnCoinPage() ? readinessPanel({
         title: 'Send everything to the return wallet',
-        detail: 'Fee Keys, airdrops, leftover tokens and SOL. The return wallet is checked again first.',
+        detail: '',
         canRun: finishCanRun,
         runLabel: 'Run final sweep',
         complete: false,
@@ -15116,20 +14649,26 @@ function renderClassicBridge() {
         primary: true,
         finalizationIssue: executeNextTransferFinalizationIssue(readiness, config),
       }) : ''}
-      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<details class="drawer launch-proof-details" ${finalSweepComplete ? 'open' : ''}>
-        <summary><span>Launch record</span><strong>${finalSweepComplete ? 'Ready' : 'Not ready'}</strong></summary>
-        ${renderFinalizationPanel()}
-      </details>`}
-      ${!finalSweepComplete && !completedJournal ? `<details class="drawer launch-recovery-details">
-        <summary><span>Interrupted launch or refund</span><strong>Open recovery actions</strong></summary>
-        ${renderCancelRefundPanel(config)}
-      </details>
-      <div class="launch-phase-secondary"><button class="text-button" type="button" data-view="history"><i class="fa-solid fa-life-ring"></i> Open full recovery history</button></div>` : ''}
+      </div>
+      ${(completedJournal && !finalSweepComplete) || practiceComplete ? '' : `<div data-finish-part="record">${renderFinalizationPanel()}</div>`}
+      ${!finalSweepComplete && !completedJournal ? `<div data-finish-part="recover">${renderCancelRefundPanel(config)}
+      <div class="launch-phase-secondary"><button class="text-button" type="button" data-action="inspect-recovery"><i class="fa-solid fa-life-ring"></i> ${proofTokenMint(currentLaunchProof()) ? 'Open coin' : 'All coins'}</button></div></div>` : ''}
     </section>
   `;
+  // The bridge was just rewritten: which Funding tab shows has to follow it.
+  syncPlanSlides();
   // Balance polling and other async refreshes rebuild this bridge directly.
   // Reapply the active workspace immediately so only one launch phase is visible.
   renderLaunchWorkspace();
+}
+
+// A real coin whose pools are done finishes on its coin page: the airdrop, the sweep, and their
+// progress live there, so this page does not offer a second way to run them. A test launch runs
+// everything here.
+function liveCoinFinishesOnCoinPage() {
+  const proof = currentLaunchProof();
+  if (!proofTokenMint(proof) || isDemoLaunchProof(proof) || state.demoActive) return false;
+  return state.executionReadiness?.nextEndpoint === '/api/transfer-assets';
 }
 
 function activityLogEntries() {
@@ -15512,7 +15051,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: walletPublicKey ? 'import-wallet' : 'generate-wallet', label: walletPublicKey ? 'Import wallet' : 'Generate wallet' };
   }
   if (action === 'grind-or-select-vanity-ca') {
-    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Cancel grind' : 'Grind CA', disabled: false };
+    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Add grind' : 'Grind CA', disabled: false };
   }
   if (['stage-launch-plan', 'fix-pool-topology'].includes(action)) {
     return { dataAction: 'review-plan', label: 'Stage plan' };
@@ -15558,17 +15097,8 @@ function fieldRunbookActionControl(action = '', stage = {}) {
       disabled: !airdropStatus.complete || !proofCanCreateLocalDossier(proof, config),
     };
   }
-  if (action === 'compare-classic-artifact') {
-    const comparisonInput = String(
-      state.classicReportComparison?.input
-      || document.querySelector('.classic-artifact-text')?.value
-      || '',
-    ).trim();
-    if (!comparisonInput) return { dataAction: 'load-classic-artifact', label: 'Load artifact' };
-    return { dataAction: 'compare-classic-artifact', label: 'Compare' };
-  }
   if (action === 'load-or-resume-journal') {
-    return { dataAction: 'inspect-recovery', label: 'Recovery' };
+    return { dataAction: 'inspect-recovery', label: 'Open coin' };
   }
   if (action === 'resolve-proof-audit') {
     return fallback('Audit', 'Open Diagnostics and resolve the missing proof-audit rows before retiring Classic.');
@@ -15874,6 +15404,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       bootstrap: pool.bootstrap,
       ladder: pool.ladder,
       support: pool.support,
+      ...(pool.venue === 'meteora-damm-v2' ? { venue: pool.venue, damm: pool.damm } : {}),
     };
   });
 }
@@ -16001,22 +15532,6 @@ function localApiLaunchPlanStatus(plan = state.launchPlan, config = currentLaunc
   };
 }
 
-function localApiLaunchPlanStaleReason(planStatus = localApiLaunchPlanStatus()) {
-  const reasons = [];
-  if (!planStatus.matchesConfig) reasons.push('current token/pool model');
-  if (!planStatus.matchesWallet) reasons.push('selected launch wallet');
-  return reasons.join(' or ') || 'current token/pool model or selected launch wallet';
-}
-
-function localApiLaunchPlanIncompleteReason(planStatus = localApiLaunchPlanStatus()) {
-  if (!planStatus.decodedOperationEvidence) return 'its local-wallet operation rows are not fully decoded';
-  if (Array.isArray(planStatus.missingOperationIds) && planStatus.missingOperationIds.length) {
-    return `it is missing required operation ${planStatus.missingOperationIds[0]}${planStatus.missingOperationIds.length === 1 ? '' : ` and ${planStatus.missingOperationIds.length - 1} more`}`;
-  }
-  if (planStatus.operationSequenceOrdered === false) return 'its operations are not in the required Classic launch order';
-  return 'it is missing the complete ordered run envelope';
-}
-
 function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   const topology = config?.poolTopology || {};
   const token = config?.token || {};
@@ -16044,7 +15559,13 @@ function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   };
 }
 
+// The server's readiness check decides whether an estimate is current, so the screen asks the same
+// core function: a second copy here normalized support layers differently and every preset launch
+// was blocked as "estimate stale" while the screen called it covered.
 function classicFundingEstimateFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.v2FundingEstimateFingerprint === 'function') {
+    return TrebuchetCore.v2FundingEstimateFingerprint(config);
+  }
   return JSON.stringify(stableFundingFingerprintValue(classicFundingEstimateRequest(config)));
 }
 
@@ -16169,87 +15690,12 @@ function proofLaunchConfigSnapshotState(proof = currentLaunchProof()) {
   };
 }
 
-function utf8ByteLength(value) {
-  const text = String(value ?? '');
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).length;
-  try {
-    return unescape(encodeURIComponent(text)).length;
-  } catch (_) {
-    return text.length;
-  }
-}
-
-function tokenConfigStatus(config = currentLaunchConfig()) {
-  const token = config?.token || {};
-  const name = String(token.name || '').trim();
-  const symbol = String(token.symbol || '').trim();
-  const supplyRaw = String(token.supply ?? '').trim().replace(/,/g, '');
-  const description = String(token.description || '').trim();
-  const logo = token.logo && typeof token.logo === 'object' ? token.logo : null;
-  const issues = [];
-  if (!name) {
-    issues.push('Token name is required.');
-  } else if (utf8ByteLength(name) > CLASSIC_TOKEN_NAME_MAX_BYTES) {
-    issues.push(`Token name must be ${CLASSIC_TOKEN_NAME_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!symbol) {
-    issues.push('Token symbol is required.');
-  } else if (utf8ByteLength(symbol) > CLASSIC_TOKEN_SYMBOL_MAX_BYTES) {
-    issues.push(`Token symbol must be ${CLASSIC_TOKEN_SYMBOL_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (utf8ByteLength(description) > CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES) {
-    issues.push(`Token description must be ${CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!/^[1-9]\d*$/.test(supplyRaw)) {
-    issues.push('Total supply must be a positive whole number.');
-  } else {
-    try {
-      if (BigInt(supplyRaw) > CLASSIC_MAX_WHOLE_TOKEN_SUPPLY) {
-        issues.push('Total supply must not exceed 10,000,000,000.');
-      }
-    } catch (_) {
-      issues.push('Total supply must be a positive whole number.');
-    }
-  }
-  if (state.tokenLogoError) {
-    issues.push(`Token logo failed validation: ${state.tokenLogoError}`);
-  } else if (logo) {
-    const mime = String(logo.type || logo.mime || logo.mimeType || '').toLowerCase();
-    const sizeBytes = Number(logo.sizeBytes ?? logo.size);
-    const width = Number(logo.width);
-    const height = Number(logo.height);
-    if (mime && !['image/png', 'image/jpeg', 'image/gif'].includes(mime)) {
-      issues.push('Token logo must be a PNG, JPG, or GIF image.');
-    }
-    if (Number.isFinite(sizeBytes) && (sizeBytes <= 0 || sizeBytes > CLASSIC_LOGO_MAX_BYTES)) {
-      issues.push('Token logo must be 100KB or smaller.');
-    }
-    if (Number.isFinite(width) && Number.isFinite(height)) {
-      if (width > CLASSIC_LOGO_MAX_DIMENSION || height > CLASSIC_LOGO_MAX_DIMENSION) {
-        issues.push(`Token logo must be at most ${CLASSIC_LOGO_MAX_DIMENSION}x${CLASSIC_LOGO_MAX_DIMENSION}px.`);
-      }
-      if (width < CLASSIC_LOGO_MIN_DIMENSION || height < CLASSIC_LOGO_MIN_DIMENSION) {
-        issues.push(`Token logo must be at least ${CLASSIC_LOGO_MIN_DIMENSION}x${CLASSIC_LOGO_MIN_DIMENSION}px.`);
-      }
-    }
-  }
-  return {
-    ready: issues.length === 0,
-    issues,
-    name,
-    symbol,
-    supply: supplyRaw,
-    hasLogo: Boolean(logo),
-  };
-}
-
 function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, config = currentLaunchConfig()) {
   config = proofConfigForFingerprint(proof, config);
   const expectedAuditFingerprint = launchProofFingerprint(proof, config);
   audit = reportParityAuditMatchesProof(audit, proof, config)
     ? audit
     : buildV2ReportParityAudit(proof, config);
-  const comparison = currentClassicComparisonForProof(proof, config);
   const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
   const plannedPools = buildV2ReportPoolPlan(config, results, proof);
   const plannedPoolCount = Math.max(1, plannedPools.length || 0);
@@ -16279,9 +15725,6 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
     && reportArtifactMatchesTerminalSweep(reportArtifactRecord, proof)
   );
   const isDemoProof = isDemoLaunchProof(proof);
-  const comparisonIsV2Artifact = comparison?.artifactSource === 'trebuchet-v2';
-  const comparisonMatchesProof = classicComparisonMatchesProof(comparison, proof, config);
-  const comparisonEvidence = classicComparisonRequiredEvidence(comparison, proof, config);
   const proofLaunchConfigSnapshot = proofLaunchConfigSnapshotState(proof);
   const proofJournalEvidence = Boolean(proof?.journalId);
   const localJournalEvidenceState = proofJournalEvidenceState(proof);
@@ -16326,22 +15769,6 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
     && liveLiquidityProofComplete
     && finalSweepComplete,
   );
-  const demoRunComplete = demoRunHasCompletedReadiness();
-  const replacementCriteria = buildV2ReplacementCriteriaAudit({
-    proof,
-    audit,
-    hasCompletedLiveProof,
-    demoRunComplete,
-    reportArtifact,
-    reportArtifactRecord,
-    reportArtifactSweepBound,
-    comparison,
-    comparisonMatchesProof,
-    comparisonEvidence,
-    comparisonIsV2Artifact,
-    config,
-  });
-  const missingReplacementCriteria = replacementCriteria.filter((item) => item.pass !== true);
   const requirements = [
     {
       id: 'live-proof',
@@ -16349,45 +15776,45 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       detail: hasCompletedLiveProof
         ? `Live Trebuchet proof has ${poolCount} pool${poolCount === 1 ? '' : 's'} and ${positionCount} position${positionCount === 1 ? '' : 's'}.`
         : isDemoProof
-          ? 'Test launch record proves wiring only; run a real Trebuchet launch before retiring Classic.'
+          ? 'Test launch record proves wiring only; run a real Trebuchet launch.'
           : proof && proofLaunchConfigSnapshot.state === 'missing'
-            ? 'Completed proof is missing its frozen launch-config snapshot; load proof-bound config before retiring Classic.'
+            ? 'Completed proof is missing its frozen launch-config snapshot; load proof-bound config.'
             : proof && proofLaunchConfigSnapshot.state === 'mismatch'
-              ? `Completed proof has a mismatched frozen launch-config snapshot (${proofLaunchConfigSnapshot.mismatches.join(', ')}); load the journal-bound token and pool configuration before retiring Classic.`
+              ? `Completed proof has a mismatched frozen launch-config snapshot (${proofLaunchConfigSnapshot.mismatches.join(', ')}); load the journal-bound token and pool configuration.`
             : proof && !proofLaunchConfigSnapshot.complete
-              ? `Completed proof has an incomplete frozen launch-config snapshot (${proofLaunchConfigSnapshot.missing.join(', ')}); load proof-bound token and pool configuration before retiring Classic.`
+              ? `Completed proof has an incomplete frozen launch-config snapshot (${proofLaunchConfigSnapshot.missing.join(', ')}); load proof-bound token and pool configuration.`
             : proof && !proofJournalEvidence
-              ? 'Completed proof is missing its launch journal id; load journal-backed proof before retiring Classic.'
+              ? 'Completed proof is missing its launch journal id; load journal-backed proof.'
             : proof && !matchingLocalJournal
-              ? `Completed proof journal ${proof.journalId} is not loaded from the local launch-journal store; refresh local recovery state before retiring Classic.`
+              ? `Completed proof journal ${proof.journalId} is not loaded from the local launch-journal store; refresh local recovery state.`
             : proof && localJournalEvidenceState.mismatches.length
-              ? `Loaded launch journal does not match proof (${localJournalEvidenceState.mismatches.join(', ')}); refresh local recovery state before retiring Classic.`
+              ? `Loaded launch journal does not match proof (${localJournalEvidenceState.mismatches.join(', ')}); refresh local recovery state.`
             : proof && localJournalEvidenceState.missing.length
-              ? `Loaded launch journal is missing proof backing (${localJournalEvidenceState.missing.join(', ')}); refresh local recovery state before retiring Classic.`
+              ? `Loaded launch journal is missing proof backing (${localJournalEvidenceState.missing.join(', ')}); refresh local recovery state.`
             : proof && !proofTerminalJournalEvidence
-              ? `Launch journal is not terminal (${proof?.status || 'unknown'} / ${proof?.stage || 'unknown'}); refresh proof after final sweep before retiring Classic.`
+              ? `Launch journal is not terminal (${proof?.status || 'unknown'} / ${proof?.stage || 'unknown'}); refresh proof after final sweep.`
             : proof && !proofWalletEvidence
-              ? 'Completed proof is missing its launch wallet; load wallet-bound proof before retiring Classic.'
+              ? 'Completed proof is missing its launch wallet; load wallet-bound proof.'
           : proof?.token?.mint && !liveTokenAuthorityComplete
-                ? `Token authority proof is ${liveTokenAuthorityPassCount}/${liveTokenAuthorityFields.length}; complete authority evidence before retiring Classic.`
+                ? `Token authority proof is ${liveTokenAuthorityPassCount}/${liveTokenAuthorityFields.length}; complete authority evidence.`
           : proof && (!livePoolIdentityComplete && (recordedPoolIds.length !== plannedPoolCount || poolCount !== plannedPoolCount || liquidityEvidence.missing.includes('pool count')))
-            ? `Pool identity proof is ${recordedPoolIds.length}/${plannedPoolCount}; load exact recorded pool IDs before retiring Classic.`
+            ? `Pool identity proof is ${recordedPoolIds.length}/${plannedPoolCount}; load exact recorded pool IDs.`
           : proof && txEvidence.poolCreateTxCount < plannedPoolCount
-            ? `Pool-create transaction proof is ${txEvidence.poolCreateTxCount}/${plannedPoolCount}; refresh journal-backed liquidity proof before retiring Classic.`
+            ? `Pool-create transaction proof is ${txEvidence.poolCreateTxCount}/${plannedPoolCount}; refresh journal-backed liquidity proof.`
           : proof && !livePositionProofComplete && (recordedPositionCount < plannedPositionCount || liquidityEvidence.missing.some((item) => ['position count', 'position records'].includes(item)))
-            ? `Position proof is ${recordedPositionCount}/${plannedPositionCount}; load exact position records before retiring Classic.`
+            ? `Position proof is ${recordedPositionCount}/${plannedPositionCount}; load exact position records.`
           : proof && txEvidence.openTxCount < recordedPositionCount
-            ? `Position-open transaction proof is ${txEvidence.openTxCount}/${recordedPositionCount}; refresh journal-backed liquidity proof before retiring Classic.`
+            ? `Position-open transaction proof is ${txEvidence.openTxCount}/${recordedPositionCount}; refresh journal-backed liquidity proof.`
           : proof && !liveLockProofComplete && (lockedPositionCount < recordedPositionCount || liquidityEvidence.missing.includes('lock count'))
-            ? `Burn & Earn lock proof is ${lockedPositionCount}/${recordedPositionCount}; complete lock evidence before retiring Classic.`
+            ? `Burn & Earn lock proof is ${lockedPositionCount}/${recordedPositionCount}; complete lock evidence.`
           : proof && txEvidence.lockTxCount < recordedPositionCount
-            ? `Burn & Earn lock transaction proof is ${txEvidence.lockTxCount}/${recordedPositionCount}; refresh journal-backed liquidity proof before retiring Classic.`
+            ? `Burn & Earn lock transaction proof is ${txEvidence.lockTxCount}/${recordedPositionCount}; refresh journal-backed liquidity proof.`
           : proof && !liveLockProofComplete && (feeKeyCount < lockedPositionCount || liquidityEvidence.missing.includes('fee key count'))
-            ? `Fee Key NFT proof is ${feeKeyCount}/${lockedPositionCount}; complete Fee Key mint evidence before retiring Classic.`
+            ? `Fee Key NFT proof is ${feeKeyCount}/${lockedPositionCount}; complete Fee Key mint evidence.`
           : proof && txEvidence.feeKeyRecipientTransferred < feeKeyRecipientTarget
-            ? `Fee Key recipient transfer proof is ${txEvidence.feeKeyRecipientTransferred}/${feeKeyRecipientTarget}; complete recipient delivery evidence before retiring Classic.`
+            ? `Fee Key recipient transfer proof is ${txEvidence.feeKeyRecipientTransferred}/${feeKeyRecipientTarget}; complete recipient delivery evidence.`
           : proof?.transfer && !finalSweepComplete
-            ? 'Final sweep record is not terminal; verify wallet-empty, error-free sweep evidence before retiring Classic.'
+            ? 'Final sweep record is not terminal; verify wallet-empty, error-free sweep evidence.'
             : 'Run a real Trebuchet launch through token, liquidity, and final sweep.',
     },
     {
@@ -16396,33 +15823,18 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       detail: reportUri
         ? reportArtifactSweepBound
           ? `Permanent report proof is attached: ${fullAddress(reportUri)}.`
-          : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
+          : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep.'
         : localDossier
           ? reportArtifactSweepBound
             ? `Saved launch record proof is attached: ${localDossier.filename}.`
-            : 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep before replacing Classic.'
+            : 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep.'
         : staleReport
           ? reportPublishMatchesProof(staleReport, proof, config) && !reportArtifactMatchesTerminalSweep(staleReport, proof)
             ? localDossierHasEvidence(staleReport)
-              ? 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep before replacing Classic.'
-              : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep before replacing Classic.'
-            : 'Report artifact belongs to another Trebuchet proof; regenerate it before replacing Classic.'
-          : 'Publish or attach a proof-bound Trebuchet launch report before replacing Classic.',
-    },
-    {
-      id: 'classic-comparison',
-      pass: comparison?.status === 'pass' && !comparisonIsV2Artifact && comparisonMatchesProof && comparisonEvidence.pass,
-      detail: comparison?.status === 'pass' && !comparisonIsV2Artifact && comparisonMatchesProof && comparisonEvidence.pass
-        ? `Classic artifact comparison passed ${comparison.passCount || 0}/${comparison.fieldCount || 0} fields.`
-        : comparisonIsV2Artifact
-          ? 'Loaded artifact was generated by Trebuchet; compare against a completed Classic artifact.'
-          : comparison && !comparisonMatchesProof
-            ? 'Classic artifact comparison belongs to another Trebuchet proof; rerun it for the current launch.'
-          : comparison?.status === 'pass' && !comparisonEvidence.pass
-            ? comparisonEvidence.detail
-          : comparison
-            ? `Classic artifact comparison is ${comparison.status}: ${comparison.mismatchCount || 0} mismatched, ${comparison.missingCount || 0} missing.`
-            : 'Paste and compare a completed Classic artifact against the completed Trebuchet proof.',
+              ? 'Saved launch record proof is missing the terminal sweep evidence hash; download a fresh launch record after final sweep.'
+              : 'Permanent report proof is missing the terminal sweep evidence hash; republish after final sweep.'
+            : 'Report artifact belongs to another Trebuchet proof; regenerate it.'
+          : 'Publish or attach a proof-bound Trebuchet launch report.',
     },
     {
       id: 'audit',
@@ -16430,13 +15842,6 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
       detail: audit?.status === 'pass'
         ? 'The generated Trebuchet proof audit is fully passing.'
         : `Proof audit is ${audit?.status || 'missing'} with ${audit?.missingCount || 0} missing and ${audit?.warnCount || 0} warning checks.`,
-    },
-    {
-      id: 'replacement-criteria',
-      pass: missingReplacementCriteria.length === 0,
-      detail: missingReplacementCriteria.length === 0
-        ? `${replacementCriteria.length}/${replacementCriteria.length} replacement criteria have proof.`
-        : `${missingReplacementCriteria.length} replacement criteria still need proof: ${missingReplacementCriteria.map((item) => item.label || item.id).slice(0, 3).join(', ')}${missingReplacementCriteria.length > 3 ? ', ...' : ''}.`,
     },
   ];
   const missing = requirements.filter((item) => !item.pass);
@@ -16446,755 +15851,201 @@ function buildClassicRetirementGate(proof = currentLaunchProof(), audit = null, 
     source: 'trebuchet-v2-classic-retirement-gate',
     proofFingerprint: expectedAuditFingerprint,
     auditFingerprint: audit?.proofFingerprint || null,
-    title: missing.length ? 'Classic retirement gate' : 'Classic can be retired',
+    title: missing.length ? 'Release evidence' : 'Ready to release',
     state: missing.length ? 'danger' : 'pass',
     badge: missing.length ? 'Blocked' : 'Ready',
-    detail: missing.length ? missing[0].detail : 'Live Trebuchet proof, proof-bound report artifact, and Classic comparison are all attached.',
+    detail: missing.length ? missing[0].detail : 'Live launch, report and proof audit pass.',
     passCount,
     itemCount: requirements.length,
     requirements,
-    replacementCriteria,
-    criteriaPassCount: replacementCriteria.filter((item) => item.pass).length,
-    criteriaItemCount: replacementCriteria.length,
+    replacementCriteria: [],
+    criteriaPassCount: 0,
+    criteriaItemCount: 0,
   };
 }
 
-function loadedRecoveryJournalEvidence() {
-  const journals = Array.isArray(state.recovery?.journals) ? state.recovery.journals : [];
-  const rows = journals.filter((journal) => {
-    if (!journal || !journal.id) return false;
-    const status = String(journal.status || '').toLowerCase();
-    if (['completed', 'archived'].includes(status)) return false;
-    return journalHasRecoveryPlanningEvidence(journal);
-  });
-  const failed = rows.filter((journal) => {
-    const status = String(journal.status || '').toLowerCase();
-    const stage = String(journal.stage || '').toLowerCase();
-    return status === 'failed' || stage.includes('failed') || stage.includes('partial');
-  }).length;
-  return {
-    count: rows.length,
-    failed,
-  };
+
+// A wallet address anywhere on the page is one chip. Hovering or focusing it shows a small card:
+// what the wallet holds now, read from the chain, and whether Trebuchet holds its key.
+
+const WALLET_CONTENTS_MAX_AGE_MS = 15_000;
+// The sweep drains to zero, so anything above a few transaction fees is worth sending on.
+const SWEEP_DUST_LAMPORTS = 20_000;
+const walletContentsCache = new Map();
+
+function walletChipHtml(address, { label = '' } = {}) {
+  const value = String(address || '').trim();
+  if (!value) return '';
+  return `<span class="wallet-chip" tabindex="0" data-wallet-chip="${escapeHtml(value)}" title="${escapeHtml(value)}">`
+    + `<code>${escapeHtml(shortAddress(value))}</code>${label ? `<small>${escapeHtml(label)}</small>` : ''}</span>`;
 }
 
-function journalHasRecoveryPlanningEvidence(journal = {}) {
-  if (!journal || isTerminalJournal(journal)) return false;
-  const priorResults = typeof journalPriorResults === 'function'
-    ? journalPriorResults(journal)
-    : (
-      Array.isArray(journal?.lp?.results) && journal.lp.results.length
-        ? journal.lp.results
-        : (Array.isArray(journal?.lp?.partialResults) ? journal.lp.partialResults : [])
-    );
-  const checkpointMatcher = typeof journalIsResumeCheckpointResult === 'function'
-    ? journalIsResumeCheckpointResult
-    : recoveryResultHasDurableCheckpointRow;
-  if (priorResults.some(checkpointMatcher)) return true;
-  const poolPlan = journal.poolPlan && typeof journal.poolPlan === 'object' ? journal.poolPlan : null;
-  const allocations = Array.isArray(poolPlan?.allocations) ? poolPlan.allocations : [];
-  const tokenMint = typeof journalTokenMint === 'function'
-    ? journalTokenMint(journal)
-    : String(journal?.token?.mint || journal?.token?.tokenMint || journal?.poolPlan?.tokenMint || '').trim();
-  if (allocations.length > 0 && (poolPlan?.tokenMint || tokenMint)) return true;
-  const unsafeEvents = typeof journalUnsafePoolEvents === 'function'
-    ? journalUnsafePoolEvents(journal, priorResults)
-    : (Array.isArray(journal?.events)
-      ? journal.events.filter((event) => event?.stage === 'pool_create_done')
-      : []);
-  if (unsafeEvents.some((event) => String(event?.poolId || '').trim())) {
-    return true;
-  }
-  const failedPhase = journal?.lp?.failedPhase || journal?.errorDetails?.failedPhase || '';
-  return Boolean(failedPhase && (allocations.length > 0 || priorResults.length > 0));
+function walletContents(address, { fresh = false } = {}) {
+  const cached = walletContentsCache.get(address);
+  if (!fresh && cached && (cached.pending || Date.now() - cached.at < WALLET_CONTENTS_MAX_AGE_MS)) return cached.pending || Promise.resolve(cached.value);
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getWalletContents) return Promise.resolve(null);
+  const pending = state.apiClient.getWalletContents(address, { fresh })
+    .then((value) => { walletContentsCache.set(address, { at: Date.now(), value }); return value; })
+    .catch((error) => { walletContentsCache.delete(address); throw error; });
+  walletContentsCache.set(address, { ...(cached || {}), pending });
+  return pending;
 }
 
-function recoveryResultHasResumeEvidence(result = state.lastRecoveryResult) {
-  if (!result || typeof result !== 'object' || result.success !== true) return false;
-  const rows = Array.isArray(result.results)
-    ? result.results
-    : Array.isArray(result.partialResults) ? result.partialResults : [];
-  if (rows.some(recoveryResultHasDurableCheckpointRow)) return true;
-  const journal = result.journal && typeof result.journal === 'object' ? result.journal : null;
-  if (String(journal?.id || journal?.journalId || '').trim()) return true;
-  const recovered = result.recovered && typeof result.recovered === 'object' ? result.recovered : null;
-  if (String(recovered?.journalId || recovered?.journal?.id || '').trim()) return true;
-  return false;
+function cachedWalletContents(address) {
+  return walletContentsCache.get(address)?.value || null;
 }
 
-function recoveryResultPositionRows(row = {}) {
+function walletTokenSymbol(mint) {
+  return (state.coins?.list || []).find((coin) => coin.mint === mint)?.symbol || shortAddress(mint);
+}
+
+function formatSol(lamports) {
+  return Number((Number(lamports || 0) / 1e9).toFixed(6)).toString();
+}
+
+// The sweep moves tokens and SOL, and closes empty token accounts to return their rent.
+function walletSweepable(contents) {
+  return Boolean(contents && contents.ownerProgram === '11111111111111111111111111111111'
+    && (contents.tokens.length > 0 || contents.lamports >= SWEEP_DUST_LAMPORTS || contents.openAccounts > 0));
+}
+
+function walletContentsSummary(contents) {
+  if (!contents) return '';
   return [
-    ...(Array.isArray(row?.mainPositions) ? row.mainPositions : []),
-    ...(Array.isArray(row?.ladderPositions) ? row.ladderPositions : []),
-    ...(Array.isArray(row?.supportPositions) ? row.supportPositions : []),
-    ...(row?.bootstrap && typeof row.bootstrap === 'object' ? [row.bootstrap] : []),
-  ];
+    `${formatSol(contents.lamports)} SOL`,
+    contents.tokens.length ? `${contents.tokens.length} token${contents.tokens.length === 1 ? '' : 's'}` : null,
+    contents.openAccounts ? `${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
 }
 
-function recoveryResultHasOpenedPositionEvidence(row = {}) {
-  return recoveryResultPositionRows(row).some((position) => Boolean(
-    position?.nftMint
-    || position?.positionNftMint
-    || position?.txIds?.open
-    || position?.openTx
-  ));
+const WALLET_KEY_LABELS = { launch: 'Launch wallet', retired: 'Finished launch wallet', vanity: 'Vanity address' };
+const WALLET_CARD_WIDTH = 280;
+
+// A fixed-size card: what the wallet is, its value, what it is made of (a bar and the top three
+// holdings by value), and how many more. Values come from prices the app already has.
+const WALLET_CARD_TOP = 3;
+
+function formatUsd(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  if (number >= 1000) return `$${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(number)}`;
+  if (number >= 1) return `$${number.toFixed(2)}`;
+  if (number > 0) return `$${number.toPrecision(2)}`;
+  return '$0';
 }
 
-function recoveryResultHasDurableCheckpointRow(row = {}) {
-  const poolId = String(row?.poolId || row?.id || '').trim();
-  return Boolean(
-    poolId
-    && (
-      row.phase1Complete === true
-      || recoveryResultHasOpenedPositionEvidence(row)
-    )
-  );
+function walletComposition(contents) {
+  const solAmount = Number(contents.lamports || 0) / 1e9;
+  const holdings = [
+    { name: 'SOL', amount: solAmount, valueUsd: contents.solUsd != null ? solAmount * contents.solUsd : null, sol: true },
+    ...contents.tokens.map((token) => ({
+      name: token.symbol || walletTokenSymbol(token.mint),
+      amount: Number(token.amountRaw) / 10 ** Number(token.decimals || 0),
+      valueUsd: token.valueUsd ?? null,
+    })),
+  ].filter((holding) => holding.amount > 0);
+  // Priced holdings by value first, then the rest as listed.
+  holdings.sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
+  const priced = holdings.filter((holding) => holding.valueUsd != null);
+  const totalUsd = priced.reduce((sum, holding) => sum + holding.valueUsd, 0);
+  return { holdings, totalUsd: priced.length ? totalUsd : null, unpriced: holdings.length - priced.length };
 }
 
-function buildV2ReplacementCriteriaAudit({
-  proof = currentLaunchProof(),
-  audit = null,
-  hasCompletedLiveProof = false,
-  demoRunComplete = false,
-  reportArtifact = null,
-  reportArtifactRecord = null,
-  reportArtifactSweepBound = false,
-  comparison = null,
-  comparisonMatchesProof = false,
-  comparisonEvidence = null,
-  comparisonIsV2Artifact = false,
-  config = proofConfigForFingerprint(proof, currentLaunchConfig()),
-} = {}) {
-  const results = Array.isArray(proof?.liquidity?.results) ? proof.liquidity.results : [];
-  const plannedPools = buildV2ReportPoolPlan(config, results, proof);
-  const selectedWalletPublicKey = selectedLaunchWalletPublicKey();
-  const selectedWallet = selectedManagedWallet();
-  const walletSecretLocked = state.secretPin?.locked === true || selectedWallet?.secretPinLocked === true;
-  const proofWalletEvidence = Boolean(proof?.walletPublicKey && hasCompletedLiveProof);
-  const walletRuntimeEvidence = Boolean(
-    state.apiStatus === 'connected'
-    && selectedWalletPublicKey
-    && selectedWallet
-    && selectedWallet.hasSecretKey === true
-    && !walletSecretLocked
-    && !selectedWallet.decryptionFailed
-  );
-  const walletEvidence = Boolean(proofWalletEvidence || walletRuntimeEvidence);
-  const persistedVanityCandidates = state.vanityCandidates.filter((candidate) => (
-    state.apiStatus === 'connected'
-    && candidate?.persisted === true
-    && candidate?.decryptionFailed !== true
-    && candidate?.hasSecretKey !== false
-  ));
-  const selectedVanityCandidate = persistedVanityCandidates.find((candidate) => (
-    candidate.publicKey === state.selectedVanityPublicKey
-  )) || null;
-  const nativeVanityAvailable = state.apiStatus === 'connected' && state.vanityAvailable;
-  const vanityEvidence = Boolean(
-    selectedVanityCandidate
-    || persistedVanityCandidates.length
-    || nativeVanityAvailable
-  );
-  const chartRendererEvidence = Boolean(typeof renderV2TokenomicsDonutSvg === 'function' && typeof liquidityDepthRows === 'function');
-  const viewportSmokeProof = validatedLocalViewportSmokeProof();
-  const viewportSmokeStatus = state.viewportSmoke || proof?.viewportSmoke || proof?.reportParity?.viewportSmoke || null;
-  const viewportSmokeApiConnected = state.apiStatus === 'connected';
-  const viewportSmokeEvidence = viewportSmokeApiConnected && Boolean(viewportSmokeProof);
-  const viewportSmokeNames = Array.isArray(viewportSmokeProof?.viewports)
-    ? viewportSmokeProof.viewports.filter((row) => row?.passed).map((row) => row.name).filter(Boolean)
-    : [];
-  const viewportSmokeDetail = viewportSmokeProof
-    ? viewportSmokeApiConnected
-      ? `Viewport smoke passed${viewportSmokeNames.length ? ` for ${viewportSmokeNames.join(', ')}` : ''}${viewportSmokeProof.generatedAt ? ` at ${viewportSmokeProof.generatedAt}` : ''}.`
-    : 'Connect the desktop app to verify viewport smoke proof against current Trebuchet assets.'
-    : viewportSmokeStatus?.detail || 'Run `npm run test:v2:viewport` to generate desktop/mobile viewport-smoke proof.';
-  const topologyIssues = typeof customQuoteSafetySummary === 'function'
-    ? customQuoteSafetySummary(config?.poolTopology || {})
-    : { blockers: [], warnings: [] };
-  const poolBlockerCount = Array.isArray(topologyIssues?.blockers) ? topologyIssues.blockers.length : 0;
-  const poolWarningCount = Array.isArray(topologyIssues?.warnings) ? topologyIssues.warnings.length : 0;
-  const localApiLaunchPlan = localApiLaunchPlanStatus(state.launchPlan, config);
-  const localApiLaunchPlanEvidence = localApiLaunchPlan.ready;
-  const chartModelEvidence = Boolean(hasCompletedLiveProof || localApiLaunchPlanEvidence);
-  const tokenConfig = tokenConfigStatus(hasCompletedLiveProof ? proofConfigForFingerprint(proof, config) : config);
-  const tokenConfigEvidence = Boolean(
-    tokenConfig.ready
-    && (hasCompletedLiveProof || localApiLaunchPlanEvidence)
-  );
-  const poolConfigEvidence = Boolean(
-    plannedPools.length
-    && poolBlockerCount === 0
-    && (hasCompletedLiveProof || localApiLaunchPlanEvidence)
-  );
-  const funding = typeof fundingMeterSnapshot === 'function'
-    ? fundingMeterSnapshot(config)
-    : { missingSol: 0, hasWalletBalance: false };
-  const fundingEstimateStatus = classicFundingEstimateStatus(config);
-  const fundingEstimateEvidence = fundingEstimateStatus.matchesConfig;
-  const fundingBalanceEvidence = state.apiStatus === 'connected' && funding.hasWalletBalance === true && funding.walletBalanceFresh === true;
-  const fundingSolEvidence = Number(funding.missingSol || 0) <= 0.001;
-  const quoteRoutes = typeof quoteAcquireRoutes === 'function' ? quoteAcquireRoutes() : [];
-  const quoteStatus = typeof quoteAcquireStatus === 'function'
-    ? quoteAcquireStatus(config)
-    : { ready: !quoteRoutes.length, stale: false };
-  const quoteAcquireEvidence = quoteStatus.ready;
-  const manualItems = typeof quoteManualPrefundItems === 'function' ? quoteManualPrefundItems() : [];
-  const manualSummary = typeof manualPrefundSummary === 'function'
-    ? manualPrefundSummary(manualItems)
-    : { className: manualItems.length ? 'warn' : '' };
-  const manualPrefundEvidence = !manualItems.length || manualSummary.className === '';
-  const fundingEvidence = Boolean(
-    hasCompletedLiveProof
-    || (fundingEstimateEvidence
-      && fundingBalanceEvidence
-      && fundingSolEvidence
-      && quoteAcquireEvidence
-      && manualPrefundEvidence)
-  );
-  const currentHeldReserveAudit = buildV2ReportHeldReserveAudit(config, currentClassicFundingEstimateForConfig(config));
-  const reportHeldReserveAudit = reportArtifactRecord?.heldReserveAudit && typeof reportArtifactRecord.heldReserveAudit === 'object'
-    ? reportArtifactRecord.heldReserveAudit
-    : null;
-  const effectiveHeldReserveAudit = reportHeldReserveAudit || currentHeldReserveAudit;
-  const heldReserveConfigured = Number(
-    effectiveHeldReserveAudit?.heldReservePercent ?? currentHeldReserveAudit?.heldReservePercent ?? 0,
-  ) > 0;
-  const heldReserveEvidence = !heldReserveConfigured
-    || (hasCompletedLiveProof
-      ? Boolean(reportArtifactSweepBound && reportHeldReserveAudit?.state === 'pass')
-      : currentHeldReserveAudit?.state === 'pass');
-  const proofJournalEvidence = Boolean(proof?.journalId);
-  const localJournalEvidenceState = proofJournalEvidenceState(proof);
-  const matchingLocalJournal = localJournalEvidenceState.journal;
-  const proofTerminalJournalEvidence = proofHasTerminalLaunchJournal(proof);
-  const proofFinalSweepEvidence = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
-  const proofBackedPreterminalJournalEvidence = Boolean(
-    proofJournalEvidence
-    && matchingLocalJournal
-    && !isTerminalJournal(matchingLocalJournal)
-    && journalHasRecoveryPlanningEvidence(matchingLocalJournal)
-  );
-  const localRecoveryJournal = loadedRecoveryJournalEvidence();
-  const localJournalEvidence = localRecoveryJournal.count > 0;
-  const recoveryResultJournalEvidence = recoveryResultHasResumeEvidence();
-  const resumeEvidence = hasCompletedLiveProof
-    ? proofJournalEvidence && proofTerminalJournalEvidence
-    : proof && proofFinalSweepEvidence
-      ? Boolean(proofJournalEvidence && matchingLocalJournal && localJournalEvidenceState.backed && proofTerminalJournalEvidence)
-      : Boolean(
-        proofBackedPreterminalJournalEvidence
-        || localJournalEvidence
-        || recoveryResultJournalEvidence
-      );
-  const sweepReportEvidence = Boolean(
-    reportArtifact
-    && reportArtifactSweepBound
-    && transferHasWalletEmptyFinalSweepEvidence(proof?.transfer)
-  );
-  const staleReportArtifact = staleReportPublishForProof(proof, config);
-  const staleReportMissingSweepHash = Boolean(
-    staleReportArtifact
-    && reportPublishMatchesProof(staleReportArtifact, proof, config)
-    && !reportArtifactMatchesTerminalSweep(staleReportArtifact, proof)
-  );
-  const requiredComparisonEvidence = comparisonEvidence || classicComparisonRequiredEvidence(comparison, proof, config);
-  const classicComparisonEvidence = Boolean(
-    comparison?.status === 'pass'
-    && comparisonMatchesProof
-    && requiredComparisonEvidence.pass
-    && !comparisonIsV2Artifact
-  );
-
-  return [
-    {
-      id: 'demo-end-to-end',
-      label: 'Full demo launch',
-      pass: Boolean(demoRunComplete || hasCompletedLiveProof),
-      evidence: demoRunComplete
-        ? `Test launch ${fullAddress(state.lastDemoLaunchRun?.token?.tokenMint || state.lastDemoLaunchRun?.token?.mint)} completed with terminal readiness proof.`
-        : hasCompletedLiveProof
-          ? 'Completed live Trebuchet proof is stronger than the demo path.'
-          : state.lastDemoLaunchRun
-            ? 'Test launch exists, but terminal readiness or final sweep evidence is incomplete.'
-          : 'Run the Trebuchet demo launch before replacing Classic.',
-      detail: 'Covers token creation, LP creation, Fee Key recipient transfer, airdrop delivery, and final sweep routing.',
-    },
-    {
-      id: 'wallet-lifecycle',
-      label: 'Wallet generation and recovery',
-      pass: walletEvidence,
-      evidence: walletEvidence
-        ? proofWalletEvidence
-          ? `Launch wallet ${fullAddress(proof.walletPublicKey)} is attached to completed proof.`
-          : `Selected launch wallet ${fullAddress(selectedWalletPublicKey)} has an available local signing secret.`
-        : selectedWalletPublicKey
-          ? !selectedWallet
-            ? 'This address is not one of your saved launch wallets.'
-            : walletSecretLocked
-              ? 'Selected launch wallet is PIN locked; unlock it before Trebuchet can replace Classic signing.'
-            : selectedWallet.decryptionFailed || selectedWallet.hasSecretKey !== true
-                ? 'Selected launch wallet is missing a usable signing secret.'
-                : state.apiStatus !== 'connected'
-                  ? 'Connect the desktop app to verify this launch wallet signing secret.'
-                : 'Select a launch wallet with an available signing secret.'
-        : 'Generate, import, or load a launch wallet.',
-      detail: 'Replaces Classic temporary-wallet generation, funding address, QR, and Recovery PIN flows.',
-    },
-    {
-      id: 'vanity-options',
-      label: 'Vanity CA options',
-      pass: vanityEvidence,
-      evidence: selectedVanityCandidate
-        ? `Selected persisted Vanity CA ${fullAddress(selectedVanityCandidate.publicKey)}.`
-        : persistedVanityCandidates.length
-          ? `${persistedVanityCandidates.length} persisted Vanity CA option${persistedVanityCandidates.length === 1 ? '' : 's'} available.`
-          : state.selectedVanityPublicKey
-            ? `Selected Vanity CA ${fullAddress(state.selectedVanityPublicKey)} is preview-only or missing its saved secret; grind or select a persisted candidate from the desktop app.`
-            : nativeVanityAvailable
-            ? 'Native grinder is available.'
-            : state.apiStatus === 'connected'
-              ? 'Native grinder is not available in this local app.'
-              : 'Connect the desktop app to verify the native grinder; file preview only shows the UI contract.',
-      detail: 'Preserves Classic grinding with split start/end targets and selectable saved candidates.',
-    },
-    {
-      id: 'token-config-parity',
-      label: 'Token configuration parity',
-      pass: tokenConfigEvidence,
-      evidence: tokenConfig.ready
-        ? hasCompletedLiveProof
-          ? `Completed live proof minted ${fullAddress(proof?.token?.mint)} from the frozen token config.`
-          : localApiLaunchPlanEvidence
-            ? `Token ${tokenConfig.name} / ${tokenConfig.symbol} / ${tokenConfig.supply} is staged in the current local launch plan${tokenConfig.hasLogo ? ' with validated logo handoff' : ''}.`
-            : state.apiStatus === 'connected'
-              ? localApiLaunchPlan.stale
-                ? `Token fields are valid, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
-                : localApiLaunchPlan.incomplete
-                  ? `Token fields are valid, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
-                : 'Token fields are valid; stage the launch plan through the desktop app before replacing Classic token creation.'
-              : 'Token fields are valid; connect the desktop app and stage the launch plan before replacing Classic token creation.'
-        : tokenConfig.issues[0] || 'Token fields are not ready for Classic-compatible execution.',
-      detail: 'Replaces Classic token name, symbol, supply, description, logo, and create-token payload validation.',
-    },
-    {
-      id: 'charts-and-viewport',
-      label: 'Charts and viewport smoke',
-      pass: Boolean(chartRendererEvidence && viewportSmokeEvidence && chartModelEvidence),
-      evidence: chartRendererEvidence && viewportSmokeEvidence && chartModelEvidence
-        ? `Chart renderers are wired against the executable launch model. ${viewportSmokeDetail}`
-        : chartRendererEvidence && viewportSmokeEvidence
-          ? state.apiStatus === 'connected'
-            ? localApiLaunchPlan.stale
-              ? `Chart renderers and viewport smoke are ready, but the staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
-              : localApiLaunchPlan.incomplete
-                ? `Chart renderers and viewport smoke are ready, but the staged launch plan is incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
-                : 'Chart renderers and viewport smoke are ready; stage the launch plan through the desktop app so charts are bound to the executable token/pool model.'
-            : 'Chart renderers and viewport smoke are ready; connect the desktop app and stage the launch plan so charts are bound to the executable token/pool model.'
-        : chartRendererEvidence
-          ? `Chart renderers are wired; ${viewportSmokeDetail}`
-          : 'Tokenomics and liquidity chart renderers are missing.',
-      detail: 'Tokenomics, liquidity depth, funding, and run progress render from the staged Trebuchet launch model.',
-    },
-    {
-      id: 'pool-config-parity',
-      label: 'Pool configuration parity',
-      pass: poolConfigEvidence,
-      evidence: plannedPools.length
-        ? poolBlockerCount
-          ? `${poolBlockerCount} blocking pool/topology issue${poolBlockerCount === 1 ? '' : 's'} must be resolved before parity.`
-          : !hasCompletedLiveProof && !localApiLaunchPlanEvidence
-            ? state.apiStatus === 'connected'
-              ? localApiLaunchPlan.stale
-                ? `Staged launch plan is stale for the ${localApiLaunchPlanStaleReason(localApiLaunchPlan)}; stage it again through the desktop app.`
-                : localApiLaunchPlan.incomplete
-                  ? `Staged launch plan is current, but incomplete: ${localApiLaunchPlanIncompleteReason(localApiLaunchPlan)}. Stage it again through the desktop app.`
-                : 'Stage the launch plan through the desktop app before replacing Classic pool configuration.'
-              : 'Connect the desktop app and stage a Classic-shaped launch plan before replacing Classic pool configuration.'
-          : `${plannedPools.length} planned pool${plannedPools.length === 1 ? '' : 's'} available for proof comparison${poolWarningCount ? ` with ${poolWarningCount} warning${poolWarningCount === 1 ? '' : 's'}` : ''}.`
-        : 'No planned pool rows are available for Classic comparison.',
-      detail: 'Covers simple SOL, quote pools, slices, ladder bands, support positions, fee tiers, and Fee Key recipients.',
-    },
-    {
-      id: 'funding-and-quote',
-      label: 'Funding and quote readiness',
-      pass: fundingEvidence,
-      evidence: hasCompletedLiveProof
-        ? 'Completed live proof shows the launch advanced through funded execution.'
-        : !fundingEstimateEvidence
-          ? fundingEstimateStatus.stale
-            ? 'Classic funding estimate is stale for the current launch model; rerun the estimate before replacing Classic.'
-          : 'Run the Classic funding estimate before replacing Classic.'
-          : !fundingBalanceEvidence
-            ? funding.walletBalanceStale
-              ? 'Selected Trebuchet launch-wallet balance is stale; wait for the desktop app refresh or click Check balance.'
-              : 'Verify the selected Trebuchet launch-wallet balance from the desktop app.'
-            : !fundingSolEvidence
-              ? `Launch wallet is short ${Number(funding.missingSol || 0).toFixed(3)} SOL.`
-              : quoteStatus.stale
-                ? 'Quote acquire job is stale for the selected wallet or current launch model; run it again.'
-              : !quoteAcquireEvidence
-                ? `${quoteRoutes.length} quote acquire route${quoteRoutes.length === 1 ? '' : 's'} still need successful completion.`
-                : !manualPrefundEvidence
-                  ? `Manual quote prefund is ${manualSummary.label}.`
-                  : 'Classic funding estimate, wallet SOL, quote acquire, and manual prefund checks are ready.',
-      detail: 'Replaces Classic funding estimate, quote acquire, wallet-balance, and manual quote prefund readiness.',
-    },
-    {
-      id: 'held-reserve-backing',
-      label: 'Held reserve backing',
-      pass: heldReserveEvidence,
-      evidence: !heldReserveConfigured
-        ? 'No held reserve is configured.'
-        : hasCompletedLiveProof
-          ? reportArtifactSweepBound
-            ? reportHeldReserveAudit
-              ? reportHeldReserveAudit.state === 'pass'
-                ? reportHeldReserveAudit.detail || 'Final report/dossier includes a passing held-reserve support audit.'
-                : reportHeldReserveAudit.detail || 'Final report/dossier held-reserve audit is not passing.'
-              : 'Final report/dossier is missing the held-reserve audit; regenerate it with report data v14 or newer.'
-            : 'Attach a terminal-sweep-bound report or saved launch record before trusting held-reserve backing proof.'
-          : currentHeldReserveAudit?.detail || 'Run the Classic funding estimate so Trebuchet can verify held-reserve support backing.',
-      detail: 'Blocks unsafe preallocation or airdrop reserves unless support backing is visible in readiness and the final report proof.',
-    },
-    {
-      id: 'run-and-resume',
-      label: 'Run and resume safety',
-      pass: resumeEvidence,
-      evidence: hasCompletedLiveProof
-        ? `Completed live proof includes guarded execution journal ${fullAddress(proof.journalId)}.`
-        : proof && !proofJournalEvidence
-          ? 'Completed launch record is missing its launch journal id.'
-          : proof?.journalId && !matchingLocalJournal && proofFinalSweepEvidence
-          ? 'Final sweep proof is attached, but the matching launch journal is not loaded locally.'
-          : proofFinalSweepEvidence && localJournalEvidenceState.mismatches.length
-            ? `Final sweep proof is attached, but the local launch journal does not match it: ${localJournalEvidenceState.mismatches.join(', ')}.`
-          : proofFinalSweepEvidence && localJournalEvidenceState.missing.length
-            ? `Final sweep proof is attached, but the local launch journal is missing proof backing: ${localJournalEvidenceState.missing.join(', ')}.`
-          : proofFinalSweepEvidence && !proofTerminalJournalEvidence
-          ? 'Final sweep proof is attached, but the launch journal has not reached transfer_completed.'
-          : proofJournalEvidence && matchingLocalJournal && isTerminalJournal(matchingLocalJournal)
-          ? 'Matching launch journal is terminal, but the proof is missing terminal final-sweep evidence.'
-          : proofJournalEvidence && matchingLocalJournal && !journalHasRecoveryPlanningEvidence(matchingLocalJournal)
-          ? `Journal ${fullAddress(proof.journalId)} is loaded, but it lacks pool-plan or checkpoint evidence needed to prove resume safety.`
-          : proofJournalEvidence && matchingLocalJournal
-          ? `Journal ${fullAddress(proof.journalId)} is loaded for the launch record.`
-          : proofJournalEvidence
-            ? `Launch record has journal ${fullAddress(proof.journalId)}, but the matching local journal is not loaded.`
-            : localJournalEvidence
-              ? `${localRecoveryJournal.count} active or failed launch journal${localRecoveryJournal.count === 1 ? '' : 's'} with pool-plan or checkpoint evidence loaded for recovery planning${localRecoveryJournal.failed ? ` (${localRecoveryJournal.failed} failed/partial)` : ''}.`
-            : recoveryResultJournalEvidence
-              ? 'A successful journal resume/recovery result is attached in this session.'
-              : Number(state.recovery?.journalCount || 0) > 0
-                ? 'Local launch history is loaded, but no active or failed journal exercises resume safety yet.'
-              : state.apiStatus === 'connected'
-                ? 'Local API is connected, but no launch journal or proof has exercised resume safety yet.'
-                : 'Connect the desktop app and load a journal-backed proof.',
-      detail: 'Keeps Classic journal recovery, resume-only-missing-work, and unsafe manual blockers visible.',
-    },
-    {
-      id: 'sweep-report-proof',
-      label: 'Sweep and report proof',
-      pass: sweepReportEvidence,
-      evidence: sweepReportEvidence
-        ? 'Proof-bound report artifact and terminal final-sweep evidence are both attached.'
-        : staleReportMissingSweepHash
-          ? 'Report artifact is attached, but it is missing the terminal sweep evidence hash; regenerate it after final sweep.'
-        : reportArtifact
-          ? transferHasWalletEmptyFinalSweepEvidence(proof?.transfer)
-            ? 'Report artifact is attached, but it is missing the terminal sweep evidence hash; regenerate it after final sweep.'
-            : 'Report artifact is attached; terminal final-sweep evidence is still required.'
-          : 'Publish or download a proof-bound report and complete the final sweep.',
-      detail: 'Matches Classic report download/publish and transfer/sweep replacement criteria.',
-    },
-    {
-      id: 'classic-artifact-comparison',
-      label: 'Classic artifact comparison',
-      pass: classicComparisonEvidence,
-      evidence: classicComparisonEvidence
-        ? `Classic comparison passed ${comparison.passCount || 0}/${comparison.fieldCount || 0} fields.`
-        : comparisonIsV2Artifact
-          ? 'Loaded artifact was generated by Trebuchet; use a completed Classic artifact.'
-          : comparison?.status === 'pass' && !requiredComparisonEvidence.pass
-            ? requiredComparisonEvidence.detail
-          : comparison
-            ? `Comparison is ${comparison.status}; rerun against the current completed proof.`
-            : 'Compare a completed Classic artifact against the completed Trebuchet proof.',
-      detail: 'Prevents retiring Classic on Trebuchet self-artifacts, stale comparisons, or partial proof matches.',
-    },
-    {
-      id: 'proof-audit',
-      label: 'Proof audit checklist',
-      pass: audit?.status === 'pass',
-      evidence: audit?.status === 'pass'
-        ? `${audit.passCount || 0}/${audit.itemCount || 0} proof audit checks passing.`
-        : `${audit?.missingCount || 0} missing and ${audit?.warnCount || 0} warning proof audit checks remain.`,
-      detail: 'Ensures token, liquidity, lock/Fee Key, airdrop, recovery, report, sweep, and Classic comparison rows are all represented.',
-    },
-  ];
-}
-
-function validatedLocalViewportSmokeProof() {
-  const proof = state.viewportSmoke;
-  if (!proof || proof.passed !== true || proof.state !== 'valid') return null;
-  if (proof.artifactVersion !== 1 || proof.kind !== 'trebuchet-v2-viewport-smoke') return null;
-  const assetHashes = proof.assetHashes && typeof proof.assetHashes === 'object'
-    ? proof.assetHashes
-    : {};
-  const hasRequiredHashes = V2_VIEWPORT_SMOKE_REQUIRED_ASSETS.every((file) => (
-    typeof assetHashes[file] === 'string' && assetHashes[file].length >= 32
-  ));
-  const viewports = Array.isArray(proof.viewports) ? proof.viewports : [];
-  const requiredViewportsPassed = ['desktop', 'mobile'].every((name) => (
-    viewports.some((row) => {
-      const checks = row?.checks && typeof row.checks === 'object' ? row.checks : {};
-      return row?.name === name
-        && row?.passed === true
-        && V2_VIEWPORT_SMOKE_REQUIRED_CHECKS.every((check) => checks[check] === true);
-    })
-  ));
-  return hasRequiredHashes && requiredViewportsPassed ? proof : null;
-}
-
-function replacementCriteriaById(criteria = []) {
-  return new Map((Array.isArray(criteria) ? criteria : [])
-    .filter((item) => item?.id)
-    .map((item) => [item.id, item]));
-}
-
-function parityFeatureFromCriterion(feature, criterion, {
-  passBadge = 'Evidence',
-  warnBadge = 'Needs proof',
-} = {}) {
-  if (!criterion) {
-    return {
-      ...feature,
-      state: feature.preview || feature.real ? 'warn' : 'danger',
-      badge: feature.preview || feature.real ? warnBadge : 'Gap',
-      detail: feature.preview || feature.real
-        ? 'Replacement evidence is not available for this feature yet.'
-        : feature.detail,
-    };
+function walletCardHtml(address, contents, error) {
+  const kind = contents?.ownerProgram && contents.ownerProgram !== '11111111111111111111111111111111' && contents.lamports
+    ? 'Program account'
+    : contents?.key ? WALLET_KEY_LABELS[contents.key] : contents ? 'Key not in Trebuchet' : '';
+  const head = `<header><code title="${escapeHtml(address)}">${escapeHtml(shortAddress(address))}</code>${kind ? `<span>${escapeHtml(kind)}${contents?.key ? ' · key held' : ''}</span>` : ''}</header>`;
+  const foot = (extra = '') => `<footer>${extra}<a href="${escapeHtml(solscanAccountUrl(address))}" target="_blank" rel="noopener">Solscan</a></footer>`;
+  if (error) return `${head}<p class="wallet-card-body is-error">${escapeHtml(error)}</p>${foot()}`;
+  if (!contents) return `${head}<p class="wallet-card-body"><span class="rail-spin" aria-hidden="true"></span></p>${foot()}`;
+  const { holdings, totalUsd, unpriced } = walletComposition(contents);
+  if (!holdings.length) {
+    return `${head}<p class="wallet-card-body wallet-card-empty">Empty</p>${foot(contents.openAccounts ? `<span>${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}</span>` : '')}`;
   }
-  return {
-    ...feature,
-    state: criterion.pass ? 'pass' : 'warn',
-    badge: criterion.pass ? passBadge : warnBadge,
-    detail: criterion.evidence || criterion.detail || feature.detail,
-    criterionId: criterion.id,
-  };
+  const top = holdings.slice(0, WALLET_CARD_TOP);
+  const more = holdings.length - top.length;
+  const share = (holding) => (totalUsd && holding.valueUsd != null ? holding.valueUsd / totalUsd : null);
+  const bar = totalUsd
+    ? `<div class="wallet-card-bar" aria-hidden="true">${top.map((holding, index) => `<span class="is-${index}" style="width:${Math.max(2, (share(holding) || 0) * 100)}%"></span>`).join('')}<span class="is-rest"></span></div>`
+    : '';
+  const rows = top.map((holding, index) => `<li><i class="is-${index}" aria-hidden="true"></i><span>${escapeHtml(holding.name)}</span><b>${escapeHtml(holding.sol ? formatSol(contents.lamports) : compactAmount(holding.amount))}</b><small>${share(holding) != null ? `${Math.round(share(holding) * 100)}%` : formatUsd(holding.valueUsd) || ''}</small></li>`).join('');
+  const value = totalUsd != null ? `${formatUsd(totalUsd)}${unpriced ? ` + ${unpriced} unpriced` : ''}` : `${holdings.length} holding${holdings.length === 1 ? '' : 's'}`;
+  return `${head}
+    <div class="wallet-card-body"><strong class="wallet-card-value">${escapeHtml(value)}</strong>${bar}<ul>${rows}</ul></div>
+    ${foot([more ? `<span>+${more} more</span>` : '', contents.openAccounts ? `<span>${contents.openAccounts} open account${contents.openAccounts === 1 ? '' : 's'}</span>` : ''].join(''))}`;
 }
 
-function renderReplacementCriteriaStrip(criteria = []) {
-  const rows = Array.isArray(criteria) ? criteria : [];
-  if (!rows.length) return '';
-  return `
-    <div class="criteria-strip" aria-label="Replacement criteria">
-      ${rows.map((item) => {
-        const pass = item.pass === true;
-        const icon = pass ? 'fa-check' : 'fa-circle-exclamation';
-        const title = item.detail || item.evidence || item.label || item.id;
-        return `
-          <span class="criteria-chip ${pass ? 'pass' : 'warn'}" title="${escapeHtml(title)}">
-            <i class="fa-solid ${icon}" aria-hidden="true"></i>
-            <strong>${escapeHtml(item.label || item.id)}</strong>
-            <small>${pass ? 'Pass' : 'Needs proof'}</small>
-          </span>
-        `;
-      }).join('')}
-    </div>
-  `;
-}
-
-function renderClassicRetirementProofRail(retirementGate = {}) {
-  const requirements = Array.isArray(retirementGate.requirements) ? retirementGate.requirements : [];
-  if (!requirements.length) return '';
-  const labelById = {
-    'live-proof': 'Live launch',
-    'report-proof': 'Report',
-    'classic-comparison': 'Classic artifact',
-    audit: 'Audit',
-    'replacement-criteria': 'Criteria',
-  };
-  return `
-    <div class="field-proof-rail ${retirementGate.state === 'pass' ? 'pass' : 'danger'}" aria-label="Classic retirement proof path">
-      <div class="field-proof-head">
-        <span>Field parity</span>
-        <strong>${Number(retirementGate.passCount || 0)}/${Number(retirementGate.itemCount || requirements.length)}</strong>
-      </div>
-      <div class="field-proof-steps">
-        ${requirements.map((item, index) => {
-          const pass = item.pass === true;
-          const stateClass = pass ? 'pass' : 'wait';
-          const icon = pass ? 'fa-check' : 'fa-circle';
-          const label = labelById[item.id] || item.title || item.id || `Step ${index + 1}`;
-          const detail = item.detail || label;
-          return `
-            <span class="field-proof-step ${stateClass}" title="${escapeHtml(detail)}">
-              <i class="fa-solid ${icon}" aria-hidden="true"></i>
-              <strong>${escapeHtml(label)}</strong>
-              <small>${pass ? 'Proof' : 'Wait'}</small>
-            </span>
-          `;
-        }).join('')}
-      </div>
-    </div>
-  `;
-}
-
-function renderParityPanel() {
-  const proof = currentLaunchProof();
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  const reportAudit = buildV2ReportParityAudit(proof, config);
-  const retirementGate = buildClassicRetirementGate(proof, reportAudit, config);
-  const criteriaById = replacementCriteriaById(retirementGate.replacementCriteria);
-  const liveProofPassed = retirementGate.requirements
-    .find((item) => item.id === 'live-proof')?.pass === true;
-  const rows = parityFeatures.map((feature) => {
-    if (feature.id === 'wallet') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('wallet-lifecycle'));
-    }
-    if (feature.id === 'recovery') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('run-and-resume'), {
-        passBadge: 'Journal',
-      });
-    }
-    if (feature.id === 'charts') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('charts-and-viewport'), {
-        passBadge: 'Smoke',
-      });
-    }
-    if (feature.id === 'grinder') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('vanity-options'), {
-        passBadge: 'Options',
-      });
-    }
-    if (feature.id === 'token') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('token-config-parity'), {
-        passBadge: 'Model',
-      });
-    }
-    if (feature.id === 'funding') {
-      const fundingCriterion = criteriaById.get('funding-and-quote');
-      const heldReserveCriterion = criteriaById.get('held-reserve-backing');
-      return parityFeatureFromCriterion(feature, fundingCriterion?.pass && heldReserveCriterion && !heldReserveCriterion.pass
-        ? heldReserveCriterion
-        : fundingCriterion, {
-        passBadge: 'Ready',
-      });
-    }
-    if (feature.id === 'pool-model') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('pool-config-parity'));
-    }
-    if (feature.id === 'execution') {
-      const demoExecutionReady = state.apiStatus === 'connected' && state.demoActive;
-      const realBridgeReady = state.apiStatus === 'connected'
-        && !state.demoActive
-        && state.executionReadiness?.status === 'ready'
-        && state.executionReadiness?.nextEndpoint;
-      return {
-        ...feature,
-        state: liveProofPassed ? 'pass' : 'warn',
-        badge: liveProofPassed ? 'Live proof' : state.lastRealExecution ? 'In progress' : state.lastDemoLaunchRun ? 'Demo only' : demoExecutionReady ? 'Demo ready' : realBridgeReady ? 'Ready' : 'Bridge',
-        detail: liveProofPassed
-          ? 'A non-demo launch record has token, liquidity, and final sweep evidence.'
-          : state.lastRealExecution
-            ? `${state.lastRealExecution.action || 'Classic operation'} completed; keep running until token, liquidity, and final sweep proof are all present.`
-            : state.lastDemoLaunchRun
-              ? `Test launch completed for ${fullAddress(state.lastDemoLaunchRun.token?.tokenMint)}; live parity still needs a real proof.`
-              : demoExecutionReady
-                ? 'Trebuchet can run the complete demo token, LP, and sweep path; real launch routing remains guarded.'
-                : realBridgeReady
-                  ? `Next real classic operation is ${state.executionReadiness.nextEndpoint}.`
-                  : 'Trebuchet stages decoded local run envelopes and dispatches real work only after readiness confirmation.',
-      };
-    }
-    if (feature.id === 'sweep-report') {
-      return parityFeatureFromCriterion(feature, criteriaById.get('sweep-report-proof'));
-    }
-    return {
-      ...feature,
-      state: feature.preview || feature.real ? 'warn' : 'danger',
-      badge: feature.preview || feature.real ? 'Needs proof' : 'Gap',
-      detail: feature.preview || feature.real
-        ? 'Replacement evidence is not available for this feature yet.'
-        : feature.detail,
-    };
-  });
-  const visibleRows = rows.filter((item) => ['wallet', 'grinder', 'token', 'pool-model', 'funding', 'execution', 'recovery'].includes(item.id));
-  const missingCount = rows.filter((item) => item.state === 'danger').length;
-  const previewCount = rows.filter((item) => item.state === 'warn').length;
-  const retirementIcon = retirementGate.state === 'pass' ? 'fa-check' : 'fa-ban';
-  const fieldVerification = buildV2FieldVerification({
-    proof,
-    config,
-    audit: reportAudit,
-    retirementGate,
-  });
-  const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence(proof?.transfer);
-  const operationalTitle = finalSweepComplete ? 'Launch record saved' : 'Finish the launch first';
-  const operationalDetail = finalSweepComplete
-    ? 'The operational launch is complete. Open the release proof audit only when preparing to retire the older workflow.'
-    : state.launchWorkspace === 'mint'
-      ? 'Finish the existing token, then continue to liquidity. Release-comparison checks are not launch blockers.'
-      : state.launchWorkspace === 'liquidity'
-        ? 'Create and lock the configured liquidity positions. Release-comparison checks are not launch blockers.'
-        : state.launchWorkspace === 'finish'
-          ? 'Complete the sweep and save the launch record. Release-comparison checks are secondary.'
-          : 'Continue the six launch phases. Release-comparison checks stay collapsed until you need them.';
-
-  // Release-comparison evidence is useful only after the operational launch
-  // is complete. Showing its warnings during Phase 6 made optional retirement
-  // checks look like unsatisfied launch blockers and pushed the actual sweep
-  // authorization below the fold.
-  if (!finalSweepComplete) {
-    $('#parityPanel').innerHTML = `
-      <div class="parity-summary launch-audit-deferred">
-        <span>
-          <strong>${escapeHtml(operationalTitle)}</strong>
-          <small>${escapeHtml(operationalDetail)}</small>
-        </span>
-        ${state.launchWorkspace === 'finish'
-          ? '<button class="secondary-button compact" type="button" data-launch-workspace="finish"><span>Return to final sweep</span><i class="fa-solid fa-arrow-up"></i></button>'
-          : '<span class="risk-badge">Non-blocking audit hidden</span>'}
-      </div>`;
-    return;
+function walletChipCard() {
+  let card = document.getElementById('walletChipCard');
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'walletChipCard';
+    card.className = 'wallet-chip-card';
+    card.setAttribute('role', 'tooltip');
+    card.hidden = true;
+    card.addEventListener('mouseleave', () => hideWalletChipCard());
+    document.body.appendChild(card);
   }
+  return card;
+}
 
-  $('#parityPanel').innerHTML = `
-    <div class="parity-summary">
-      <strong>${escapeHtml(operationalTitle)}</strong>
-      <span>${escapeHtml(operationalDetail)}</span>
-    </div>
-    <details class="drawer release-proof-details">
-      <summary>
-        <span>Optional release proof audit</span>
-        <strong>${fieldVerification.passCount}/${fieldVerification.itemCount} core checks · ${missingCount + previewCount} open</strong>
-      </summary>
-      <article class="parity-row parity-gate ${retirementGate.state}">
-        <i class="fa-solid ${retirementIcon}" aria-hidden="true"></i>
-        <span>
-          <h3>${escapeHtml(retirementGate.state === 'pass' ? 'Release evidence complete' : 'Release evidence incomplete')}</h3>
-          <p>${retirementGate.passCount}/${retirementGate.itemCount} proof checks passing. This audit does not block completing the active launch.</p>
-        </span>
-        <span class="risk-badge ${retirementGate.state === 'danger' ? 'danger' : ''}">${escapeHtml(retirementGate.badge)}</span>
-      </article>
-      ${renderClassicRetirementProofRail(retirementGate)}
-      ${renderReplacementCriteriaStrip(retirementGate.replacementCriteria)}
-      ${visibleRows.map((item) => {
-        const icon = item.state === 'pass' ? 'fa-check' : item.state === 'warn' ? 'fa-triangle-exclamation' : 'fa-screwdriver-wrench';
-        const badgeClass = item.state === 'danger' ? 'danger' : item.state === 'warn' ? 'warn' : '';
-        return `
-          <article class="parity-row ${item.state}">
-            <i class="fa-solid ${icon}" aria-hidden="true"></i>
-            <span>
-              <h3>${escapeHtml(item.title)}</h3>
-              <p>${escapeHtml(item.detail)}</p>
-            </span>
-            <span class="risk-badge ${badgeClass}">${escapeHtml(item.badge)}</span>
-          </article>
-        `;
-      }).join('')}
-    </details>`;
+let walletChipTarget = null;
+let walletChipHideTimer = null;
+
+function placeWalletChipCard(card, chip) {
+  const box = chip.getBoundingClientRect();
+  const width = Math.min(WALLET_CARD_WIDTH, window.innerWidth - 32);
+  card.style.width = `${width}px`;
+  card.style.left = `${Math.max(16, Math.min(box.left, window.innerWidth - width - 16))}px`;
+  const below = box.bottom + 6;
+  card.style.top = `${below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, box.top - card.offsetHeight - 6) : below}px`;
+}
+
+function showWalletChipCard(chip) {
+  clearTimeout(walletChipHideTimer);
+  const address = chip.dataset.walletChip;
+  const card = walletChipCard();
+  walletChipTarget = chip;
+  chip.setAttribute('aria-describedby', 'walletChipCard');
+  card.innerHTML = walletCardHtml(address, cachedWalletContents(address), null);
+  card.hidden = false;
+  placeWalletChipCard(card, chip);
+  walletContents(address)
+    .then((contents) => { if (walletChipTarget === chip) { card.innerHTML = walletCardHtml(address, contents, null); placeWalletChipCard(card, chip); } })
+    .catch((error) => { if (walletChipTarget === chip) card.innerHTML = walletCardHtml(address, null, error.message || 'Could not read this wallet'); });
+}
+
+function hideWalletChipCard({ now = false } = {}) {
+  clearTimeout(walletChipHideTimer);
+  const hide = () => {
+    const card = document.getElementById('walletChipCard');
+    if (card && !card.matches(':hover')) card.hidden = true;
+    walletChipTarget?.removeAttribute('aria-describedby');
+    walletChipTarget = null;
+  };
+  if (now) hide(); else walletChipHideTimer = setTimeout(hide, 150);
+}
+
+function bindWalletChips() {
+  document.addEventListener('mouseover', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip && chip !== walletChipTarget) showWalletChipCard(chip);
+  });
+  document.addEventListener('mouseout', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip && !chip.contains(event.relatedTarget) && !event.relatedTarget?.closest?.('#walletChipCard')) hideWalletChipCard();
+  });
+  document.addEventListener('focusin', (event) => {
+    const chip = event.target.closest?.('[data-wallet-chip]');
+    if (chip) showWalletChipCard(chip);
+  });
+  document.addEventListener('focusout', (event) => {
+    if (event.target.closest?.('[data-wallet-chip]')) hideWalletChipCard();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && walletChipTarget) hideWalletChipCard({ now: true });
+  });
 }
 
 // "Locked" only when unlocking the PIN would help. A wallet whose key cannot be
@@ -17325,6 +16176,8 @@ function renderWallet() {
       state: proofAssetState,
     } : null,
   ].filter(Boolean) : [];
+  refreshHeldWallets();
+  renderHeldWallets();
   $('#accountList').innerHTML = walletRows.map((item) => {
     const isActive = item.publicKey === selectedPublicKey;
     return `
@@ -17332,7 +16185,7 @@ function renderWallet() {
         <span class="ident">${escapeHtml(item.name.slice(0, 1))}</span>
         <span class="account-copy">
           <h3>${escapeHtml(item.name)}</h3>
-          <p>${escapeHtml(item.address)}</p>
+          <p>${item.publicKey ? walletChipHtml(item.publicKey) : escapeHtml(item.address)}</p>
         </span>
         <span class="balance">
           <strong>${Number(item.balance || 0).toFixed(2)} SOL</strong>
@@ -17361,7 +16214,7 @@ function renderWallet() {
           <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
         </button>
         <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+          <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
         </button>
       </span>
     </header>
@@ -17444,17 +16297,6 @@ function renderWallet() {
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.
-  const oldWallets = recoveryWalletsNeedingAttention().length;
-  const openJournals = state.recovery.activeJournalCount || 0;
-  $('#walletRecoveryInventory').innerHTML = oldWallets || openJournals ? `
-    <p class="wallet-recovery-pointer">
-      <span>${escapeHtml([
-        openJournals ? `${openJournals} unfinished launch${openJournals === 1 ? '' : 'es'}` : null,
-        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} may still hold assets` : null,
-      ].filter(Boolean).join(' · '))}.</span>
-      <button class="text-button" type="button" data-action="inspect-recovery">Open in History</button>
-    </p>
-  ` : '';
 
   $('#assetTable').innerHTML = proofAssets.length ? `
     <div class="wallet-proof-heading">
@@ -17471,6 +16313,109 @@ function renderWallet() {
       </article>
     `).join('')}
   ` : '';
+}
+
+const HELD_WALLET_READERS = 2;
+const HELD_WALLET_BACKGROUND_PAUSE_MS = 1000;
+
+// Every key Trebuchet holds, read from the chain: the ones holding anything are listed, and
+// Sweep all sends each launch wallet's tokens and SOL to the return wallet, one at a time.
+// Read in the background too (every 5 minutes at most), so counts elsewhere come from the chain.
+function refreshHeldWallets({ force = false, background = false } = {}) {
+  const held = state.heldWallets;
+  if ((!background && state.activeView !== 'wallet') || state.apiStatus !== 'connected' || !state.apiClient?.listHeldWallets) return;
+  if (held.loading || (!force && held.list && Date.now() - held.at < (background ? 300_000 : 30_000))) return;
+  state.heldWallets = { ...held, loading: true, error: null };
+  state.apiClient.listHeldWallets()
+    .then(async ({ wallets }) => {
+      state.heldWallets = { ...state.heldWallets, list: wallets.map((wallet) => ({ ...wallet, contents: null, error: null })), at: Date.now() };
+      renderHeldWallets();
+      const queue = [...state.heldWallets.list];
+      // Each read is three RPC calls. A background read goes one wallet at a time with a pause,
+      // and the Wallet page two at a time, so a list of dozens of keys stays under the RPC's rate limit.
+      const pauseMs = background ? HELD_WALLET_BACKGROUND_PAUSE_MS : 0;
+      const worker = async () => {
+        for (let row = queue.shift(); row; row = queue.shift()) {
+          try { row.contents = await walletContents(row.address, { fresh: force }); } catch (error) { row.error = error.message || 'Could not read'; }
+          renderHeldWallets();
+          if (pauseMs && queue.length) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+        }
+      };
+      // The strip and Recovery count wallets from these reads.
+      const settle = () => { if (state.activeView !== 'wallet') renderAll(); };
+      await Promise.all(Array.from({ length: background ? 1 : HELD_WALLET_READERS }, worker));
+      settle();
+    })
+    .catch((error) => { state.heldWallets = { ...state.heldWallets, error: error.message || 'Could not list the keys' }; })
+    .finally(() => { state.heldWallets = { ...state.heldWallets, loading: false }; renderHeldWallets(); });
+}
+
+function heldWalletHoldsAnything(row) {
+  return Boolean(row.contents && (row.contents.lamports > 0 || row.contents.tokens.length || row.contents.openAccounts));
+}
+
+function sweepAllTargets() {
+  return (state.heldWallets.list || [])
+    .filter((row) => (row.kind === 'launch' || row.kind === 'retired') && row.readable !== false && walletSweepable(row.contents))
+    .map((row) => row.address);
+}
+
+function renderHeldWallets() {
+  const target = $('#heldWallets');
+  if (!target) return;
+  const { list, sweep, error } = state.heldWallets;
+  if (!list) { target.innerHTML = error ? `<p class="is-error">${escapeHtml(error)}</p>` : ''; return; }
+  const read = list.filter((row) => row.contents || row.error).length;
+  const holding = list.filter(heldWalletHoldsAnything);
+  const targets = sweepAllTargets();
+  const running = sweep && !sweep.finished;
+  const locked = state.secretPin.locked;
+  const button = running
+    ? `<button class="primary-button compact" type="button" disabled><span class="rail-spin" aria-hidden="true"></span><span>Sweeping ${sweep.done + 1} of ${sweep.total}</span></button>`
+    : locked && targets.length
+      ? '<button class="primary-button compact" type="button" data-action="unlock-secret-pin"><i class="fa-solid fa-lock-open"></i><span>Unlock PIN to sweep</span></button>'
+      : `<button class="primary-button compact" type="button" data-action="sweep-all-wallets" ${targets.length ? '' : 'disabled'}><i class="fa-solid fa-broom"></i><span>Sweep all${targets.length ? ` (${targets.length})` : ''}</span></button>`;
+  const status = (row) => {
+    if (sweep?.current === row.address) return '<span class="risk-badge">Sweeping</span>';
+    const failure = sweep?.failed.find((item) => item.address === row.address);
+    if (failure) return `<span class="risk-badge danger" title="${escapeHtml(failure.error)}">Not swept</span>`;
+    return '';
+  };
+  target.innerHTML = `
+    <div class="held-wallets-head">
+      <span><strong>Keys in Trebuchet</strong><small>${list.length} keys · ${read < list.length ? `${read} read · ` : ''}${holding.length} holding anything</small></span>
+      <span class="held-wallets-action">${button}${!running && !targets.length && read === list.length ? '<small>Nothing to sweep</small>' : ''}</span>
+    </div>
+    ${holding.length ? `<ul class="held-wallets-list">${holding.map((row) => `
+      <li>${walletChipHtml(row.address, { label: WALLET_KEY_LABELS[row.kind] || '' })}<span>${escapeHtml(walletContentsSummary(row.contents))}</span>${status(row)}</li>`).join('')}</ul>` : ''}
+    ${sweep?.finished ? `<p class="held-wallets-result" role="status">Swept ${sweep.total - sweep.failed.length} of ${sweep.total}${sweep.failed.length ? `; ${sweep.failed.length} not swept` : ''}.</p>` : ''}`;
+}
+
+async function sweepAllWallets() {
+  const targets = sweepAllTargets();
+  if (!targets.length || state.heldWallets.sweep?.finished === false) return;
+  if (state.fullRunRunning || state.realExecutionRunning) return;
+  const defaultDestination = state.destinations?.signed?.[0] || state.destinations?.funder || '';
+  const confirmation = await openSweepConfirmation({ publicKey: `${targets.length} launch wallet${targets.length === 1 ? '' : 's'}`, defaultDestination });
+  if (!confirmation) return;
+  const sweep = { total: targets.length, done: 0, current: null, failed: [], finished: false };
+  state.heldWallets = { ...state.heldWallets, sweep };
+  for (const address of targets) {
+    sweep.current = address;
+    renderHeldWallets();
+    try {
+      await state.apiClient.sweepPendingWallet({ walletPublicKey: address, destinationWallet: confirmation.destinationWallet });
+    } catch (error) {
+      sweep.failed.push({ address, error: error.message || 'Sweep failed' });
+    }
+    const row = (state.heldWallets.list || []).find((item) => item.address === address);
+    if (row) row.contents = await walletContents(address, { fresh: true }).catch(() => row.contents);
+    sweep.done += 1;
+  }
+  sweep.current = null;
+  sweep.finished = true;
+  renderHeldWallets();
+  refreshLocalApiState().catch(() => null);
 }
 
 function personalTokenName(token) {
@@ -17578,18 +16523,18 @@ function renderPersonalDiscovery() {
       ` : ''}
     </section>
     ${managedWallets.length ? `
-      <details class="managed-discovery-wallets">
-        <summary>
+      <section class="managed-discovery-wallets">
+        <header class="managed-head">
           <span><i class="fa-solid fa-key"></i> ${managedWallets.length} launch wallet${managedWallets.length === 1 ? '' : 's'}</span>
           <small>Automatic</small>
-        </summary>
+        </header>
         <div class="discovery-wallet-chip-list">${visibleManagedWallets.map(discoveryWalletChip).join('')}</div>
         ${managedWallets.length > visibleManagedWallets.length ? `
           <button class="pill-button discovery-wallet-show-more" type="button" data-action="show-more-discovery-wallets">
             Show ${Math.min(100, managedWallets.length - visibleManagedWallets.length)} more launch wallets
           </button>
         ` : ''}
-      </details>
+      </section>
     ` : ''}
     ${enabledWatchOnlyCount + enabledManagedCount ? `<p class="discovery-scan-budget">Refresh looks through ${enabledWatchOnlyCount + enabledManagedCount} wallet${enabledWatchOnlyCount + enabledManagedCount === 1 ? '' : 's'}, ${scanConcurrency} at a time.</p>` : ''}
   `;
@@ -17668,8 +16613,10 @@ function renderPersonalDiscovery() {
   `;
 }
 
+const DISCOVERY_PANES = ['tokens', 'wallets', 'inspect', 'saved'];
+
 function renderDiscoveryPanes() {
-  const pane = state.discovery.activePane === 'wallets' ? 'wallets' : 'tokens';
+  const pane = DISCOVERY_PANES.includes(state.discovery.activePane) ? state.discovery.activePane : 'tokens';
   state.discovery.activePane = pane;
   $$('.discovery-pane-tab').forEach((button) => {
     const selected = button.dataset.discoveryPane === pane;
@@ -17678,7 +16625,7 @@ function renderDiscoveryPanes() {
     button.tabIndex = selected ? 0 : -1;
   });
   $$('[data-discovery-pane-panel]').forEach((panel) => {
-    const selected = panel.dataset.discoveryPanePanel === pane;
+    const selected = String(panel.dataset.discoveryPanePanel).split(/\s+/).includes(pane);
     panel.hidden = !selected;
     panel.classList.toggle('is-active', selected);
   });
@@ -17909,8 +16856,8 @@ function renderDiscovery() {
         <i class="fa-solid fa-copy"></i><span>Copy</span>
       </button>
     </div>
-    <details class="discovery-more">
-      <summary><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</summary>
+    <section class="discovery-more">
+      <header class="more-head"><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</header>
       <div class="discovery-audit">
       <div class="audit-line">
         <span class="evidence-dot pass"></span>
@@ -17923,26 +16870,25 @@ function renderDiscovery() {
         </div>
       `}
       ${warningSummaries.map((warning) => `
-        <details class="discovery-warning-line">
-          <summary>
+        <div class="discovery-warning-line">
+          <div class="warning-head">
             <i class="fa-solid fa-triangle-exclamation"></i>
             <span><strong>${escapeHtml(warning.title)}</strong><small>${escapeHtml(warning.detail)}</small></span>
-            <i class="fa-solid fa-chevron-down"></i>
-          </summary>
-          <code>${escapeHtml(warning.raw)}</code>
-        </details>
+          </div>
+          <code title="${escapeHtml(warning.raw)}">${escapeHtml(warning.raw)}</code>
+        </div>
       `).join('')}
-      <details class="discovery-notes" ${selected.notes ? 'open' : ''}>
-        <summary><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></summary>
+      <div class="discovery-notes">
+        <div class="notes-head"><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></div>
         <label class="discovery-notes-editor">
           <textarea id="discoveryNotesInput" rows="2" maxlength="500" placeholder="Questions or verification context…">${escapeHtml(selected.notes || '')}</textarea>
         </label>
-      </details>
+      </div>
       <button class="secondary-button compact danger-button" type="button" data-action="remove-discovery" data-token="${escapeHtml(selected.mint)}">
         <i class="fa-solid fa-trash"></i><span>Remove saved analysis</span>
       </button>
       </div>
-    </details>
+    </section>
   `;
   hydrateDiscoveryTokenPalettes();
 }
@@ -18205,764 +17151,17 @@ function renderSettings() {
     ${renderRpcSettingsPanel()}`;
 }
 
-function recoveryGuideModel({
-  wallets = [],
-  selectedPublicKey = null,
-  selectedPending = false,
-  recoverableCount = 0,
-  secretLocked = false,
-  lastSweep = null,
-  busy = false,
-} = {}) {
-  const selectedWallet = wallets.find((wallet) => wallet.publicKey === selectedPublicKey) || null;
-  const firstRecoverable = wallets.find((wallet) => !wallet.decryptionFailed) || null;
-  if (state.apiStatus !== 'connected') {
-    return {
-      state: 'warn',
-      badge: 'Local app',
-      title: 'Open Trebuchet locally',
-      detail: 'Recovery inventory, secret reveal, and abandoned-wallet sweep need the authenticated local app.',
-      items: ['Open the OS X app, then return to History.', 'Do not discard local recovery files manually.'],
-      actions: [],
-    };
-  }
-  if (lastSweep?.error) {
-    return {
-      state: 'danger',
-      badge: 'Retry',
-      title: 'Sweep failed',
-      detail: 'The recovery wallet was not cleared. Retry after checking PIN, destination, and RPC health.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: lastSweep.publicKey && !busy
-        ? [{ label: 'Retry sweep', action: 'sweep-recovery-wallet', wallet: lastSweep.publicKey, danger: true }]
-        : [],
-    };
-  }
-  if (lastSweep?.partial || lastSweep?.stillPending) {
-    return {
-      state: 'warn',
-      badge: 'Partial',
-      title: 'Recovery still active',
-      detail: 'Trebuchet kept the local recovery entry so you can retry instead of losing track of assets.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: lastSweep.publicKey && !busy
-        ? [
-          { label: 'Retry sweep', action: 'sweep-recovery-wallet', wallet: lastSweep.publicKey, danger: true },
-          { label: 'Select wallet', action: 'select-recovery-wallet', wallet: lastSweep.publicKey },
-        ]
-        : [],
-    };
-  }
-  if (secretLocked && recoverableCount > 0) {
-    return {
-      state: 'warn',
-      badge: 'PIN',
-      title: 'Unlock before recovery',
-      detail: `${recoverableCount} recoverable launch wallet${recoverableCount === 1 ? '' : 's'} need the Recovery PIN before reveal or sweep.`,
-      items: ['Unlock the Recovery PIN.', 'Select the wallet that matches the failed launch journal.', 'Sweep assets only after verifying the destination wallet.'],
-      actions: [{ label: 'Unlock PIN', action: 'unlock-secret-pin' }],
-    };
-  }
-  if (selectedWallet && selectedPending) {
-    return {
-      state: '',
-      badge: 'Selected',
-      title: 'Recover selected wallet',
-      detail: 'Inspect, reveal for manual recovery, sweep stranded assets, or reuse this launch wallet for the next run.',
-      items: ['Copy the address and compare it with the failed launch journal.', 'Use for launch makes it the launch wallet.', 'Reveal only if manual recovery is needed.', 'Sweep moves assets and clears the entry only after empty-wallet verification.'],
-      actions: [
-        { label: 'Use for launch', action: 'use-recovery-wallet-for-launch', wallet: selectedWallet.publicKey },
-        { label: 'Reveal secret', action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet', wallet: selectedWallet.publicKey },
-        { label: 'Sweep wallet', action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet', wallet: selectedWallet.publicKey, danger: true },
-      ],
-    };
-  }
-  if (firstRecoverable) {
-    return {
-      state: 'warn',
-      badge: 'Select',
-      title: 'Choose a recovery wallet',
-      detail: `${wallets.length} pending launch wallet${wallets.length === 1 ? '' : 's'} are available. Select one to align it with a journal or manual cleanup path.`,
-      items: ['Start with the wallet shown in the failed journal.', 'Use QR/copy for inspection before sweeping.', 'Discard only after assets are empty or backed up.'],
-      actions: [{ label: 'Select first wallet', action: 'select-recovery-wallet', wallet: firstRecoverable.publicKey }],
-    };
-  }
-  if (lastSweep && !lastSweep.error) {
-    return {
-      state: '',
-      badge: 'Clean',
-      title: 'Recovery cleanup recorded',
-      detail: 'The last sweep cleared its local recovery entry.',
-      items: recoverySweepNextSteps(lastSweep),
-      actions: [],
-    };
-  }
-  if (state.recovery.failedJournalCount > 0 || state.recovery.activeJournalCount > 0) {
-    return {
-      state: 'warn',
-      badge: 'Journal',
-      title: 'Review launch journals',
-      detail: 'No pending wallet is selected, but recovery journals still need review.',
-      items: ['Use the timeline resume plan below.', 'Unsafe partial pool states stay manual to avoid duplicate on-chain work.'],
-      actions: [],
-    };
-  }
-  return {
-    state: '',
-    badge: 'Clear',
-    title: 'No recovery action needed',
-    detail: 'No abandoned launch wallets are waiting for recovery or cleanup.',
-    items: ['Keep reports and proof bundles with the launch notes.'],
-    actions: [],
-  };
-}
-
-function renderRecoveryGuide(model) {
-  const actions = model.actions.map((action) => `
-    <button class="pill-button ${action.danger ? 'danger' : ''}" type="button" data-action="${escapeHtml(action.action)}" ${action.wallet ? `data-wallet="${escapeHtml(action.wallet)}"` : ''}>
-      ${escapeHtml(action.label)}
-    </button>
-  `).join('');
-  return `
-    <div class="recovery-guide ${escapeHtml(model.state)}">
-      <div class="recovery-guide-head">
-        <span>
-          <span class="eyebrow">Recovery guide</span>
-          <strong>${escapeHtml(model.title)}</strong>
-          <em>${escapeHtml(model.detail)}</em>
-        </span>
-        <span class="risk-badge ${escapeHtml(model.state)}">${escapeHtml(model.badge)}</span>
-      </div>
-      <ul>${model.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-      ${actions ? `<div class="operator-toolbar compact">${actions}</div>` : ''}
-    </div>
-  `;
-}
-
-function recoveryWizardActionButton(action) {
-  const attrs = [
-    `data-action="${escapeHtml(action.action)}"`,
-    action.wallet ? `data-wallet="${escapeHtml(action.wallet)}"` : '',
-    action.journalId ? `data-journal-id="${escapeHtml(action.journalId)}"` : '',
-    action.step ? `data-step="${escapeHtml(action.step)}"` : '',
-  ].filter(Boolean).join(' ');
-  return `
-    <button class="pill-button ${action.danger ? 'danger' : ''}" type="button" ${attrs} ${action.disabled ? 'disabled' : ''}>
-      ${action.icon ? `<i class="fa-solid ${escapeHtml(action.icon)}"></i>` : ''}
-      <span>${escapeHtml(action.label)}</span>
-    </button>
-  `;
-}
-
-function recoveryWizardModel({
-  wallets = [],
-  selectedPublicKey = null,
-  selectedPending = false,
-  recoverableCount = 0,
-  secretLocked = false,
-  lastSweep = null,
-  busy = false,
-} = {}) {
-  const journals = state.apiStatus === 'connected' ? state.recovery.journals : [];
-  const activeJournals = journals.filter((journal) => !isTerminalJournal(journal));
-  const journalModels = activeJournals.map((journal) => ({
-    journal,
-    plan: journalResumePlan(journal),
-    matchingWallet: wallets.find((wallet) => wallet.publicKey === journal.walletPublicKey) || null,
-  }));
-  const tokenFinishModels = journalModels.filter((item) => journalNeedsTokenFinish(item.journal));
-  const manualModels = journalModels.filter((item) => item.plan.manualRecoveryRequired);
-  const finishModels = journalModels.filter((item) => canContinueJournalToFinish(item.journal));
-  const resumableModels = journalModels.filter((item) => canResumeJournal(item.journal));
-  const selectedWallet = wallets.find((wallet) => wallet.publicKey === selectedPublicKey) || null;
-  const selectedJournalModel = journalModels.find((item) => item.journal.walletPublicKey === selectedPublicKey)
-    || tokenFinishModels[0]
-    || finishModels[0]
-    || manualModels[0]
-    || resumableModels[0]
-    || journalModels[0]
-    || null;
-  const firstRecoverable = wallets.find((wallet) => !wallet.decryptionFailed) || null;
-  const hasDecryptionFailures = wallets.some((wallet) => wallet.decryptionFailed);
-
-  const inventoryState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : manualModels.length
-      ? 'danger'
-      : (activeJournals.length || wallets.length || lastSweep?.partial || lastSweep?.error)
-        ? 'warn'
-        : 'pass';
-  const unlockState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : recoverableCount === 0 && !hasDecryptionFailures
-      ? 'pass'
-      : hasDecryptionFailures
-        ? 'danger'
-        : !state.secretPin.configured
-          ? 'danger'
-          : secretLocked
-            ? 'warn'
-            : 'pass';
-  const pathState = state.apiStatus !== 'connected'
-    ? 'warn'
-    : manualModels.length
-      ? 'danger'
-      : finishModels.length || resumableModels.length || selectedPending || wallets.length
-        ? 'warn'
-        : 'pass';
-  const verifyState = lastSweep?.error
-    ? 'danger'
-    : lastSweep?.partial || lastSweep?.stillPending
-      ? 'warn'
-      : activeJournals.length || wallets.length
-        ? 'warn'
-        : 'pass';
-
-  const inventoryActions = [];
-  if (selectedJournalModel?.matchingWallet) {
-    inventoryActions.push({
-      label: 'Select matching wallet',
-      action: 'select-recovery-wallet',
-      wallet: selectedJournalModel.matchingWallet.publicKey,
-      icon: 'fa-wallet',
-    });
-  }
-  if (selectedJournalModel?.journal?.id && journalNeedsTokenFinish(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Open token recovery',
-      action: 'open-token-recovery',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (selectedJournalModel?.journal?.id && canContinueJournalToFinish(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Continue to Finish',
-      action: 'continue-journal-finish',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-flag-checkered',
-    });
-  } else if (selectedJournalModel?.journal?.id && canResumeJournal(selectedJournalModel.journal)) {
-    inventoryActions.push({
-      label: 'Resume journal',
-      action: 'resume-journal',
-      journalId: selectedJournalModel.journal.id,
-      icon: 'fa-rotate-right',
-    });
-  }
-
-  const unlockActions = [];
-  if (state.apiStatus !== 'connected') {
-    unlockActions.push({ label: 'Retry local API', action: 'retry-local-api', icon: 'fa-rotate-right' });
-  } else if (!state.secretPin.configured) {
-    unlockActions.push({ label: 'Set Recovery PIN', action: 'setup-secret-pin', icon: 'fa-key' });
-  } else if (secretLocked && recoverableCount > 0) {
-    unlockActions.push({ label: 'Unlock PIN', action: 'unlock-secret-pin', icon: 'fa-lock-open' });
-  } else if (selectedWallet && selectedPending) {
-    unlockActions.push({
-      label: 'Reveal selected wallet',
-      action: selectedWallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet',
-      wallet: selectedWallet.publicKey,
-      icon: 'fa-eye',
-    });
-  }
-
-  const pathActions = [];
-  if (tokenFinishModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Continue token recovery',
-      action: 'open-token-recovery',
-      journalId: tokenFinishModels[0].journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (finishModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Continue to Finish',
-      action: 'continue-journal-finish',
-      journalId: finishModels[0].journal.id,
-      icon: 'fa-flag-checkered',
-    });
-  } else if (manualModels[0]?.matchingWallet) {
-    pathActions.push({
-      label: 'Reveal for manual recovery',
-      action: manualModels[0].matchingWallet.secretPinLocked || secretLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet',
-      wallet: manualModels[0].matchingWallet.publicKey,
-      danger: true,
-      icon: 'fa-key',
-    });
-  } else if (resumableModels[0]?.journal?.id) {
-    pathActions.push({
-      label: 'Resume missing work',
-      action: 'resume-journal',
-      journalId: resumableModels[0].journal.id,
-      icon: 'fa-rotate-right',
-    });
-  } else if (selectedWallet && selectedPending) {
-    pathActions.push(
-      { label: 'Use for launch', action: 'use-recovery-wallet-for-launch', wallet: selectedWallet.publicKey, icon: 'fa-check' },
-      {
-        label: 'Sweep wallet',
-        action: selectedWallet.secretPinLocked || secretLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet',
-        wallet: selectedWallet.publicKey,
-        danger: true,
-        icon: 'fa-broom',
-      },
-    );
-  } else if (firstRecoverable) {
-    pathActions.push({
-      label: 'Select wallet',
-      action: 'select-recovery-wallet',
-      wallet: firstRecoverable.publicKey,
-      icon: 'fa-wallet',
-    });
-  }
-
-  const verifyActions = [];
-  if ((lastSweep?.error || lastSweep?.partial || lastSweep?.stillPending) && lastSweep.publicKey && !busy) {
-    verifyActions.push({
-      label: 'Retry sweep',
-      action: 'sweep-recovery-wallet',
-      wallet: lastSweep.publicKey,
-      danger: true,
-      icon: 'fa-rotate-right',
-    });
-  }
-  if (selectedJournalModel?.journal?.id && canDismissJournal(selectedJournalModel.journal)) {
-    verifyActions.push({
-      label: 'Dismiss journal',
-      action: 'dismiss-journal',
-      journalId: selectedJournalModel.journal.id,
-      danger: true,
-      icon: 'fa-box-archive',
-    });
-  }
-
-  const screens = [
-    {
-      id: 'inventory',
-      label: 'Find',
-      title: inventoryState === 'pass' ? 'Nothing to recover' : 'Unfinished launches and old wallets',
-      detail: state.apiStatus !== 'connected'
-        ? 'History needs the desktop app to load journals and pending wallets.'
-        : `${activeJournals.length} unfinished launch${activeJournals.length === 1 ? '' : 'es'} · ${wallets.length} old launch wallet${wallets.length === 1 ? '' : 's'}.`,
-      state: inventoryState,
-      stats: [
-        ['Journals', activeJournals.length],
-        ['Pending wallets', wallets.length],
-        ['Manual blockers', manualModels.length],
-      ],
-      items: state.apiStatus !== 'connected'
-        ? ['Open through the Trebuchet desktop app.', 'Keep recovery files in place until inventory loads.']
-        : [
-          selectedJournalModel ? `${selectedJournalModel.plan.title}: ${selectedJournalModel.plan.detail}` : 'No failed launch journal selected.',
-          manualModels.length ? 'Manual recovery blockers are shown before automatic resume actions.' : 'Automatic resume is allowed only when prior checkpoints are safe.',
-        ],
-      actions: inventoryActions,
-    },
-    {
-      id: 'unlock',
-      label: 'Unlock',
-      title: unlockState === 'pass' ? 'Wallets unlocked' : 'Unlock old launch wallets',
-      detail: recoverableCount
-        ? `${recoverableCount} old launch wallet${recoverableCount === 1 ? '' : 's'} can be swept or revealed with the Recovery PIN.`
-        : hasDecryptionFailures
-          ? (wallets.some((wallet) => wallet.secretState === 'missing')
-            ? 'The saved key is gone from this computer for some wallets. Unlocking will not help. Restore it from a backup, or create a new wallet.'
-            : wallets.some((wallet) => wallet.secretState === 'wrong-key')
-              ? 'Some keys were saved under a different PIN and cannot be opened with this one.'
-              : 'Some local wallet metadata exists but the saved key cannot be read on this computer.')
-          : 'No pending wallet secrets are waiting.',
-      state: unlockState,
-      stats: [
-        ['PIN', state.secretPin.configured ? secretLocked ? 'Locked' : 'Ready' : 'Unset'],
-        ['Recoverable', recoverableCount],
-        ['Secret errors', wallets.filter((wallet) => wallet.decryptionFailed).length],
-      ],
-      items: [
-        state.secretPin.configured ? 'Recovery PIN gates reveal, sweep, and manual recovery actions.' : 'Set a Recovery PIN before storing new launch secrets.',
-        hasDecryptionFailures ? 'Use an external backup for wallets whose saved key cannot be read here.' : 'Reveal secrets only for manual recovery; prefer resume or sweep when available.',
-      ],
-      actions: unlockActions,
-    },
-    {
-      id: 'path',
-      label: 'Act',
-      title: tokenFinishModels.length ? 'Finish the existing token' : manualModels.length ? 'Manual recovery required' : finishModels.length ? 'Continue to final sweep' : resumableModels.length ? 'Resume only missing work' : selectedPending ? 'Recover selected wallet' : 'Choose recovery path',
-      detail: tokenFinishModels.length
-        ? tokenFinishModels[0].plan.detail
-        : manualModels.length
-        ? manualModels[0].plan.detail
-        : finishModels.length
-          ? 'Liquidity is already recorded. Open Finish directly for report, airdrop, return wallet, and final sweep.'
-        : resumableModels.length
-          ? resumableModels[0].plan.detail
-          : selectedPending
-            ? 'Use, reveal, or sweep the selected pending launch wallet.'
-            : 'Select a pending wallet or journal before acting.',
-      state: pathState,
-      stats: [
-        ['Token finish', tokenFinishModels.length],
-        ['Ready to finish', finishModels.length],
-        ['Needs liquidity', resumableModels.length],
-        ['Manual', manualModels.length],
-      ],
-      items: tokenFinishModels[0]?.plan.items || manualModels[0]?.plan.items || finishModels[0]?.plan.items || resumableModels[0]?.plan.items || [
-        'Resume skips recorded on-chain work when journal checkpoints prove it is safe.',
-        'Sweep stranded assets only after verifying the destination wallet.',
-      ],
-      actions: pathActions,
-    },
-    {
-      id: 'verify',
-      label: 'Verify',
-      title: verifyState === 'pass' ? 'Recovery cleanup verified' : 'Verify cleanup state',
-      detail: lastSweep
-        ? lastSweep.error
-          ? 'The last sweep failed and the wallet remains tracked.'
-          : lastSweep.partial || lastSweep.stillPending
-            ? 'The last sweep left assets or warnings; keep the recovery entry.'
-            : 'The last sweep cleared its local recovery entry.'
-        : activeJournals.length || wallets.length
-          ? 'Recovery inventory still needs review before dismissal.'
-          : 'No abandoned wallet or active launch journal remains.',
-      state: verifyState,
-      stats: [
-        ['Last sweep', lastSweep ? lastSweep.error ? 'Failed' : lastSweep.partial || lastSweep.stillPending ? 'Partial' : 'Clean' : 'None'],
-        ['Open journals', activeJournals.length],
-        ['Wallet entries', wallets.length],
-      ],
-      items: lastSweep ? recoverySweepNextSteps(lastSweep) : [
-        'Confirm destination balances externally after any sweep.',
-        'Dismiss journals only after reports, proof, and assets are accounted for.',
-      ],
-      actions: verifyActions,
-    },
-  ];
-
-  const active = screens.find((screen) => screen.state === 'danger' && screen.actions.length)
-    || screens.find((screen) => screen.state === 'warn' && screen.actions.length)
-    || screens.find((screen) => screen.state === 'danger')
-    || screens.find((screen) => screen.state === 'warn')
-    || screens[0];
-
-  return {
-    screens,
-    active,
-    headline: state.apiStatus !== 'connected'
-      ? 'Open the Trebuchet desktop app to see recovery'
-      : manualModels.length
-      ? 'A launch needs manual recovery'
-      : tokenFinishModels.length
-        ? 'A token was left unfinished'
-      : finishModels.length
-        ? 'A launch is ready to finish'
-      : resumableModels.length
-        ? 'A launch can resume'
-        : activeJournals.length || wallets.length
-          ? 'Old launch wallets to check'
-          : 'Nothing to recover',
-  };
-}
-
-function renderRecoveryWizard(model) {
-  if (!model?.screens?.length) return '';
-  const active = model.active;
-  const actions = active.actions.map(recoveryWizardActionButton).join('');
-  const openCount = model.screens.filter((screen) => screen.state !== 'pass').length;
-  if (active.state === 'pass' && openCount === 0 && !actions) {
-    return `
-      <section class="recovery-wizard-panel pass" aria-label="Recovery next action">
-        <div class="recovery-wizard-head">
-          <strong>Nothing to recover.</strong>
-        </div>
-      </section>
-    `;
-  }
-  return `
-    <section class="recovery-wizard-panel ${escapeHtml(active.state)}" aria-label="Recovery next action">
-      <div class="recovery-wizard-head">
-        <span>
-          <span class="eyebrow">Recovery</span>
-          <strong>${escapeHtml(model.headline)}</strong>
-        </span>
-        <span class="risk-badge ${escapeHtml(active.state === 'pass' ? '' : active.state)}">${escapeHtml(active.state === 'danger' ? 'Manual' : active.state === 'warn' ? 'Review' : 'Clear')}</span>
-      </div>
-      <div class="recovery-wizard-screen">
-        <div class="recovery-next-action">
-          <span class="eyebrow">Next action</span>
-          <h3>${escapeHtml(active.title)}</h3>
-          <p>${escapeHtml(active.detail)}</p>
-        </div>
-        ${actions ? `<div class="recovery-wizard-actions">${actions}</div>` : ''}
-        <details class="recovery-wizard-details">
-          <summary><span>Recovery details</span><strong>${openCount ? `${openCount} open` : 'All clear'}</strong></summary>
-          <div class="recovery-wizard-stats">
-            ${active.stats.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
-          </div>
-          <ul>${active.items.slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-          <div class="recovery-status-list" role="list" aria-label="Recovery status">
-            ${model.screens.map((screen) => `
-              <span role="listitem"><strong>${escapeHtml(screen.label)}</strong><em>${escapeHtml(screen.state === 'pass' ? 'Clear' : screen.state === 'danger' ? 'Manual' : 'Review')}</em></span>
-            `).join('')}
-          </div>
-        </details>
-      </div>
-    </section>
-  `;
-}
-
-function renderSecretPinResetAudit(reset) {
-  if (!reset) return '';
-  const removed = reset.removed || {};
-  const wallets = Number(removed.pendingWallets || 0);
-  const vanityCAs = Number(removed.vanityCAs || 0);
-  return `
-    <div class="recovery-reset-audit warn">
-      <div class="recovery-sweep-head">
-        <span>
-          <span class="eyebrow">Recovery PIN reset audit</span>
-          <strong>${escapeHtml(reportTimestamp(reset.at || new Date()))}</strong>
-        </span>
-        <span class="risk-badge warn">Discarded</span>
-      </div>
-      <p>PIN-encrypted local secrets were removed. This does not move on-chain assets; recover anything still funded only from an external backup.</p>
-      <div class="recovery-sweep-grid">
-        <span><small>Launch wallets</small><strong>${wallets}</strong></span>
-        <span><small>Vanity CAs</small><strong>${vanityCAs}</strong></span>
-        <span><small>PIN</small><strong>${escapeHtml(reset.status?.configured ? 'Reset' : 'Unset')}</strong></span>
-      </div>
-      <ul class="recovery-sweep-steps">
-        <li>Do not discard journals that still point at a funded wallet unless you have the secret backed up elsewhere.</li>
-        <li>Generate or import a new launch wallet before the next launch.</li>
-      </ul>
-    </div>
-  `;
-}
-
-function renderRecoveryWalletWorkspace() {
-  // Old launch wallets only: the one in use is on the Wallet page and is not
-  // something to recover unless an unfinished launch left work on it.
-  const wallets = recoveryWalletsNeedingAttention();
-  const selectedPublicKey = selectedLaunchWalletPublicKey();
-  const secretLocked = state.secretPin.locked;
-  const busy = Boolean(state.fullRunRunning || state.realExecutionRunning);
-  const recoverableCount = wallets.filter((wallet) => !wallet.decryptionFailed).length;
-  const selectedPending = wallets.some((wallet) => wallet.publicKey === selectedPublicKey);
-  const lastSweep = state.lastRecoverySweep;
-  const guide = recoveryGuideModel({
-    wallets,
-    selectedPublicKey,
-    selectedPending,
-    recoverableCount,
-    secretLocked,
-    lastSweep,
-    busy,
-  });
-
-  $('#recoveryWalletWorkspace').innerHTML = `
-    <div class="recovery-wallet-head">
-      <span>
-        <span class="eyebrow">Old launch wallets</span>
-        <h3>${wallets.length ? `${wallets.length} may still hold assets` : 'None'}</h3>
-        <p>${state.apiStatus !== 'connected'
-          ? 'Open the Trebuchet desktop app to see old launch wallets.'
-          : wallets.length
-            ? 'Sweep what is left to your return wallet, or reveal the secret to recover it yourself.'
-            : 'The launch wallet in use is on the Wallet page.'}</p>
-      </span>
-    </div>
-    ${wallets.length ? renderRecoveryGuide(guide) : ''}
-    ${wallets.length ? `
-      <div class="recovery-wallet-list">
-        ${wallets.map((wallet) => {
-          const walletState = recoveryWalletState(wallet);
-          const isSelected = wallet.publicKey === selectedPublicKey;
-          const revealAction = secretLocked || wallet.secretPinLocked ? 'unlock-secret-pin' : 'reveal-recovery-wallet';
-          const revealLabel = secretLocked || wallet.secretPinLocked ? 'Unlock PIN' : 'Reveal';
-          const discardBusy = state.discardingWalletPublicKey === wallet.publicKey;
-          const sweepBusy = state.sweepingWalletPublicKey === wallet.publicKey;
-          const sweepAction = secretLocked || wallet.secretPinLocked ? 'unlock-secret-pin' : 'sweep-recovery-wallet';
-          const sweepLabel = secretLocked || wallet.secretPinLocked ? 'Unlock PIN' : sweepBusy ? 'Sweeping' : 'Sweep';
-          return `
-            <article class="recovery-wallet-row ${isSelected ? 'is-selected' : ''}">
-              <span class="ident" aria-hidden="true">${escapeHtml(shortAddress(wallet.publicKey).slice(0, 2))}</span>
-              <span class="recovery-wallet-copy">
-                <span class="eyebrow">${escapeHtml(formatDate(wallet.createdAt))}</span>
-                <h3>${escapeHtml(fullAddress(wallet.publicKey))}</h3>
-                <p>${escapeHtml(walletState.detail)}</p>
-              </span>
-              <span class="timeline-actions">
-                <span class="risk-badge ${escapeHtml(walletState.className)}">${escapeHtml(walletState.label)}</span>
-                <button class="pill-button" type="button" data-action="select-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}">${isSelected ? 'Selected' : 'Select'}</button>
-                <button class="pill-button" type="button" data-action="copy-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}">
-                  <i class="fa-solid fa-copy"></i><span>Copy</span>
-                </button>
-                <button class="pill-button" type="button" data-action="${escapeHtml(revealAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed ? 'disabled' : ''}>
-                  <i class="fa-solid fa-key"></i><span>${escapeHtml(revealLabel)}</span>
-                </button>
-                <button class="pill-button danger" type="button" data-action="${escapeHtml(sweepAction)}" data-wallet="${escapeHtml(wallet.publicKey)}" ${wallet.decryptionFailed || busy || sweepBusy ? 'disabled' : ''}>
-                  <i class="fa-solid fa-broom"></i><span>${escapeHtml(sweepLabel)}</span>
-                </button>
-                <button class="pill-button danger" type="button" data-action="discard-recovery-wallet" data-wallet="${escapeHtml(wallet.publicKey)}" ${busy || discardBusy ? 'disabled' : ''}>
-                  <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
-                </button>
-              </span>
-            </article>
-          `;
-        }).join('')}
-      </div>
-    ` : ''}
-    ${renderSecretPinResetAudit(state.lastSecretPinReset)}
-    ${renderRecoverySweepResult(lastSweep)}
-  `;
-}
-
-function renderHistoryExecutionAudit() {
-  const entries = Array.isArray(state.executionLedger) ? state.executionLedger : [];
-  if (!entries.length) {
-    return `
-      <section class="history-audit-panel">
-        <p class="history-empty">Nothing sent yet.</p>
-      </section>
-    `;
-  }
-  const attention = entries.filter((entry) => ['error', 'warn'].includes(entry.status)).length;
-  const complete = entries.filter((entry) => entry.status === 'complete').length;
-  const running = entries.filter((entry) => entry.status === 'running').length;
-  const retries = entries.filter((entry) => Number(entry.attempt || 1) > 1).length;
-  const observedSpend = observedExecutionSpendSummary(entries);
-  const estimatedCost = entries.reduce((sum, entry) => {
-    const value = Number(entry.estimatedCostSol || 0);
-    return Number.isFinite(value) && value > 0 ? sum + value : sum;
-  }, 0);
-  const latest = entries[0];
-  return `
-    <section class="history-audit-panel ${attention ? 'warn' : ''}">
-      <div class="history-audit-head">
-        <span>
-          <span class="eyebrow">Launch steps sent</span>
-          <strong>${escapeHtml(latest?.label || 'Launch steps')}</strong>
-          <em>${escapeHtml(latest?.detail || 'Steps sent from the launch wallet.')}</em>
-        </span>
-        <span class="history-audit-actions">
-          <span class="risk-badge ${attention ? 'warn' : ''}">${attention ? `${attention} attention` : 'Clear'}</span>
-          <button class="pill-button" type="button" data-action="clear-execution-audit">Clear</button>
-        </span>
-      </div>
-      <div class="history-audit-stats">
-        <span><small>Complete</small><strong>${complete}</strong></span>
-        <span><small>Running</small><strong>${running}</strong></span>
-        <span><small>Retries</small><strong>${retries}</strong></span>
-        <span><small>${observedSpend.measuredCount ? 'Observed SOL' : 'Est. cost'}</small><strong>${observedSpend.measuredCount ? fmtSol(observedSpend.outflowSol) : estimatedCost ? fmtSol(estimatedCost) : 'Variable'}</strong></span>
-      </div>
-      <div class="history-audit-list">
-        ${entries.slice(0, 5).map((entry) => `
-          <article class="${escapeHtml(entry.status || '')}">
-            <i class="fa-solid ${executionLedgerIcon(entry.status)}"></i>
-            <span>
-              <strong>${escapeHtml(entry.label || 'Classic operation')}</strong>
-              <small>${escapeHtml([entry.phase || 'run', executionLedgerAttemptLabel(entry), formatLedgerCost(entry), formatLedgerDuration(entry)].filter(Boolean).join(' / '))}</small>
-            </span>
-          </article>
-        `).join('')}
-      </div>
-    </section>
-  `;
-}
-
-// Saved launch wallets that may still hold assets. The launch wallet in use
-// is not something to recover unless an unfinished launch left work on it.
+// Launch wallets the chain shows still holding something to sweep. The top strip and the
+// Wallet page count these; the Wallet page sweeps them.
 function recoveryWalletsNeedingAttention() {
   if (state.apiStatus !== 'connected') return [];
   const selectedPublicKey = selectedLaunchWalletPublicKey();
   const selectedHasOpenJournal = (state.recovery.journals || [])
     .some((journal) => !isTerminalJournal(journal) && journal.walletPublicKey === selectedPublicKey);
+  // Counted only once the chain shows something to sweep: an unread wallet is not called a problem.
   return (state.recovery.pendingWallets || [])
-    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal);
-}
-
-function currentRecoveryWizardModel() {
-  const selectedPublicKey = selectedLaunchWalletPublicKey();
-  const wallets = recoveryWalletsNeedingAttention();
-  return recoveryWizardModel({
-    wallets,
-    selectedPublicKey,
-    selectedPending: wallets.some((wallet) => wallet.publicKey === selectedPublicKey),
-    recoverableCount: wallets.filter((wallet) => !wallet.decryptionFailed).length,
-    secretLocked: state.secretPin.locked,
-    lastSweep: state.lastRecoverySweep,
-    busy: Boolean(state.fullRunRunning || state.realExecutionRunning),
-  });
-}
-
-function renderHistory() {
-  const journalHistory = state.recovery.journals.map((journal) => ({
-    id: journal.id,
-    kind: 'journal',
-    status: journal.status || 'journal',
-    title: `${journal.token?.symbol || shortAddress(journal.walletPublicKey)} · ${journal.status || 'launch'}`,
-    detail: `${humanizeStage(journal.stage)} for ${fullAddress(journal.walletPublicKey)}`,
-    time: formatDate(journal.updatedAt || journal.createdAt),
-    journal,
-    resumePlan: journalResumePlan(journal),
-  }));
-  const wizard = currentRecoveryWizardModel();
-  $('#recoveryWizard').innerHTML = renderRecoveryWizard(wizard);
-  renderRecoveryWalletWorkspace();
-  $('#historyExecutionAudit').innerHTML = renderHistoryExecutionAudit();
-  // Launches only: the app's own connection state is not a launch.
-  const items = state.apiStatus === 'connected'
-    ? journalHistory.length
-      ? journalHistory
-      : [{ kind: 'summary', title: 'No launches yet', detail: 'Each launch you run is kept here, with where it stopped if it did not finish.', time: '' }]
-    : history;
-
-  $('#timeline').innerHTML = items.map((item) => `
-    <article class="timeline-row ${item.status ? stateClass(item.status) : ''}">
-      <span>
-        <span class="eyebrow">${escapeHtml(item.time)}</span>
-        <h3>${escapeHtml(item.title)}</h3>
-        <p>${escapeHtml(item.detail)}</p>
-      </span>
-      ${item.kind === 'journal' ? `
-        <span class="timeline-actions">
-          <span class="risk-badge ${stateClass(item.status)}">${escapeHtml(item.status)}</span>
-          ${canResumeJournal(item.journal) ? `<button class="pill-button" type="button" data-action="resume-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>${state.recoveryActionId === item.id ? 'Resuming' : 'Resume'}</button>` : ''}
-          ${item.resumePlan?.manualRecoveryRequired ? '<span class="risk-badge danger">Manual recovery</span>' : ''}
-          ${state.demoActive && !isTerminalJournal(item.journal) ? '<button class="pill-button" type="button" data-action="toggle-demo-mode">Switch to live</button>' : ''}
-          ${canDismissJournal(item.journal) ? `<button class="pill-button" type="button" data-action="dismiss-journal" data-journal-id="${escapeHtml(item.id)}" ${state.recoveryActionId === item.id ? 'disabled' : ''}>Dismiss</button>` : ''}
-        </span>
-        <details class="journal-resume-plan ${stateClass(item.resumePlan?.state)}">
-          <summary>
-            <span class="risk-badge ${stateClass(item.resumePlan?.state)}">${escapeHtml(item.resumePlan?.badge || 'Plan')}</span>
-            <strong>${escapeHtml(item.resumePlan?.title || 'Resume plan')}</strong>
-          </summary>
-          <div>
-            <p>${escapeHtml(item.resumePlan?.detail || '')}</p>
-            <ul>
-              ${(item.resumePlan?.items || []).slice(0, 4).map((row) => `<li>${escapeHtml(row)}</li>`).join('')}
-            </ul>
-          </div>
-        </details>
-      ` : ''}
-    </article>
-  `).join('');
-  renderHistoryPanes();
-}
-
-function renderHistoryPanes() {
-  const panes = ['recovery', 'wallets', 'audit', 'journal'];
-  if (!panes.includes(state.activeHistoryPane)) state.activeHistoryPane = 'recovery';
-  $$('[data-history-pane]').forEach((button) => {
-    const selected = button.dataset.historyPane === state.activeHistoryPane;
-    button.classList.toggle('is-selected', selected);
-    button.setAttribute('aria-selected', String(selected));
-    button.tabIndex = selected ? 0 : -1;
-  });
-  $$('[data-history-pane-panel]').forEach((panel) => {
-    const selected = panel.dataset.historyPanePanel === state.activeHistoryPane;
-    panel.classList.toggle('is-active', selected);
-    panel.hidden = !selected;
-  });
+    .filter((wallet) => wallet.publicKey !== selectedPublicKey || selectedHasOpenJournal)
+    .filter((wallet) => walletSweepable(cachedWalletContents(wallet.publicKey)));
 }
 
 function renderVanitySummary() {
@@ -19044,17 +17243,17 @@ function renderAll() {
   renderStages();
   renderQueue();
   renderGuardrails();
-  renderParityPanel();
   renderWallet();
   renderDiscovery();
   renderExtension();
   renderSettings();
-  renderHistory();
   renderActivityLogDrawer();
   renderRecoveryPinGate();
   renderLaunchWorkspace();
   enhanceNumberSteppers();
   drawLaunchCanvas();
+  // State can change without new markup (the app connecting, a PIN unlock): re-check guards.
+  scheduleActionGuards();
 }
 
 function defaultQuoteAcquireState() {
@@ -19188,8 +17387,27 @@ function renderFundingReceipt(estimate) {
       ${split}
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
-      <details class="funding-receipt-lines"><summary>Breakdown</summary><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></details>
     </div>`;
+}
+
+// The line-by-line cost: its own tab on the Funding row, not a fold under the total.
+function renderFundingBreakdown(estimate) {
+  const lines = Array.isArray(estimate?.solBreakdown) ? estimate.solBreakdown : [];
+  if (!lines.length) return '';
+  const row = (label, sol, note = '') => `
+    <li><span>${escapeHtml(label)}${note ? `<small>${escapeHtml(note)}</small>` : ''}</span><strong>${Number(sol).toFixed(4)}</strong></li>`;
+  const groups = FUNDING_RECEIPT_GROUPS.map((group) => ({ ...group, sol: 0, count: 0 }));
+  const other = [];
+  lines.forEach((line) => {
+    const group = groups.find((item) => item.test.test(String(line.label || '')));
+    if (group) { group.sol += Number(line.sol || 0); group.count += 1; } else other.push(line);
+  });
+  const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  const rows = [
+    ...groups.filter((group) => group.sol > 0).map((group) => row(group.label, group.sol)),
+    ...other.map((line) => row(line.label, line.sol)),
+  ].join('');
+  return `<div class="funding-receipt-lines"><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></div>`;
 }
 
 function renderFundingWalletHint({ compact = false } = {}) {
@@ -19376,6 +17594,7 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
       error: null,
       lastUpdatedAt: new Date().toISOString(),
     };
+    renderRecoverLedger();
     if (!quiet) notify('Launch wallet balance refreshed');
     refreshDestinations({ force: true }).catch(() => null);
     return balance;
@@ -19417,7 +17636,6 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   renderAirdropPanel();
   renderReportPanel();
   renderClassicBridge();
-  renderParityPanel();
   renderQueue();
   drawLaunchCanvas();
 }
@@ -19442,39 +17660,101 @@ function hubPickerRows(catalog = {}, records = []) {
   return rows;
 }
 
+// The picker is a page of the Pairs slide, not a list inside a scrolling box: the pair list steps
+// aside while it is open, the token CA is the first thing in it, and the tokens are a fixed grid
+// that fit the frame, with a pager when there are more.
+const HUB_PICKER_PAGE_SIZE = 9;
+
+// As many tokens as fit the space left in the frame, in whole rows: a tall window shows them all,
+// a short one pages. Measured after each draw; a change redraws once.
+let hubPickerFitSize = HUB_PICKER_PAGE_SIZE;
+function measureHubPickerFit() {
+  const grid = $('#hubPicker .hub-picker-grid');
+  const frame = $('#launchWorkspaceViewport');
+  if (!grid?.getBoundingClientRect || !frame?.getBoundingClientRect || typeof getComputedStyle !== 'function') return hubPickerFitSize;
+  const tile = grid.firstElementChild;
+  const tileHeight = tile ? tile.getBoundingClientRect().height + 4 : 60;
+  const columns = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length);
+  const bottom = Math.min(frame.getBoundingClientRect().bottom, window.innerHeight);
+  const pagerRoom = 56;
+  const rows = Math.max(2, Math.floor((bottom - grid.getBoundingClientRect().top - pagerRoom) / tileHeight));
+  return rows * columns;
+}
+globalThis.window?.addEventListener?.('resize', () => {
+  if (!hubPicker?.open) return;
+  window.clearTimeout(measureHubPickerFit.timer);
+  measureHubPickerFit.timer = window.setTimeout(() => renderHubPicker(), 120);
+});
+
 function renderHubPicker() {
   const host = $('#hubPicker');
   if (!host) return;
   host.hidden = !hubPicker.open;
+  const editor = $('#supplyEditor');
+  if (editor) editor.hidden = hubPicker.open;
   if (!hubPicker.open) return;
   const rows = hubPickerRows(hubPicker.catalog || {}, state.discovery.records);
+  const pageSize = hubPickerFitSize;
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  hubPicker.page = Math.min(Math.max(0, Number(hubPicker.page) || 0), pages - 1);
+  const shown = rows.slice(hubPicker.page * pageSize, (hubPicker.page + 1) * pageSize);
   const result = hubPicker.result;
   const pool = result?.solPool;
   host.innerHTML = `
-    <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <div class="hub-picker-scroll" aria-label="Hub tokens">
-      ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
-        ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
-          <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
-        </button>`).join('')}
-`).join('')}
+    <div class="hub-picker-heading"><strong>Add pair</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker"><i class="fa-solid fa-xmark" aria-hidden="true"></i><span>Close</span></button></div>
+    <div class="hub-picker-find">
+      <input id="hubTokenCa" aria-label="Token CA" value="${escapeHtml(hubPicker.mint)}" placeholder="Token CA" autocomplete="off" spellcheck="false">
+      <button class="pill-button primary" type="button" data-action="find-hub-pool">Find pool</button>
     </div>
-    <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
-    <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>
     <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
-    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
-      <small>Token CA</small><code>${escapeHtml(result.mint)}</code>
-      <small>${escapeHtml(pool.dex)} · existing ${escapeHtml(result.via?.symbol || 'SOL')} pool</small><code>${escapeHtml(pool.address)}</code>
-      <small>${result.via ? `No SOL pool: buys route SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}. ` : ''}Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
-      <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}`;
+    ${result ? `<div class="hub-picker-result">
+      ${hubTileHtml({ ...result, mint: result.mint }, { tag: 'div', trailing: `<button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button>`, status: `${pool.dex}${result.via ? ` · routes SOL → ${result.via.symbol} → ${result.symbol}` : ''} · ${pool.source}` })}</div>` : ''}
+    <div class="hub-picker-grid" role="group" aria-label="Hub tokens">
+      ${shown.map((hub) => hubTileHtml(hub, { tag: 'button', attrs: `type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}"` })).join('')}
+    </div>
+    ${pages > 1 ? `<div class="hub-picker-pager"><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="-1" aria-label="Previous tokens" ${hubPicker.page === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button><span>${hubPicker.page + 1} / ${pages}</span><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="1" aria-label="Next tokens" ${hubPicker.page >= pages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></div>` : ''}`;
+  hydrateCoinCards();
+  requestHubLogos(shown.map((hub) => hub.mint));
+  const fit = measureHubPickerFit();
+  if (fit !== hubPickerFitSize && rows.length > 0) {
+    hubPickerFitSize = fit;
+    renderHubPicker();
+  }
+}
+
+// The standard coin tile, as on Coins and Discovery. Logos are read once per token and kept.
+const hubLogos = new Map();
+const hubLogoPending = new Set();
+
+function hubTileHtml(hub = {}, options = {}) {
+  const mint = hub.mint || hubPicker.mint || '';
+  return coinCardHtml(
+    { name: hub.name || hub.symbol, symbol: hub.symbol, address: mint, image: hub.image || hub.imageUrl || hub.logoDataUrl || hubLogos.get(mint) || '' },
+    { variant: 'row', ...options },
+  );
+}
+
+function requestHubLogos(mints) {
+  const missing = mints.filter((mint) => mint && !hubLogos.has(mint) && !hubLogoPending.has(mint));
+  if (!missing.length || !state.apiClient?.getTokenLogos || state.apiStatus !== 'connected') return;
+  missing.forEach((mint) => hubLogoPending.add(mint));
+  state.apiClient.getTokenLogos(missing)
+    .then((logos) => { missing.forEach((mint) => hubLogos.set(mint, logos?.[mint] || null)); })
+    .catch(() => { missing.forEach((mint) => hubLogos.set(mint, null)); })
+    .finally(() => {
+      missing.forEach((mint) => hubLogoPending.delete(mint));
+      if (hubPicker.open) renderHubPicker();
+      // Pool lines show these logos too.
+      const editor = $('#supplyEditor');
+      if (editor?.contains && !editor.contains(document.activeElement)) renderSupplyEditor();
+    });
 }
 
 async function openHubPicker() {
   const requestId = hubPicker.requestId + 1;
-  hubPicker = { open: true, requestId, catalog: null, result: null, loading: false, error: '', mint: '' };
+  hubPicker = { open: true, requestId, catalog: null, result: null, loading: false, error: '', mint: '', page: 0 };
   const picker = hubPicker;
   renderHubPicker();
-  $('#hubPicker')?.scrollIntoView({ block: 'nearest' });
   $('#hubTokenCa')?.focus({ preventScroll: true });
   try {
     if (!state.apiClient?.listFlywheelHubs) throw new Error('Connect to the Trebuchet app to load hub tokens.');
@@ -19542,10 +17822,51 @@ function useHubToken() {
   resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
 }
 
-function addCustomPool(hub = null) {
-  state.customPoolCounter += 1;
+// Every pair has its own id: its settings are looked up by it, so two pairs sharing
+// one would edit the same pair and show the same values.
+function nextCustomPoolId() {
+  let id;
+  do {
+    state.customPoolCounter += 1;
+    id = `custom-pool-${state.customPoolCounter}`;
+  } while (state.customPools.some((pool) => pool.id === id));
+  return id;
+}
+
+// Turns the flywheel preset pair into an ordinary pair with the same token, share, fee tier and
+// start premium, so its slices, ladder and support can be set like any other pair's.
+function customizeQuotePool() {
+  const venue = selectedClassicQuoteVenue();
+  const percent = parsePercentInput($('#quotePoolPercent').value, 0);
+  if (percent <= 0 || !venue.quoteMint) return;
+  const id = nextCustomPoolId();
   state.customPools.push({
-    id: `custom-pool-${state.customPoolCounter}`,
+    id,
+    quoteSymbol: venue.symbol,
+    quoteMint: venue.quoteMint,
+    supplyPercent: percent,
+    ammConfigIndex: state.pairPoolConfigIndex,
+    startPremiumPct: state.pairStartPremiumPct,
+    sliceShares: '100',
+    feeKeyRecipient: '',
+    ladderBands: 0,
+    ladderText: '',
+    supportSol: 0,
+    supportDepth: 12,
+    supportLayersText: '',
+  });
+  $('#quotePoolPercent').value = '0';
+  $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
+  state.supplyOpenRow = `custom:${id}`;
+  invalidateClassicOutputs();
+  renderAll();
+  scheduleLaunchAutoSave();
+  notify(`${venue.symbol} pair is now editable`);
+}
+
+function addCustomPool(hub = null) {
+  state.customPools.push({
+    id: nextCustomPoolId(),
     quoteSymbol: hub?.symbol || 'QUOTE',
     quoteMint: hub?.mint || '',
     supplyPercent: 5,
@@ -19556,6 +17877,7 @@ function addCustomPool(hub = null) {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   invalidateClassicOutputs();
   renderAll();
@@ -19889,23 +18211,10 @@ function proofExportParityBundle(proof = currentLaunchProof(), config = currentL
   };
 }
 
-function classicReportComparisonForProofExport(proof = currentLaunchProof(), config = currentLaunchConfig()) {
-  const normalized = normalizeClassicReportComparison(state.classicReportComparison);
-  if (!normalized.result) return null;
-  if (!classicComparisonIsRetirementGrade(normalized.result, proof, config)) return null;
-  return normalized;
-}
-
 function pruneLaunchDataEvidenceArtifactsForExport(data = null, proof = currentLaunchProof(), config = currentLaunchConfig()) {
   if (!data || typeof data !== 'object') return data;
   const cleaned = { ...data };
-  const comparison = classicComparisonResultObject(cleaned.classicReportComparison?.result || cleaned.classicReportComparison);
-  if (
-    Object.prototype.hasOwnProperty.call(cleaned, 'classicReportComparison')
-    && !classicComparisonIsRetirementGrade(comparison, proof, config)
-  ) {
-    delete cleaned.classicReportComparison;
-  }
+  delete cleaned.classicReportComparison;
   if (cleaned.proof && typeof cleaned.proof === 'object') {
     delete cleaned.proof;
   }
@@ -19942,7 +18251,6 @@ function buildV2ProofExportPayload({
     reportParityAudit: parityBundle.reportParityAudit,
     classicRetirementGate: parityBundle.classicRetirementGate,
     fieldVerification: parityBundle.fieldVerification,
-    classicReportComparison: classicReportComparisonForProofExport(proofForPayload, proofConfig),
   };
   return compactForHtml ? compactV2ProofPayloadForHtml(payload) : payload;
 }
@@ -20242,77 +18550,6 @@ function importedLocalDossierEvidence(payload = {}, proof = null) {
   return null;
 }
 
-function restoreImportedProofComparison(payload, proof) {
-  const comparisonWrapper = payload?.classicReportComparison || payload?.launchData?.classicReportComparison || null;
-  const comparisonFrom = (candidate = null) => {
-    if (!candidate || typeof candidate !== 'object') return null;
-    if (
-      candidate.status
-      || candidate.proofFingerprint
-      || Array.isArray(candidate.rows)
-      || Number(candidate.fieldCount || 0) > 0
-    ) {
-      return candidate;
-    }
-    return null;
-  };
-  const importedComparison =
-    comparisonFrom(comparisonWrapper?.result)
-    || comparisonFrom(comparisonWrapper)
-    || comparisonFrom(payload?.proof?.reportParity?.comparison)
-    || comparisonFrom(payload?.proof?.reportParity?.classicComparison)
-    || comparisonFrom(payload?.launchData?.proof?.reportParity?.comparison)
-    || comparisonFrom(payload?.launchData?.proof?.reportParity?.classicComparison)
-    || null;
-  if (!importedComparison || typeof importedComparison !== 'object') return;
-  const importedInput = String(
-    comparisonWrapper?.input
-    || payload?.classicArtifactInput
-    || payload?.launchData?.classicArtifactInput
-    || '',
-  ).trim();
-  if (!importedInput) {
-    state.classicReportComparison = {
-      input: '',
-      result: null,
-      comparedAt: null,
-      error: 'Imported proof comparison needs the original Classic artifact text; paste or load it to compare locally.',
-    };
-    persistClassicReportComparison();
-    return;
-  }
-  try {
-    const result = compareClassicReportArtifact(importedInput, proof, importedProofComparisonConfig(payload));
-    state.classicReportComparison = {
-      input: importedInput,
-      result,
-      comparedAt: result.comparedAt,
-      error: null,
-    };
-    persistClassicReportComparison();
-    const retirementGradeComparison = classicComparisonIsRetirementGrade(result, proof, importedProofComparisonConfig(payload));
-    if (retirementGradeComparison) {
-      rememberLaunchProof({
-        ...proof,
-        reportParity: {
-          ...(proof.reportParity || {}),
-          classicArtifactCompared: true,
-          comparedAt: result.comparedAt,
-          comparison: result,
-        },
-      });
-    }
-  } catch (error) {
-    state.classicReportComparison = {
-      input: importedInput,
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Imported Classic artifact comparison failed',
-    };
-    persistClassicReportComparison();
-  }
-}
-
 async function loadV2ProofFile(file) {
   try {
     const safeFile = validateProofFile(file);
@@ -20328,7 +18565,6 @@ async function loadV2ProofFile(file) {
     state.lastLocalDossier = localDossierIsProofCurrent(mergedProof?.localDossier, mergedProof, mergedConfig)
       ? mergedProof.localDossier
       : null;
-    restoreImportedProofComparison(payload, mergedProof);
     renderAll();
     notify('Launch record loaded');
   } catch (error) {
@@ -20346,111 +18582,6 @@ function requestV2ProofImport() {
     });
   }, { once: true });
   input.click();
-}
-
-async function loadClassicArtifactFile(file) {
-  try {
-    const safeFile = validateClassicArtifactFile(file);
-    if (!safeFile) return;
-    const text = await readFileAsText(safeFile, 'Classic artifact');
-    state.classicReportComparison = {
-      input: text,
-      result: null,
-      comparedAt: null,
-      error: null,
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify('Classic artifact loaded');
-  } catch (error) {
-    state.classicReportComparison = {
-      ...state.classicReportComparison,
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Classic artifact import failed',
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify(state.classicReportComparison.error);
-  }
-}
-
-function requestClassicArtifactImport() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'application/json,text/html,text/plain,.json,.html,.htm,.txt';
-  input.addEventListener('change', () => {
-    loadClassicArtifactFile(input.files?.[0] || null).finally(() => {
-      input.value = '';
-    });
-  }, { once: true });
-  input.click();
-}
-
-function runClassicArtifactComparison() {
-  try {
-    const input = state.classicReportComparison.input || document.querySelector('.classic-artifact-text')?.value || '';
-    const proof = currentLaunchProof();
-    const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-    const result = compareClassicReportArtifact(input, proof, config);
-    state.classicReportComparison = {
-      input,
-      result,
-      comparedAt: result.comparedAt,
-      error: null,
-    };
-    persistClassicReportComparison();
-    if (proof && typeof proof === 'object') {
-      const retirementGradeComparison = classicComparisonIsRetirementGrade(result, proof, config);
-      rememberLaunchProof({
-        ...proof,
-        reportParity: {
-          ...(proof.reportParity || {}),
-          classicArtifactCompared: retirementGradeComparison,
-          comparedAt: result.comparedAt,
-          comparison: result,
-        },
-      });
-    }
-    renderAll();
-    notify(result.status === 'pass' ? 'Classic artifact matches the Trebuchet proof' : 'Classic artifact needs review');
-  } catch (error) {
-    state.classicReportComparison = {
-      ...state.classicReportComparison,
-      input: state.classicReportComparison.input || document.querySelector('.classic-artifact-text')?.value || '',
-      result: null,
-      comparedAt: null,
-      error: error.message || 'Classic artifact comparison failed',
-    };
-    persistClassicReportComparison();
-    renderAll();
-    notify(state.classicReportComparison.error);
-  }
-}
-
-function clearClassicArtifactComparison() {
-  state.classicReportComparison = {
-    input: '',
-    result: null,
-    comparedAt: null,
-    error: null,
-  };
-  persistClassicReportComparison();
-  const proof = currentLaunchProof();
-  if (proof?.reportParity) {
-    rememberLaunchProof({
-      ...proof,
-      reportParity: {
-        ...proof.reportParity,
-        classicArtifactCompared: false,
-        comparison: null,
-        classicComparison: null,
-        comparedAt: null,
-      },
-    });
-  }
-  renderAll();
-  notify('Classic artifact comparison cleared');
 }
 
 async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, ledger = true } = {}) {
@@ -20481,7 +18612,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
 
   const airdropStatus = airdropCompletionStatus(proof, config.poolTopology);
   if (airdropStatus.retryRequired) {
-    const reason = `Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before publishing the launch report.`;
+    const reason = `${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`;
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }
@@ -20491,7 +18622,7 @@ async function publishV2LaunchReport({ quiet = false, refreshReadiness = true, l
     return { skipped: true, reason, airdropIncomplete: true };
   }
   if (!airdropStatus.complete) {
-    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop proof is incomplete; refresh or rerun airdrop before publishing the launch report.';
+    const reason = airdropCompletionIssue(airdropStatus) || 'Airdrop record incomplete.';
     if (!quiet) notify(reason);
     return { skipped: true, reason, airdropIncomplete: true };
   }
@@ -20653,9 +18784,16 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     if (!quiet) notify('Airdrop requires the Trebuchet desktop app');
     return;
   }
-  const allRecipients = Array.isArray(proof.airdrop?.recipients) ? proof.airdrop.recipients : [];
+  // Once this launch has saved its airdrop plan, that plan is what runs: the server refuses any other
+  // amounts, so the screen confirms and sends the saved recipients and amounts, not a recomputed list.
+  const walletPublicKey = proof.walletPublicKey || selectedLaunchWalletPublicKey();
+  const savedPlan = state.apiClient.getAirdropPlan
+    ? await state.apiClient.getAirdropPlan(walletPublicKey).catch(() => null)
+    : null;
+  const savedRows = Array.isArray(savedPlan?.recipients) ? savedPlan.recipients.map((row) => ({ wallet: row.wallet, tokens: row.tokens })) : null;
+  const allRecipients = savedRows || (Array.isArray(proof.airdrop?.recipients) ? proof.airdrop.recipients : []);
   const failedRecipients = Array.isArray(proof.airdrop?.failed)
-    ? proof.airdrop.failed.map((row) => ({ wallet: row.wallet, tokens: row.tokens }))
+    ? proof.airdrop.failed.map((row) => savedRows?.find((saved) => saved.wallet === row.wallet) || { wallet: row.wallet, tokens: row.tokens })
     : [];
   const recipients = retry ? failedRecipients : allRecipients;
   if (!recipients.length) {
@@ -20663,9 +18801,10 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     return;
   }
   if (!skipConfirm) {
+    const total = recipients.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0);
     const ok = await confirmOperatorAction({
       title: retry ? 'Retry failed airdrop recipients' : 'Run airdrop before final sweep',
-      detail: 'Trebuchet will sign token transfers from the managed launch wallet.',
+      detail: `Trebuchet will send ${total.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens to ${recipients.length} wallet${recipients.length === 1 ? '' : 's'}${savedRows ? ', the amounts saved for this launch' : ''}, signed by the managed launch wallet.`,
       confirmLabel: retry ? 'Retry airdrop' : 'Run airdrop',
       danger: true,
     });
@@ -20681,10 +18820,12 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
   renderAll();
   try {
     const payload = {
-      walletPublicKey: proof.walletPublicKey || selectedLaunchWalletPublicKey(),
-      tokenMint: proof.airdrop?.tokenMint || proof.token.mint,
-      tokenDecimals: proof.airdrop?.tokenDecimals ?? proof.token.decimals ?? currentLaunchConfig().token.decimals,
-      isToken2022: proof.token.mintFormat === 'token-2022' || proof.token.isToken2022 === true || proof.airdrop?.isToken2022 === true,
+      walletPublicKey,
+      tokenMint: savedPlan?.tokenMint || proof.airdrop?.tokenMint || proof.token.mint,
+      tokenDecimals: savedPlan?.tokenDecimals ?? proof.airdrop?.tokenDecimals ?? proof.token.decimals ?? currentLaunchConfig().token.decimals,
+      isToken2022: savedPlan?.programId
+        ? savedPlan.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+        : proof.token.mintFormat === 'token-2022' || proof.token.isToken2022 === true || proof.airdrop?.isToken2022 === true,
       recipients,
     };
     const result = retry
@@ -20829,7 +18970,7 @@ async function startQuoteAcquire() {
       resetQuoteAcquireState({ keepRunning: false });
     }
     const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig()), routes = quoteAcquireRoutes();
-    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first'); return; }
+    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Funding estimate is out of date' : 'No funding estimate yet'); return; }
     if (!routes.length) { notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed'); return; }
     if (!state.demoActive && !walletIsUnlocked()) {
       const unlocked = await unlockSecretPin({ reason: 'unlock' }); if (!unlocked || !walletIsUnlocked()) return;
@@ -20861,7 +19002,6 @@ async function clearQuoteAcquire() {
   resetQuoteAcquireState({ keepRunning: false });
   renderChartDeck();
   renderClassicBridge();
-  notify('Quote acquire job cleared');
 }
 
 async function reviewAndArmRun() {
@@ -20882,13 +19022,11 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
   if (recoveryEndpoint && stageRecoveryAuthorization(recoveryEndpoint)) {
     renderAll();
-    notify('Review the one remaining recovery action, then arm it');
     return;
   }
   if (!state.transactions.length) {
@@ -20960,7 +19098,6 @@ async function simulateLaunch() {
     state.launchMode = 'dry-run';
     await stageTransactions();
     setLaunchWorkspace('mint', { focus: true });
-    notify('Test mode on');
   } catch (error) {
     notify(error.message || 'Could not enable Test mode');
   }
@@ -20979,27 +19116,6 @@ function addManagedWallet(wallet, { select = true } = {}) {
   }
 }
 
-function selectRecoveryWallet(publicKey, { switchToWallet = true } = {}) {
-  const wallet = pendingRecoveryWallet(publicKey);
-  if (!wallet) {
-    notify('Recovery wallet not found');
-    return null;
-  }
-  addManagedWallet({
-    ...wallet,
-    label: 'Recovery Wallet',
-    source: wallet.source || 'pending-recovery',
-    hasSecretKey: wallet.hasSecretKey === true,
-    hasMnemonic: wallet.hasMnemonic === true,
-  });
-  state.revealedWallet = null;
-  state.revealError = null;
-  if (switchToWallet) setView('wallet');
-  renderAll();
-  notify('Recovery wallet selected');
-  return wallet;
-}
-
 // A locked PIN asks for the PIN first, then carries on with what was asked.
 async function ensureRecoveryPinUnlocked() {
   if (!(state.secretPin?.configured && state.secretPin?.locked)) return true;
@@ -21012,7 +19128,6 @@ async function generateManagedWallet() {
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
-    notify('Launch wallet created');
     return wallet;
   }
 
@@ -21041,7 +19156,6 @@ async function importManagedWallet() {
   const wallet = await state.apiClient.importManagedWallet(secret);
   addManagedWallet(wallet);
   renderAll();
-  notify('Wallet imported into Trebuchet');
 }
 
 async function refreshSecretPinStatus({ reloadBoot = false } = {}) {
@@ -21122,7 +19236,6 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
       await refreshLocalApiState();
       if (walletIsUnlocked()) {
-        notify('Launch wallet ready');
         return true;
       }
       if (walletLockReason() === 'unreadable') {
@@ -21157,7 +19270,6 @@ async function unlockLaunchWalletAndContinue() {
   state.launchWorkspace = 'configure';
   renderAll();
   setLaunchWorkspace('configure');
-  notify('Launch wallet ready. Continue with token and pools.');
   return true;
 }
 
@@ -21381,7 +19493,6 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
     state.managedWallets = state.managedWallets.map((item) => (
       item.publicKey === publicKey ? { ...item, qrCode: result.qrCode } : item
     ));
-    notify('Funding QR loaded');
   } catch (error) {
     state.walletQr = {
       publicKey,
@@ -21417,7 +19528,6 @@ async function revealWalletSecret(publicKey = selectedLaunchWalletPublicKey()) {
   renderAll();
   try {
     state.revealedWallet = await state.apiClient.revealPendingWallet(publicKey);
-    notify('Recovery secret revealed');
   } catch (error) {
     state.revealedWallet = null;
     state.revealError = error.message || 'Recovery secret reveal failed';
@@ -21433,7 +19543,6 @@ function clearRevealedWalletSecret(publicKey = selectedLaunchWalletPublicKey()) 
   state.revealedWallet = null;
   state.revealError = null;
   renderWallet();
-  notify('Recovery secret hidden');
 }
 
 async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()) {
@@ -21442,25 +19551,19 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
-    notify('Wait for the launch operation to finish before discarding a wallet');
+    notify('Wait for the launch operation to finish before hiding a wallet');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.dismissPendingWallet) {
-    notify('Wallet discard requires the Trebuchet desktop app');
+    notify('Hiding a wallet requires the Trebuchet desktop app');
     return;
   }
-  const typed = await openOperatorPrompt({
-    eyebrow: 'Destructive wallet operation',
-    title: 'Discard local recovery entry',
-    detail: `This deletes Trebuchet's local secret for ${fullAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
-    label: 'Type the full wallet address',
-    placeholder: publicKey,
-    confirmLabel: 'Discard local secret',
-    danger: true,
-    message: 'The wallet address must match exactly. This deletion cannot be undone.',
-    validate: (value) => value === publicKey ? null : 'Full wallet address does not match.',
+  const ok = await confirmOperatorAction({
+    title: 'Hide this wallet',
+    detail: `${fullAddress(publicKey)} leaves this list. Trebuchet keeps its key.`,
+    confirmLabel: 'Hide',
   });
-  if (!typed) return;
+  if (!ok) return;
 
   state.discardingWalletPublicKey = publicKey;
   renderAll();
@@ -21480,7 +19583,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     state.selectedWalletPublicKey = nextWallet?.publicKey || null;
     state.accountId = nextWallet?.publicKey || 'launch';
     await refreshLocalApiState();
-    notify('Local wallet recovery entry discarded');
+    notify('Wallet hidden; its key is kept');
   } catch (error) {
     notify(error.message || 'Wallet discard failed');
   } finally {
@@ -21518,56 +19621,6 @@ function recoverySweepMetrics(sweep = {}) {
   };
 }
 
-function recoverySweepNextSteps(sweep = {}) {
-  if (sweep.error) {
-    return [
-      'Check the Recovery PIN, RPC health, and destination address, then retry Sweep.',
-      'Reveal the recovery secret only if you need to recover the wallet manually.',
-    ];
-  }
-  if (sweep.partial || sweep.stillPending) {
-    return [
-      'Recovery entry is still kept locally. Retry Sweep after RPC or token-account state settles.',
-      'Inspect the destination wallet and Activity log before deciding anything is clean.',
-      'Only Discard after confirming the wallet is empty or the secret is backed up elsewhere.',
-    ];
-  }
-  return [
-    'Assets moved to the destination and the local recovery entry was cleared.',
-    'Keep the report/proof bundle with the launch notes if this was final cleanup.',
-  ];
-}
-
-function renderRecoverySweepResult(sweep) {
-  if (!sweep) return '';
-  const metrics = recoverySweepMetrics(sweep);
-  const steps = recoverySweepNextSteps(sweep);
-  const state = sweep.error ? 'danger' : (sweep.partial || sweep.stillPending) ? 'warn' : '';
-  const badge = sweep.error ? 'Failed' : (sweep.partial || sweep.stillPending) ? 'Review' : 'Clean';
-  return `
-    <div class="recovery-sweep-result ${state}">
-      <div class="recovery-sweep-head">
-        <span>
-          <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
-        </span>
-        <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
-      </div>
-      <p>${escapeHtml(sweep.message)}</p>
-      <div class="recovery-sweep-grid">
-        <span><small>Tokens</small><strong>${metrics.tokens}</strong></span>
-        <span><small>NFTs</small><strong>${metrics.nfts}</strong></span>
-        <span><small>SOL</small><strong>${metrics.sol.toFixed(4)}</strong></span>
-        <span><small>Warnings</small><strong>${metrics.warnings}</strong></span>
-        <span><small>Recovery entry</small><strong>${escapeHtml(metrics.entryState)}</strong></span>
-      </div>
-      <ul class="recovery-sweep-steps">
-        ${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}
-      </ul>
-    </div>
-  `;
-}
-
 let sweepConfirmationResolver = null;
 
 function setSweepConfirmationMessage(message, { error = false, input = null } = {}) {
@@ -21576,7 +19629,7 @@ function setSweepConfirmationMessage(message, { error = false, input = null } = 
     messageNode.textContent = message;
     messageNode.classList.toggle('is-error', error);
   }
-  ['#sweepConfirmDestination', '#sweepConfirmTypedAddress'].forEach((selector) => {
+  ['#sweepConfirmDestination'].forEach((selector) => {
     $(selector)?.removeAttribute('aria-invalid');
   });
   if (input) input.setAttribute('aria-invalid', 'true');
@@ -21603,9 +19656,7 @@ function submitSweepConfirmation() {
   if (!gate || gate.hidden) return;
   const publicKey = gate.dataset.publicKey || '';
   const destinationInput = $('#sweepConfirmDestination');
-  const typedInput = $('#sweepConfirmTypedAddress');
   const destinationWallet = String(destinationInput?.value || '').trim();
-  const typedAddress = String(typedInput?.value || '').trim();
 
   if (!destinationWallet) {
     setSweepConfirmationMessage('Enter the destination wallet for recovered assets.', { error: true, input: destinationInput });
@@ -21622,11 +19673,6 @@ function submitSweepConfirmation() {
     destinationInput?.focus();
     return;
   }
-  if (typedAddress !== publicKey) {
-    setSweepConfirmationMessage('Full recovery wallet address does not match.', { error: true, input: typedInput });
-    typedInput?.focus();
-    return;
-  }
 
   closeSweepConfirmation({ destinationWallet });
 }
@@ -21640,8 +19686,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   sweepConfirmationReturnFocus = document.activeElement;
   $('#sweepConfirmSource').textContent = publicKey;
   $('#sweepConfirmDestination').value = defaultDestination;
-  $('#sweepConfirmTypedAddress').value = '';
-  setSweepConfirmationMessage('The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.');
+  setSweepConfirmationMessage('The launch wallet\'s key stays saved in this app after the sweep.');
   gate.hidden = false;
   gate.setAttribute('aria-hidden', 'false');
   document.body.classList.add('sweep-confirm-open');
@@ -21649,7 +19694,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   return new Promise((resolve) => {
     sweepConfirmationResolver = resolve;
     window.requestAnimationFrame(() => {
-      (defaultDestination ? $('#sweepConfirmTypedAddress') : $('#sweepConfirmDestination'))?.focus();
+      (defaultDestination ? $('[data-action="submit-sweep-confirm"]') : $('#sweepConfirmDestination'))?.focus();
     });
   });
 }
@@ -21680,7 +19725,12 @@ async function sweepRecoveryWallet(publicKey) {
     notify('Recovery sweep requires the Trebuchet desktop app');
     return;
   }
-  const defaultDestination = currentLaunchConfig().poolTopology.sweepDestination || '';
+  // The launch already names its return wallet: use it, so nobody copies addresses around.
+  const journal = (state.recovery?.journals || []).find((item) => item.walletPublicKey === publicKey && !['complete', 'completed'].includes(String(item.status || '').toLowerCase()))
+    || (state.coins?.detail?.creation?.walletPublicKey === publicKey ? state.coins.detail.creation.journal : null);
+  const defaultDestination = journal?.transfer?.destinationWallet
+    || recoveryLaunchConfig(journal || {})?.poolTopology?.sweepDestination
+    || currentLaunchConfig().poolTopology.sweepDestination || '';
   const confirmation = await openSweepConfirmation({ publicKey, defaultDestination });
   if (!confirmation) {
     notify('Recovery sweep cancelled');
@@ -21690,7 +19740,9 @@ async function sweepRecoveryWallet(publicKey) {
 
   state.sweepingWalletPublicKey = publicKey;
   state.lastRecoverySweep = null;
+  state.sweepAirdropProgress = null;
   renderAll();
+  followSweepAirdropProgress(publicKey);
   try {
     const result = await state.apiClient.sweepPendingWallet({ walletPublicKey: publicKey, destinationWallet });
     const warningCount = recoverySweepWarningCount(result);
@@ -21707,7 +19759,7 @@ async function sweepRecoveryWallet(publicKey) {
       error: false,
       message: partial
         ? `Sweep returned ${warningCount} warning${warningCount === 1 ? '' : 's'}${stillPending ? '; recovery entry remains for another attempt' : ''}.`
-        : 'Recovery wallet swept and cleared from the local pending-wallet store.',
+        : 'Launch wallet swept. Its key stays saved in this app.',
     };
     notify(partial ? 'Recovery sweep finished with warnings' : 'Recovery sweep completed');
   } catch (error) {
@@ -21722,7 +19774,25 @@ async function sweepRecoveryWallet(publicKey) {
     notify(error.message || 'Recovery sweep failed');
   } finally {
     state.sweepingWalletPublicKey = null;
+    state.sweepAirdropProgress = null;
     renderAll();
+  }
+}
+
+// The sweep is one long request. The server counts each airdrop recipient as it lands; read that
+// count while the sweep runs so the coin page shows how far it has got.
+async function followSweepAirdropProgress(publicKey) {
+  if (!state.apiClient?.getAirdropProgress) return;
+  while (state.sweepingWalletPublicKey === publicKey) {
+    try {
+      const progress = await state.apiClient.getAirdropProgress(publicKey);
+      if (state.sweepingWalletPublicKey !== publicKey) return;
+      if (progress) {
+        state.sweepAirdropProgress = { ...progress, publicKey };
+        if (state.activeView === 'coins') renderCoins();
+      }
+    } catch { /* the next read tries again */ }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
 
@@ -21855,13 +19925,10 @@ async function removeVanityCandidateByPublicKey(publicKey, { confirm = true } = 
   }
   state.vanityCandidates = state.vanityCandidates.filter((item) => item.publicKey !== publicKey);
   if (state.selectedVanityPublicKey === publicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates.length
-      ? state.vanityCandidates[state.vanityCandidates.length - 1].publicKey
-      : null;
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   invalidateClassicOutputs();
   renderAll();
-  notify('Saved Vanity CA removed');
   return true;
 }
 
@@ -21893,20 +19960,20 @@ async function pruneHiddenVanityCandidates() {
   notify(`Pruned ${hidden.length} hidden Vanity CA option${hidden.length === 1 ? '' : 's'}`);
 }
 
-async function startVanityGrind() {
-  if (state.vanityRunning) {
-    if (state.vanitySource) state.vanitySource.close();
-    state.vanityRunning = false;
-    state.vanityProgress = null;
-    state.vanityProgressStats = null;
-    if (state.apiStatus === 'connected' && state.apiClient?.cancelVanityGrind) {
-      await state.apiClient.cancelVanityGrind().catch(() => null);
-    }
-    renderAll();
-    notify('Vanity grind cancelled');
-    return;
-  }
+// Grinds are jobs: the one running, the ones queued behind it, and the ones that ended with
+// their stats until dismissed. One runs at a time; each takes every core.
+let grindJobSeq = 0;
 
+function grindJobTarget(job) {
+  return job.prefix && job.suffix ? `${job.prefix}...${job.suffix}` : job.prefix || job.suffix || `${job.length}-character`;
+}
+
+function runningGrindJob() {
+  return (state.grindJobs || []).find((job) => job.status === 'running') || null;
+}
+
+// The Grind button: queue the typed pattern, and start it when nothing is running.
+async function startVanityGrind() {
   const vanity = currentVanityConfig();
   if (!vanity.prefix && !vanity.suffix) {
     setLaunchWorkspace('configure');
@@ -21915,21 +19982,18 @@ async function startVanityGrind() {
     const input = $('#vanityStart');
     input?.setAttribute('aria-invalid', 'true');
     window.requestAnimationFrame?.(() => input?.focus());
-    notify(state.vanityInputError);
     return;
   }
   state.vanityInputError = null;
   $('#vanityStart')?.removeAttribute('aria-invalid');
   $('#vanityEnd')?.removeAttribute('aria-invalid');
-  const estimate = vanityPatternEstimate(vanity.prefix, vanity.suffix);
-  if (estimate.invalid.length) {
-    notify(`Vanity target contains invalid Base58 character${estimate.invalid.length === 1 ? '' : 's'}: ${estimate.invalid.join(', ')}`);
+  const estimate = vanityPatternEstimate(vanity.prefix, vanity.suffix, null);
+  if (estimate.invalid.length || estimate.difficulty === 'impossible') {
     renderVanityCandidates();
     return;
   }
 
   if (state.apiStatus === 'connected' && state.secretPin.locked) {
-    notify('Unlock the Recovery PIN to save this Vanity CA');
     const unlocked = await unlockSecretPin({ reason: 'vanity' });
     if (!unlocked) return;
   }
@@ -21948,143 +20012,168 @@ async function startVanityGrind() {
       persisted: false,
     });
     renderAll();
-    notify('Static Vanity CA option added');
     return;
   }
 
+  grindJobSeq += 1;
+  const job = {
+    id: `grind-${Date.now()}-${grindJobSeq}`,
+    prefix: vanity.prefix || '',
+    suffix: vanity.suffix || '',
+    caseInsensitive: vanity.caseInsensitive === true,
+    length: vanity.length || null,
+    expected: estimate.expectedAttempts,
+    status: 'queued',
+    attempts: 0,
+    rate: null,
+  };
+  job.target = grindJobTarget(job);
+  state.grindJobs = [...(state.grindJobs || []), job];
+  if (!runningGrindJob()) runNextGrindJob();
+  renderAll();
+}
+
+function runNextGrindJob() {
+  const next = (state.grindJobs || []).find((job) => job.status === 'queued');
+  if (next) runVanityGrind(next).catch((error) => finishGrindJob(next, 'failed', { error: error.message || 'Grind failed' }));
+}
+
+function finishGrindJob(job, status, extra = {}) {
+  if (job.status !== 'running' && job.status !== 'queued') return;
+  if (state.vanitySource) { state.vanitySource.close(); state.vanitySource = null; }
+  Object.assign(job, { status, endedAt: Date.now(), ...extra });
+  state.vanityRunning = false;
+  state.vanityProgress = null;
+  state.vanityProgressStats = null;
+  runNextGrindJob();
+  renderAll();
+}
+
+// Stop the running job (its stats stay), or take a queued one out of the queue.
+async function stopGrindJob(id) {
+  const job = (state.grindJobs || []).find((item) => item.id === id);
+  if (!job) return;
+  if (job.status === 'queued') {
+    state.grindJobs = state.grindJobs.filter((item) => item !== job);
+    renderAll();
+    return;
+  }
+  if (job.status !== 'running') return;
+  finishGrindJob(job, 'stopped');
+  if (state.apiStatus === 'connected' && state.apiClient?.cancelVanityGrind) {
+    await state.apiClient.cancelVanityGrind().catch(() => null);
+  }
+}
+
+function dismissGrindJob(id) {
+  state.grindJobs = (state.grindJobs || []).filter((job) => job.id !== id || ['queued', 'running'].includes(job.status));
+  renderAll();
+}
+
+// Measure this computer's speed: 3 seconds of the real grinder, nothing saved.
+async function calibrateVanity() {
+  if (state.vanityCalibrating || runningGrindJob() || !state.apiClient?.calibrateVanity) return;
+  state.vanityCalibrating = true;
+  state.vanityCalibrationError = null;
+  renderVanityCandidates();
+  try {
+    const { calibration } = await state.apiClient.calibrateVanity();
+    rememberVanityRate(calibration.rate);
+  } catch (error) {
+    state.vanityCalibrationError = error.message || 'Calibration failed';
+  } finally {
+    state.vanityCalibrating = false;
+    renderVanityCandidates();
+  }
+}
+
+async function runVanityGrind(job) {
+  job.status = 'running';
+  job.startedAt = Date.now();
   state.vanityRunning = true;
   state.vanityProgress = 'Starting';
   state.vanityProgressStats = {
-    expectedAttempts: estimate.expectedAttempts,
+    expectedAttempts: job.expected,
     startedAt: Date.now(),
     attempts: 0,
     rate: null,
     samples: [],
-    caseInsensitive: vanity.caseInsensitive === true,
-    length: vanity.length || null,
+    caseInsensitive: job.caseInsensitive,
+    length: job.length,
   };
   renderAll();
 
-  try {
-    const token = await state.apiClient.getSessionToken();
-    const params = new URLSearchParams({ token, client: 'v2' });
-    if (vanity.prefix) params.set('prefix', vanity.prefix);
-    if (vanity.caseInsensitive) params.set('caseInsensitive', '1');
-    if (vanity.length) params.set('length', String(vanity.length));
-    // Split-key: the grinder only sees a public point; ~30x faster too.
-    params.set('split', '1');
-    if (vanity.suffix) params.set('suffix', vanity.suffix);
-    const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
-    state.vanitySource = source;
-    source.addEventListener('message', (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'start') {
-        state.vanityProgress = `Target ${data.target}`;
-        state.vanityProgressStats = {
-          expectedAttempts: Number(data.expected || estimate.expectedAttempts),
-          startedAt: Date.now(),
-          attempts: 0,
-          rate: null,
-          samples: [],
-          caseInsensitive: data.caseInsensitive === true,
-          length: data.length || null,
-        };
-        // An older server ignores the flag and grinds exact case. Say so
-        // instead of silently running the slower grind.
-        if (vanity.caseInsensitive && data.caseInsensitive !== true) {
-          notify('This grind is exact case: the app server predates Any case. Quit and reopen Trebuchet, then grind again.');
-        }
-      } else if (data.type === 'progress') {
-        const attempts = Number(data.attempts || 0).toLocaleString();
-        const pct = clampPercent(Number(data.epoch || 0) * 100);
-        state.vanityProgress = `${attempts} tries / ${pct}% expected`;
-        // The grinder reports in per-thread bursts (every 16,384 tries), so
-        // burst-to-burst rates swing wildly. Rate over a rolling window.
-        const now = Date.now();
-        const prior = state.vanityProgressStats || {};
-        // Sample only when the count moves, and measure first burst to
-        // latest burst: measuring to "now" dips between bursts.
-        const attemptsNow = Number(data.attempts || prior.attempts || 0);
-        const priorSamples = prior.samples || [];
-        const moved = attemptsNow > Number(priorSamples[priorSamples.length - 1]?.attempts ?? -1);
-        const samples = (moved ? [...priorSamples, { at: now, attempts: attemptsNow }] : priorSamples)
-          .filter((sample) => now - sample.at <= VANITY_RATE_WINDOW_MS);
-        const oldest = samples[0];
-        const newest = samples[samples.length - 1];
-        const windowSeconds = oldest && newest ? (newest.at - oldest.at) / 1000 : 0;
-        const rate = windowSeconds >= 2
-          ? (newest.attempts - oldest.attempts) / windowSeconds
-          : Number(prior.rate || 0) || null;
-        state.vanityProgressStats = {
-          expectedAttempts: Number(prior.expectedAttempts || estimate.expectedAttempts),
-          startedAt: Number(prior.startedAt || now),
-          updatedAt: now,
-          attempts: attemptsNow,
-          rate,
-          samples,
-          caseInsensitive: prior.caseInsensitive === true,
-          length: prior.length || null,
-        };
-      } else if (data.type === 'done') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        addVanityCandidate({
-          publicKey: data.wallet.publicKey,
-          target: data.wallet.target || null,
-          prefix: data.wallet.prefix || vanity.prefix || null,
-          suffix: data.wallet.suffix || vanity.suffix || null,
-          mode: data.wallet.mode || vanity.mode,
-          caseInsensitive: data.wallet.caseInsensitive === true,
-          addressLength: data.wallet.addressLength || null,
-          keyType: data.wallet.keyType || 'seed',
-          rarity: data.wallet.rarity || null,
-          attempts: data.wallet.attempts || null,
-          persisted: data.wallet.persisted === true,
-        });
-        renderAll();
-        notify('Vanity CA saved as an option');
-      } else if (data.type === 'cancelled') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        renderAll();
-        notify('Vanity grind cancelled');
-      } else if (data.type === 'error') {
-        source.close();
-        state.vanityRunning = false;
-        state.vanitySource = null;
-        state.vanityProgress = null;
-        state.vanityProgressStats = null;
-        renderAll();
-        notify(data.error || 'Vanity grind failed');
-        return;
-      }
-      renderVanityCandidates();
-      renderClassicBridge();
-    });
-    source.addEventListener('error', () => {
-      source.close();
-      state.vanityRunning = false;
-      state.vanitySource = null;
-      state.vanityProgress = null;
-      state.vanityProgressStats = null;
-      renderAll();
-      notify('Vanity stream disconnected');
-    });
-  } catch (error) {
-    state.vanityRunning = false;
-    state.vanitySource = null;
-    state.vanityProgress = null;
-    state.vanityProgressStats = null;
-    renderAll();
-    notify(error.message || 'Vanity grind failed');
-  }
+  const token = await state.apiClient.getSessionToken();
+  if (job.status !== 'running') return;
+  const params = new URLSearchParams({ token, client: 'v2' });
+  if (job.prefix) params.set('prefix', job.prefix);
+  if (job.caseInsensitive) params.set('caseInsensitive', '1');
+  if (job.length) params.set('length', String(job.length));
+  // Split-key: the grinder only sees a public point; ~30x faster too.
+  params.set('split', '1');
+  if (job.suffix) params.set('suffix', job.suffix);
+  const source = new EventSource(`/api/generate-vanity-wallet-stream?${params.toString()}`);
+  state.vanitySource = source;
+  source.addEventListener('message', (event) => {
+    if (job.status !== 'running') return;
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.type === 'start') {
+      job.expected = Number(data.expected || job.expected);
+      state.vanityProgressStats = { ...state.vanityProgressStats, expectedAttempts: job.expected };
+      // An older server ignores the flag and grinds exact case.
+      if (job.caseInsensitive && data.caseInsensitive !== true) job.caseInsensitive = false;
+    } else if (data.type === 'progress') {
+      // The grinder reports in per-thread bursts (every 16,384 tries), so
+      // burst-to-burst rates swing wildly. Rate over a rolling window.
+      const now = Date.now();
+      const prior = state.vanityProgressStats || {};
+      // Sample only when the count moves, and measure first burst to
+      // latest burst: measuring to "now" dips between bursts.
+      const attemptsNow = Number(data.attempts || prior.attempts || 0);
+      const priorSamples = prior.samples || [];
+      const moved = attemptsNow > Number(priorSamples[priorSamples.length - 1]?.attempts ?? -1);
+      const samples = (moved ? [...priorSamples, { at: now, attempts: attemptsNow }] : priorSamples)
+        .filter((sample) => now - sample.at <= VANITY_RATE_WINDOW_MS);
+      const oldest = samples[0];
+      const newest = samples[samples.length - 1];
+      const windowSeconds = oldest && newest ? (newest.at - oldest.at) / 1000 : 0;
+      const rate = windowSeconds >= 2
+        ? (newest.attempts - oldest.attempts) / windowSeconds
+        : Number(prior.rate || 0) || null;
+      if (windowSeconds >= 2) rememberVanityRate(rate);
+      state.vanityProgressStats = { ...prior, updatedAt: now, attempts: attemptsNow, rate, samples };
+      job.attempts = attemptsNow;
+      job.rate = rate;
+    } else if (data.type === 'done') {
+      addVanityCandidate({
+        publicKey: data.wallet.publicKey,
+        target: data.wallet.target || null,
+        prefix: data.wallet.prefix || job.prefix || null,
+        suffix: data.wallet.suffix || job.suffix || null,
+        mode: data.wallet.mode || (job.prefix && job.suffix ? 'both' : job.prefix ? 'prefix' : 'suffix'),
+        caseInsensitive: data.wallet.caseInsensitive === true,
+        addressLength: data.wallet.addressLength || null,
+        keyType: data.wallet.keyType || 'seed',
+        rarity: data.wallet.rarity || null,
+        attempts: data.wallet.attempts || null,
+        persisted: data.wallet.persisted === true,
+      });
+      finishGrindJob(job, 'found', { attempts: Number(data.wallet.attempts) || job.attempts, publicKey: data.wallet.publicKey });
+      return;
+    } else if (data.type === 'cancelled') {
+      finishGrindJob(job, 'stopped');
+      return;
+    } else if (data.type === 'error') {
+      finishGrindJob(job, 'failed', { error: data.error || 'Grind failed' });
+      return;
+    }
+    renderVanityCandidates();
+    renderClassicBridge();
+  });
+  source.addEventListener('error', () => {
+    finishGrindJob(job, 'failed', { error: 'The grind stream closed' });
+  });
 }
 
 // One estimate at a time: repeat clicks join the running request instead of
@@ -22132,11 +20221,17 @@ async function runClassicFundingEstimate() {
 // is verified quietly. No clicking through per-token verify buttons.
 let quoteVerifyInFlight = null;
 
-function pairTokensNeedingCheck() {
+// A pair token is checked automatically once; a check that failed is tried again after a minute,
+// not on every readiness check (each one scans the chain for the token's pools).
+const PAIR_TOKEN_RECHECK_MS = 60 * 1000;
+function pairTokensNeedingCheck(now = Date.now()) {
   return state.customPools.filter((pool) => {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
-    return !record || (!record.loading && !record.info);
+    if (!record) return true;
+    if (record.loading || record.info) return false;
+    const failedAt = Date.parse(record.checkedAt || '');
+    return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
 }
 
@@ -22173,10 +20268,10 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `All ${rows.length} pair tokens verified${viaJupiter ? ` (${viaJupiter} will be bought via Jupiter)` : ''}`;
+      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
-      <small>${escapeHtml(summary)}</small>
+      <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }
@@ -22543,27 +20638,154 @@ async function openDraftForCreation(draftId) {
     state.loadedSavedLaunchId = entry.id;
     rememberActiveLaunchId(entry.id);
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace('configure');
   renderAll();
 }
 
+// Every coin has one page: its steps. A draft's steps create it; an on-chain
+// coin's steps say what the chain and its launch record show.
 function openCoin(key) {
   const target = coinByKey(key);
-  // A draft is created on its own page: its steps.
   if (target?.kind === 'draft') {
     openDraftForCreation(target.draftId).catch((error) => notify(error?.message || 'Could not open that draft'));
     return;
   }
-  state.coins = { ...state.coins, key, detail: null, detailError: null };
+  // The launch running in the workspace stays on screen as it runs.
+  if (target?.mint && target.mint === proofTokenMint(state.launchProof) && liveLaunchInProgress()) {
+    state.coins = { ...state.coins, key: null };
+    setView('launch');
+    renderAll();
+    return;
+  }
+  // The last read of this coin shows at once; the chain is read again behind it.
+  const seen = target?.mint ? coinPageCache.get(target.mint) : null;
+  state.coins = { ...state.coins, key, detail: seen?.detail || null, detailError: null, airdrop: seen?.airdrop || null };
+  state.launchWorkspace = null;
   resetPoolSupport();
-  setView('coins');
-  const coin = coinByKey(key);
-  if (coin?.kind === 'onchain') {
-    loadCoinDetail(coin.mint).catch(() => null);
-    loadCoinPositions(coin.mint).catch(() => null);
+  setView('launch');
+  if (target?.kind === 'onchain') {
+    loadCoinDetail(target.mint).catch(() => null);
+    loadCoinPositions(target.mint).catch(() => null);
+    loadCoinAirdrop(target.mint).catch(() => null);
+  }
+  renderAll();
+}
+
+// Each on-chain coin's last read in this session, by mint: its page and its airdrop.
+const coinPageCache = new Map();
+function rememberCoinPage(mint, patch) {
+  coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
+}
+
+// The coin's airdrop: what each wallet received, and what the chain says it holds now.
+async function loadCoinAirdrop(mint) {
+  if (!state.apiClient?.getCoinAirdrop) return;
+  const previous = state.coins.airdrop?.mint === mint ? state.coins.airdrop : coinPageCache.get(mint)?.airdrop || null;
+  state.coins = { ...state.coins, airdrop: { mint, recipients: previous?.recipients || null, decimals: previous?.decimals ?? null, loading: true, error: null } };
+  renderCoins();
+  try {
+    const response = await state.apiClient.getCoinAirdrop(mint);
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { mint, ...response.airdrop, loading: false, error: null } };
+    rememberCoinPage(mint, { airdrop: state.coins.airdrop });
+  } catch (error) {
+    if (state.coins.key !== `mint:${mint}`) return;
+    state.coins = { ...state.coins, airdrop: { ...state.coins.airdrop, loading: false, error: error.message || 'Could not read the balances' } };
   }
   renderCoins();
+}
+
+// Received against held now, as a fact: all of it, more, part, or none.
+function airdropHolding(row) {
+  if (row.nowRaw == null) return { tone: 'unknown', label: 'Not read', rank: 3 };
+  const received = BigInt(row.receivedRaw || '0');
+  const now = BigInt(row.nowRaw);
+  if (now === 0n) return { tone: 'none', label: 'None left', rank: 0 };
+  if (now < received) {
+    const left = Number((now * 1000n) / (received || 1n)) / 10;
+    return { tone: 'part', label: `${left.toFixed(left < 10 ? 1 : 0)}% left`, rank: 1 };
+  }
+  return { tone: 'all', label: now > received ? 'Holds more' : 'Holds all', rank: 2 };
+}
+
+// What the chain's history shows a wallet did with the coin since its airdrop.
+const AIRDROP_ACTIVITY = [['burnedRaw', 'Burned'], ['soldRaw', 'Sold'], ['boughtRaw', 'Bought'], ['sentRaw', 'Sent'], ['transferredInRaw', 'Got']];
+function airdropActivity(row, amount) {
+  const history = row.history;
+  if (!history) return [];
+  if (history.error) return ['History not read'];
+  const done = AIRDROP_ACTIVITY.filter(([field]) => BigInt(history[field] || '0') > 0n)
+    .map(([field, label]) => `${label} ${amount(history[field])}`);
+  if (history.partial) done.push('older history not read');
+  return done;
+}
+
+function coinAirdropHtml(airdrop) {
+  if (!airdrop) return '';
+  if (airdrop.error && !airdrop.recipients) return `<p class="pool-support-error">${escapeHtml(airdrop.error)}</p>`;
+  const rows = airdrop.recipients || [];
+  if (!rows.length) return airdrop.loading ? '<p class="coins-empty">Reading the airdrop…</p>' : '';
+  const decimals = Number.isFinite(Number(airdrop.decimals)) ? Number(airdrop.decimals) : null;
+  const amount = (raw) => (raw == null || decimals == null ? '—' : compactAmount(Number(BigInt(raw)) / 10 ** decimals));
+  const ranked = rows.map((row) => ({ row, holding: airdropHolding(row), activity: airdropActivity(row, amount) }))
+    .sort((a, b) => a.holding.rank - b.holding.rank || Number(BigInt(b.row.receivedRaw) - BigInt(a.row.receivedRaw)));
+  const count = (tone) => ranked.filter((item) => item.holding.tone === tone).length;
+  const did = (field) => rows.filter((row) => BigInt(row.history?.[field] || '0') > 0n).length;
+  const totals = [
+    count('all') ? `${count('all')} hold all${ranked.some((item) => item.holding.label === 'Holds more') ? ' or more' : ''}` : null,
+    count('part') ? `${count('part')} hold part` : null,
+    count('none') ? `${count('none')} hold none` : null,
+    ...[['burnedRaw', 'burned'], ['soldRaw', 'sold'], ['boughtRaw', 'bought'], ['sentRaw', 'sent']]
+      .map(([field, label]) => (did(field) ? `${did(field)} ${label}` : null)),
+  ].filter(Boolean);
+  return `
+    <p class="coin-airdrop-totals">${rows.length} wallet${rows.length === 1 ? '' : 's'}${totals.length ? ` · ${totals.join(' · ')}` : ''}${airdrop.loading ? ' · reading…' : ''}</p>
+    <div class="coin-airdrop" role="table" aria-label="Airdrop recipients">
+      <div class="coin-airdrop-row is-head" role="row"><span role="columnheader">Wallet</span><span role="columnheader">Received</span><span role="columnheader">Holds now</span><span role="columnheader">What happened</span></div>
+      ${ranked.map(({ row, holding, activity }) => `
+        <div class="coin-airdrop-row is-${holding.tone}" role="row">
+          <span role="cell">${walletChipHtml(row.wallet)}</span>
+          <span role="cell">${escapeHtml(amount(row.receivedRaw))}</span>
+          <span role="cell">${escapeHtml(amount(row.nowRaw))}</span>
+          <span role="cell">${escapeHtml(activity.length ? activity.join(' · ') : holding.label)}</span>
+        </div>`).join('')}
+    </div>`;
+}
+
+// The on-chain coin the page shows, or null while it shows a coin being created.
+function chainCoinOnPage() {
+  const coin = state.coins.key ? coinByKey(state.coins.key) : null;
+  return coin?.kind === 'onchain' ? coin : null;
+}
+
+function chainCoinDetail(coin) {
+  return coin && state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
+}
+
+// A saved draft whose reserved address has since launched is that coin now: show the coin.
+function launchedCoinForWorkspaceDraft() {
+  if (state.activeView !== 'launch' || chainCoinOnPage() || liveLaunchInProgress()) return null;
+  if (proofTokenMint(currentLaunchProof())) return null;
+  const reserved = String(state.selectedVanityPublicKey || '').trim();
+  if (!reserved) return null;
+  const coin = (state.coins.list || []).find((item) => item.kind === 'onchain' && item.launchedHere && item.mint === reserved);
+  if (!coin) return null;
+  // Only the draft that made this coin is that coin. A new coin that picked its address is not.
+  const token = currentLaunchConfig().token || {};
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  return same(token.symbol, coin.symbol) && same(token.name, coin.name) ? coin : null;
+}
+
+// A new coin holding an address another launch has minted drops it for a fresh random one.
+function dropUsedVanitySelection() {
+  if (chainCoinOnPage() || liveLaunchInProgress() || state.fullRunRunning || state.realExecutionRunning) return false;
+  if (proofTokenMint(currentLaunchProof())) return false;
+  if (!vanityAddressUsedReason(state.selectedVanityPublicKey) || launchedCoinForWorkspaceDraft()) return false;
+  state.selectedVanityPublicKey = null;
+  invalidateClassicOutputs();
+  return true;
 }
 
 async function loadCoinPositions(mint) {
@@ -22660,7 +20882,7 @@ function coinPositionsHtml() {
   const rows = (list || []).map((position) => `
     <li>
       <span>
-        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${escapeHtml(fullAddress(position.owner))}</strong>
+        <strong>${escapeHtml(position.quoteSymbol || 'pair')} pool · ${walletChipHtml(position.owner)}</strong>
         <small>${escapeHtml(fmtQuotePrice(position.priceLow, position))} to ${escapeHtml(fmtQuotePrice(position.priceHigh, position))} per coin · ${position.inRange ? 'the price is inside this range' : 'the price is outside this range'}</small>
       </span>
       <span class="coin-position-holds">${Number(position.quoteAmount).toFixed(4)} ${escapeHtml(position.quoteSymbol || '')} + ${escapeHtml(compactAmount(position.tokenAmount))} ${escapeHtml(coinSymbol)}</span>
@@ -22702,12 +20924,23 @@ async function loadCoinDetail(mint) {
     const response = await state.apiClient.getCoin(mint);
     if (state.coins.key !== `mint:${mint}`) return;
     const checkedStatus = coinChainStatus(response.coin?.creation);
+    rememberCoinPage(mint, { detail: response.coin });
     state.coins = {
       ...state.coins,
       detail: response.coin,
       detailLoading: false,
       checked: checkedStatus ? { ...(state.coins.checked || {}), [mint]: checkedStatus } : state.coins.checked,
+      airdropPlan: null,
     };
+    // The sweep sends the saved airdrop first: read it so the page can say so before anyone sweeps.
+    const sweepWallet = response.coin?.creation?.walletManaged ? response.coin.creation.walletPublicKey : null;
+    if (sweepWallet && state.apiClient.getAirdropPlan) {
+      state.apiClient.getAirdropPlan(sweepWallet).then((plan) => {
+        if (state.coins.key !== `mint:${mint}` || !plan || plan.tokenMint !== mint) return;
+        state.coins = { ...state.coins, airdropPlan: plan };
+        renderCoins();
+      }).catch(() => null);
+    }
   } catch (error) {
     state.coins = { ...state.coins, detailLoading: false, detailError: error.message || 'Could not read the coin' };
   }
@@ -22750,10 +20983,6 @@ async function removeAddedCoin(mint) {
   } catch (error) {
     notify(error.message || 'Could not remove that coin');
   }
-}
-
-function coinTitle(coin) {
-  return coin?.name || coin?.symbol || (coin?.mint ? shortAddress(coin.mint) : 'Untitled coin');
 }
 
 // ---------------------------------------------------------------------------
@@ -22880,16 +21109,9 @@ function hydrateCoinCards() {
 }
 
 function renderCoins() {
-  const listView = $('#coinsListView');
-  const page = $('#coinPage');
-  if (!listView || !page) return;
-  const { key } = state.coins;
-  const coin = key ? coinByKey(key) : null;
-  listView.hidden = Boolean(coin);
-  page.hidden = !coin;
-  if (coin) {
-    renderCoinPage(coin);
-    return;
+  if (state.activeView === 'launch' && (chainCoinOnPage() || launchedCoinForWorkspaceDraft())) {
+    renderLaunchWorkspace();
+    renderCoinContext();
   }
   const target = $('#coinsList');
   if (!target) return;
@@ -22980,7 +21202,7 @@ function coinMarketsHtml(markets) {
   if (!markets) return '';
   if (markets.error) return `<p class="pool-support-error">Could not read the markets: ${escapeHtml(markets.error)}</p>`;
   const pools = markets.pools || [];
-  if (!pools.length) return '<p class="coins-empty">No Raydium pools hold this coin yet.</p>';
+  if (!pools.length) return '<p class="coins-empty">No pools found for this coin.</p>';
   const drains = pools.filter((pool) => pool.drainsSolPool);
   return `
     ${drains.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> This coin is cheaper in its ${drains.map((pool) => escapeHtml(pool.quoteSymbol || 'pair')).join(', ')} pool${drains.length === 1 ? '' : 's'} than in its SOL pool. Bots buy it there and sell it into the SOL pool, taking SOL buyers' money, until the gap closes. Buy support only holds below that price.</p>` : ''}
@@ -22988,7 +21210,7 @@ function coinMarketsHtml(markets) {
       <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
-          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml(pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId))}</small></span>
+          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
           <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
@@ -23007,40 +21229,57 @@ const CREATION_STEP_ACTIONS = {
   return: 'Sweep the launch wallet',
 };
 
-function coinCreationHtml(creation, coin) {
+// The one thing left to do for a coin launched here, or '' when nothing is.
+function coinNextStepAction(creation, coin) {
   if (!creation) return '';
-  const mismatches = creation.steps.filter((step) => step.state === 'mismatch');
-  const next = creation.steps.find((step) => ['todo', 'mismatch'].includes(step.state)) || null;
+  // A step neither recorded nor checkable on-chain has not been done as far as anyone can tell:
+  // it is still the next step. Skipping it offered a sweep before the liquidity was locked.
+  const next = creation.steps.find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state)) || null;
   let action = '';
   if (next) {
     if (next.id === 'return' && creation.walletManaged && creation.walletPublicKey) {
-      // Sweep the launch wallet: nothing else of the plan is needed.
-      action = `<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}"><span>Sweep the launch wallet</span><i class="fa-solid fa-broom"></i></button>`;
+      // The sweep runs the saved airdrop first, then returns the rest: say both before it is pressed.
+      const plan = state.coins.airdropPlan?.tokenMint === coin?.mint ? state.coins.airdropPlan : null;
+      const delivered = new Set((creation.journal?.airdrop?.transferred || []).map((row) => row.wallet));
+      const pending = plan ? plan.recipients.filter((row) => !delivered.has(row.wallet)) : [];
+      const tokens = (rows) => rows.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0).toLocaleString('en-US', { maximumFractionDigits: 4 });
+      const airdropNote = plan ? `<p class="coin-airdrop-note" role="note"><i class="fa-solid fa-parachute-box" aria-hidden="true"></i> Airdrop: ${pending.length
+        ? `${tokens(pending)} tokens to ${pending.length} wallet${pending.length === 1 ? '' : 's'} are sent first${delivered.size ? ` (${delivered.size} already delivered)` : ''}`
+        : `all ${plan.recipients.length} wallets delivered`}. Then every token and SOL left in the launch wallet goes to the return wallet.</p>` : '';
+      const sweeping = state.sweepingWalletPublicKey === creation.walletPublicKey;
+      const last = !sweeping && state.lastRecoverySweep?.publicKey === creation.walletPublicKey ? state.lastRecoverySweep : null;
+      const progress = sweeping
+        ? `<p class="coin-airdrop-note" role="status"><span class="rail-spin" aria-hidden="true"></span> ${escapeHtml(coinSweepProgressText(creation.walletPublicKey, plan, delivered))}</p>`
+        : last ? `<p class="coin-airdrop-note${last.error ? ' is-error' : ''}" role="status">${escapeHtml(last.message)}</p>` : '';
+      action = `${sweeping ? '' : airdropNote}${progress}<button class="primary-button compact" type="button" data-action="sweep-recovery-wallet" data-wallet="${escapeHtml(creation.walletPublicKey)}" ${sweeping ? 'disabled' : ''}><span>${sweeping ? (pending.length ? 'Airdropping and sweeping…' : 'Sweeping…') : pending.length ? 'Airdrop, then sweep' : 'Sweep the launch wallet'}</span><i class="fa-solid ${sweeping ? 'fa-spinner fa-spin' : pending.length ? 'fa-parachute-box' : 'fa-broom'}"></i></button>`;
     } else if (creation.hasPlan && creation.walletManaged) {
       action = `<button class="primary-button compact" type="button" data-action="continue-coin-step" data-mint="${escapeHtml(coin?.mint || '')}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span><i class="fa-solid fa-arrow-right"></i></button>`;
-    } else if (!creation.walletManaged) {
-      action = '<p class="pool-support-intro">The launch wallet is not in this app, so what is left can\'t be done from here.</p>';
     } else {
-      action = '<p class="pool-support-intro">This launch was recorded before Trebuchet saved launch plans, so what is left can\'t be done from here.</p>';
+      const reason = !creation.walletManaged ? 'Launch key not in Trebuchet' : 'Launch plan not saved';
+      action = `<button class="primary-button compact" type="button" disabled aria-disabled="true" data-blocked-reason="${reason}" title="${reason}"><span>${escapeHtml(CREATION_STEP_ACTIONS[next.id] || 'Open the coin')}</span></button>`;
     }
   }
-  return `
-    <ul class="coin-creation">
-      ${creation.steps.map((step) => {
-        const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
-        return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}">
-          <i class="fa-solid ${meta.icon}" aria-hidden="true"></i>
-          <span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail || '')}</small></span>
-        </li>`;
-      }).join('')}
-    </ul>
-    ${mismatches.length ? `<p class="coin-drain-warning" role="note"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> The launch record and the chain disagree on ${mismatches.length === 1 ? 'one fact' : `${mismatches.length} facts`}. The chain is what counts.</p>` : ''}
-    ${action ? `<div class="coin-actions">${action}</div>` : ''}`;
+  return action ? `<div class="coin-actions">${action}</div>` : '';
 }
 
 // Bring up a coin's remaining steps from its launch record, at the step it
 // needs. Checks the record has a plan BEFORE touching the coin being
 // worked on, so a record without one never shows another coin's design.
+// What the running sweep is doing now: each airdrop wallet as it lands, then the rest.
+function coinSweepProgressText(walletPublicKey, plan, delivered) {
+  const live = state.sweepAirdropProgress?.publicKey === walletPublicKey ? state.sweepAirdropProgress : null;
+  const total = plan?.recipients?.length || 0;
+  if (!total) return 'Sweeping every token and SOL to the return wallet. Keep the app open.';
+  if (!live) return delivered.size >= total
+    ? 'Sweeping every token and SOL to the return wallet. Keep the app open.'
+    : `Airdrop: ${delivered.size} of ${total} wallets sent. Starting… Keep the app open.`;
+  const sent = Math.min(total, delivered.size + (live.completed || 0));
+  const failed = live.failedCount ? `, ${live.failedCount} failed` : '';
+  if (live.status === 'done') return `Airdrop: ${sent} of ${total} wallets sent${failed}. Now sweeping every token and SOL to the return wallet.`;
+  const left = Math.max(0, total - sent);
+  return `Airdrop: ${sent} of ${total} wallets sent${failed}. About ${Math.max(1, Math.ceil(left * 15 / 60))} min left; each transfer waits for full confirmation. Keep the app open.`;
+}
+
 function continueCoinStep(mint) {
   const journal = state.coins.detail?.mint === mint ? state.coins.detail?.creation?.journal : null;
   if (!journal || !recoveryLaunchConfig(journal)) {
@@ -23060,6 +21299,7 @@ function continueCoinStep(mint) {
     state.selectedWalletPublicKey = journal.walletPublicKey;
     state.accountId = journal.walletPublicKey;
   }
+  state.coins = { ...state.coins, key: null };
   setView('launch');
   setLaunchWorkspace(recoveryWorkspaceForJournal(journal));
   renderAll();
@@ -23081,88 +21321,119 @@ function coinActivityHtml(events = []) {
     </li>`).join('')}</ul>`;
 }
 
-function draftPlanHtml(entry) {
-  const config = entry?.config || {};
-  const topology = config.poolTopology || {};
-  const pools = Array.isArray(topology.pools) ? topology.pools : [];
-  const supportSol = pools.reduce((sum, pool) => sum + (pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0), 0);
-  const held = Number(topology.preallocation?.supplyPercent || 0);
-  const facts = [
-    ['Supply', compactAmount(parseWholeNumber(String(config.token?.supply || '1000000000')) || 1e9)],
-    ['Target market cap', `$${compactAmount(Number(topology.targetMarketCapUsd || 0))}`],
-    ['Pools', pools.length ? pools.map((pool) => `${pool.quoteSymbol || pool.quoteToken || 'pair'} ${Number(pool.supplyPercent || 0)}%`).join(' · ') : 'None yet'],
-    ['SOL in the pool', supportSol > 0 ? fmtSol(supportSol) : 'None'],
-    ['Held back', held > 0 ? `${held}%` : 'None'],
-    ['Address', config.vanity?.selectedPublicKey ? `${fullAddress(config.vanity.selectedPublicKey)} (reserved)` : 'Chosen when the token is created'],
-  ];
-  return `<dl class="pool-support-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
-}
+const CHAIN_FACT_LABELS = { wallet: 'Launch', mint: 'Token', liquidity: 'Liquidity', finish: 'Launch wallet' };
 
-// The coin page header: the coin's card, with its explorer links.
-function coinHeaderHtml({ name, symbol, image = null, status = '', address = null, links = false }) {
-  const trailing = links && address
-    ? `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(address)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(address)}" target="_blank" rel="noopener">Raydium</a></span>`
-    : '';
-  return coinCardHtml({ name, symbol, address, image }, { variant: 'header', tag: 'header', status, trailing });
-}
-
-function renderCoinPage(coin) {
-  if ($('#coinPageFooter')) $('#coinPageFooter').innerHTML = '';
-  const body = $('#coinPageBody');
-  const supportPanel = $('#poolSupportPanel');
-  if (!body) return;
-  const detail = state.coins.detail && state.coins.detail.mint === coin.mint ? state.coins.detail : null;
+// The rail for an on-chain coin: the same four rows as creating one, each from the chain
+// and the launch record (see coinCreationSteps on the server).
+function onchainCoinFacts(coin) {
+  const detail = chainCoinDetail(coin);
+  const creation = detail?.creation || null;
+  const step = (id) => creation?.steps?.find((item) => item.id === id) || null;
   const account = detail?.account && !detail.account.error ? detail.account : null;
-  const name = account?.metadata?.name || detail?.info?.name || coin.name;
-  const symbol = account?.metadata?.symbol || detail?.info?.symbol || coin.symbol;
-  const header = coinHeaderHtml({
-    name,
-    symbol,
-    image: detail?.image || coin.image || coin.logoDataUrl || null,
-    status: coinStatus(coin),
-    address: coin.mint || coin.reservedAddress || null,
-    links: Boolean(coin.mint && !coin.practice),
-  });
+  if (!detail) {
+    const value = state.coins.detailError ? 'Not read' : 'Reading the chain';
+    const fact = { state: state.coins.detailError ? 'unrecorded' : 'running', value };
+    return [{ id: 'wallet', ...fact }, { id: 'mint', ...fact }, { id: 'liquidity', ...fact }, { id: 'finish', ...fact }];
+  }
+  const worst = (...steps) => {
+    const states = steps.filter(Boolean).map((item) => item.state);
+    return ['mismatch', 'todo', 'unrecorded', 'recorded'].find((item) => states.includes(item)) || 'done';
+  };
+  const poolCount = (detail.markets?.pools || []).length;
+  const pools = `${poolCount} pool${poolCount === 1 ? '' : 's'}`;
+  const wallet = creation?.walletPublicKey
+    ? { state: 'done', value: `From ${shortAddress(creation.walletPublicKey)}` }
+    : { state: 'done', value: coin.practice ? 'Test coin' : 'Added by address' };
+  const token = account
+    ? { state: step('token')?.state || 'done', value: `${formatTokenAmount(account.supply, account.decimals)} · mint authority ${account.mintAuthority ? 'kept' : 'revoked'}` }
+    : { state: 'unrecorded', value: 'Not a readable mint' };
+  const locks = step('locks')?.detail?.match(/(\d+)\/(\d+)/);
+  const liquidity = creation
+    ? { state: worst(step('pools'), step('locks'), step('reveal')), value: `${pools} open${locks ? ` · ${locks[1]}/${locks[2]} locked` : ''}` }
+    : { state: 'done', value: detail.markets ? pools : 'Not read' };
+  const swept = step('return');
+  const finish = !creation
+    ? { state: 'done', value: 'Not launched here' }
+    : swept?.state === 'done'
+      ? { state: 'done', value: 'Empty' }
+      : swept?.state === 'recorded'
+        ? { state: 'recorded', value: 'Recorded empty' }
+        : swept?.state === 'unrecorded'
+          ? { state: 'unrecorded', value: 'Not read' }
+          : { state: swept?.state || 'todo', value: 'Holds funds', action: 'Sweep the launch wallet' };
+  return [{ id: 'wallet', ...wallet }, { id: 'mint', ...token }, { id: 'liquidity', ...liquidity }, { id: 'finish', ...finish }];
+}
 
-  if (coin.kind === 'draft') {
-    // A draft's page is its creation steps (see openCoin).
-    body.innerHTML = header;
+function chainCoinSection(eyebrow, title, body, trailing = '') {
+  return `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">${escapeHtml(eyebrow)}</span><h2>${escapeHtml(title)}</h2></div>${trailing}</div>${body}</section>`;
+}
+
+// The open row of an on-chain coin's page: what the chain and the launch record show for it.
+function renderChainCoinPane(coin, workspace) {
+  const pane = $('#coinChainPane');
+  const supportPanel = $('#poolSupportPanel');
+  if (!pane) return;
+  if (!coin) {
+    pane.hidden = true;
+    pane.innerHTML = '';
     if (supportPanel) supportPanel.hidden = true;
     return;
   }
-
-  const identity = account ? [
-    ['Supply', formatTokenAmount(account.supply, account.decimals)],
-    ['Mint authority', account.mintAuthority ? fullAddress(account.mintAuthority) : 'Revoked'],
-    ['Freeze authority', account.freezeAuthority ? fullAddress(account.freezeAuthority) : 'Revoked'],
-    ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${fullAddress(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
-  ] : [];
-  body.innerHTML = `${header}
-    ${state.coins.detailLoading ? '<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>' : ''}
-    ${state.coins.detailError ? `<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>` : ''}
-
-    ${identity.length ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">On-chain</span><h2>Token</h2></div></div><dl class="pool-support-facts">${identity.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl></section>` : ''}
-    ${detail?.creation ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Creation</span><h2>${detail.creation.nextStep ? 'Unfinished' : 'Launched'}</h2></div></div>${coinCreationHtml(detail.creation, coin)}</section>` : ''}
-    ${detail?.markets ? `<section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Markets</span><h2>Pools</h2></div><button class="pill-button" type="button" data-action="refresh-coin">Refresh</button></div>${coinMarketsHtml(detail.markets)}</section>` : ''}
-    ${coinMarketEvidenceHtml(coin.mint)}
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Positions</span><h2>Your positions</h2></div><button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button></div>${coinPositionsHtml()}</section>
-    <section class="coin-section"><div class="section-heading"><div><span class="eyebrow">Activity</span><h2>What has happened</h2></div></div>${coinActivityHtml(detail?.events || [])}</section>`;
-  // Removing a coin is the page's last, least-used action: it sits after
-  // buy support, not between the coin's activity and its actions.
-  const footer = $('#coinPageFooter');
-  if (footer) {
-    footer.innerHTML = coin.status === 'Added'
-      ? `<button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button>`
-      : '';
+  const detail = chainCoinDetail(coin);
+  const account = detail?.account && !detail.account.error ? detail.account : null;
+  const creation = detail?.creation || null;
+  const facts = (rows) => `<dl class="pool-support-facts">${rows.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  const parts = [];
+  if (state.coins.detailLoading && !detail) parts.push('<p class="pool-support-status"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> Reading the coin from the chain…</p>');
+  if (state.coins.detailError) parts.push(`<p class="pool-support-error">${escapeHtml(state.coins.detailError)}</p>`);
+  // Each row lists its own launch steps only when one is wrong or not done, and the next
+  // step's action on the row it belongs to.
+  const ROW_STEPS = { mint: ['token'], liquidity: ['pools', 'locks', 'reveal'], finish: ['return'] };
+  const rowSteps = (creation?.steps || []).filter((step) => (ROW_STEPS[workspace] || []).includes(step.id) && !['done', 'recorded'].includes(step.state) && step.detail);
+  if (rowSteps.length) {
+    parts.push(`<ul class="coin-creation">${rowSteps.map((step) => {
+      const meta = COIN_FACT_MARKS[step.state] || COIN_FACT_MARKS.todo;
+      return `<li class="is-${escapeHtml(step.state)}" title="${escapeHtml(meta.label)}"><i class="fa-solid ${meta.icon}" aria-hidden="true"></i><span><strong>${escapeHtml(step.label)}</strong><small><span class="visually-hidden">${escapeHtml(meta.label)}: </span>${escapeHtml(step.detail)}</small></span></li>`;
+    }).join('')}</ul>`);
   }
-  if (supportPanel) {
-    supportPanel.hidden = false;
-    // A test coin has no real pool: buy support is simulated against a
-    // sample pool, and the panel says so.
-    const intro = supportPanel.querySelector('.pool-support-intro');
-    if (intro) {
-      intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
+  const nextStep = (creation?.steps || []).find((step) => ['todo', 'mismatch', 'unrecorded'].includes(step.state));
+  if (nextStep && (ROW_STEPS[workspace] || []).includes(nextStep.id)) parts.push(coinNextStepAction(creation, coin));
+  const journal = creation?.journal || null;
+  if (workspace === 'wallet') {
+    if (journal?.createdAt) parts.push(chainCoinSection('Launch', 'Launched', facts([['Date', escapeHtml(formatDate(journal.createdAt))]])));
+    parts.push(chainCoinSection('Activity', 'What has happened', coinActivityHtml(detail?.events || [])));
+    if (coin.status === 'Added') parts.push(`<div class="coin-page-footer"><button class="text-button" type="button" data-action="remove-coin" data-mint="${escapeHtml(coin.mint)}">Remove from coins</button></div>`);
+  } else if (workspace === 'mint') {
+    if (account) {
+      parts.push(chainCoinSection('On-chain', 'Token', facts([
+        ['Supply', escapeHtml(formatTokenAmount(account.supply, account.decimals))],
+        ['Mint authority', account.mintAuthority ? walletChipHtml(account.mintAuthority) : 'Revoked'],
+        ['Freeze authority', account.freezeAuthority ? walletChipHtml(account.freezeAuthority) : 'Revoked'],
+        ['Metadata', account.metadata ? (account.metadata.updateAuthority ? `Editable by ${walletChipHtml(account.metadata.updateAuthority)}` : 'Immutable') : 'Metaplex / unknown'],
+      ]), coin.practice ? '' : `<span class="coin-links"><a class="pill-button link-button" href="https://solscan.io/token/${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Solscan</a><a class="pill-button link-button" href="https://raydium.io/swap/?inputMint=sol&outputMint=${escapeHtml(coin.mint)}" target="_blank" rel="noopener">Raydium</a></span>`));
     }
+    const airdrop = state.coins.airdrop?.mint === coin.mint ? state.coins.airdrop : null;
+    if (airdrop?.recipients?.length || airdrop?.error) {
+      parts.push(chainCoinSection('Airdrop', 'Who received it', coinAirdropHtml(airdrop), '<button class="pill-button" type="button" data-action="refresh-coin-airdrop">Refresh</button>'));
+    }
+  } else if (workspace === 'liquidity') {
+    if (detail?.markets) parts.push(chainCoinSection('Markets', 'Pools', coinMarketsHtml(detail.markets), '<button class="pill-button" type="button" data-action="refresh-coin">Refresh</button>'));
+    parts.push(coinMarketEvidenceHtml(coin.mint));
+    parts.push(chainCoinSection('Positions', 'Your positions', coinPositionsHtml(), '<button class="pill-button" type="button" data-action="refresh-coin-positions">Refresh</button>'));
+  } else if (workspace === 'finish') {
+    const returnWallet = journal?.transfer?.destinationWallet || journal?.launchConfig?.poolTopology?.sweepDestination || null;
+    const rows = [];
+    if (creation?.walletPublicKey) rows.push(['Launch wallet', walletChipHtml(creation.walletPublicKey)]);
+    if (returnWallet) rows.push(['Return wallet', walletChipHtml(returnWallet)]);
+    parts.push(rows.length ? chainCoinSection('Wallets', 'Launch and return', facts(rows)) : '<p class="coins-empty">Not launched with Trebuchet.</p>');
+  }
+  pane.hidden = false;
+  pane.innerHTML = parts.join('');
+  if (supportPanel) {
+    supportPanel.hidden = workspace !== 'liquidity';
+    // A test coin has no real pool: buy support is simulated against a sample pool.
+    const intro = supportPanel.querySelector('.pool-support-intro');
+    if (intro) intro.textContent = coin.practice ? 'Test: nothing is sent.' : '';
     const target = $('#poolSupportTarget');
     if (target && target.value !== coin.mint) {
       target.value = coin.mint;
@@ -23191,6 +21462,28 @@ function renderCoinContext() {
     bar.innerHTML = '';
   }
   if (state.activeView !== 'launch') return;
+  const eyebrow = $('#viewEyebrow');
+  const title = $('#viewTitle');
+  // Written once: redrawing it on every change would replace the button
+  // under a click that is still in progress (a blur fires "change").
+  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
+    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
+  }
+  const chainCoin = chainCoinOnPage();
+  if (chainCoin) {
+    const detail = chainCoinDetail(chainCoin);
+    const account = detail?.account && !detail.account.error ? detail.account : null;
+    if (title) {
+      title.innerHTML = coinCardHtml({
+        name: account?.metadata?.name || detail?.info?.name || chainCoin.name,
+        symbol: account?.metadata?.symbol || detail?.info?.symbol || chainCoin.symbol,
+        address: chainCoin.mint,
+        image: detail?.image || chainCoin.image || null,
+      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin) });
+      hydrateCoinCards();
+    }
+    return;
+  }
   const name = String($('#tokenName')?.value || '').trim();
   const symbol = String($('#tokenSymbol')?.value || '').trim();
   const proof = currentLaunchProof();
@@ -23201,13 +21494,6 @@ function renderCoinContext() {
     ? practice ? 'Test coin' : launchViewChainStatus()
     : reserved ? 'Address reserved' : 'Draft';
   const address = mint || reserved;
-  const eyebrow = $('#viewEyebrow');
-  const title = $('#viewTitle');
-  // Written once: redrawing it on every change would replace the button
-  // under a click that is still in progress (a blur fires "change").
-  if (eyebrow && !eyebrow.querySelector('[data-action="coins-back"]')) {
-    eyebrow.innerHTML = `<button class="text-button coin-back-inline" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> Coins</button>`;
-  }
   if (title) {
     title.innerHTML = coinCardHtml(
       { name, symbol, address, image: state.tokenLogo?.dataUrl ? launchIdentityImageSrc(state.tokenLogo, { animate: false }) : null },
@@ -23317,8 +21603,10 @@ function savedSupportHistoryHtml() {
     ${jobs.map((job) => `<div class="pool-support-plan"><strong>${escapeHtml(job.network)} · ${escapeHtml(shortAddress(job.poolId))}</strong>
       <p>${escapeHtml(job.status === 'confirmed' ? `Added ${sol(job.result.depositedRaw)} SOL. Fee paid: ${sol(job.result.feeLamports)} SOL.`
         : job.status === 'failed' ? `Transaction failed. Fee paid: ${sol(job.result.feeLamports)} SOL.`
+        : job.status === 'cancelled' ? 'Cancelled before it was opened. Nothing was spent.'
         : `${sol(job.depositLamports)} SOL deposit. Maximum total: ${sol(job.maxSpendLamports)} SOL.`)}</p>
       ${['review_required', 'paused', 'running'].includes(job.status) ? `<button class="pill-button" type="button" data-action="resume-support-job" data-job-id="${escapeHtml(job.jobId)}">${job.status === 'paused' ? 'Resume support' : job.status === 'running' ? 'Refresh support' : 'Review support'}</button>` : ''}
+      ${job.status === 'paused' ? `<button class="pill-button" type="button" data-action="cancel-support-job" data-job-id="${escapeHtml(job.jobId)}">Cancel support</button>` : ''}
     </div>`).join('')}</section>`;
 }
 
@@ -23458,7 +21746,7 @@ function renderReturnWalletCard() {
 
 function editReturnWallet() {
   setView('launch');
-  setLaunchWorkspace('finish');
+  setLaunchWorkspace('wallet');
   window.requestAnimationFrame(() => {
     setPlanSlide('return');
   });
@@ -23521,7 +21809,23 @@ async function detectFundingWallet({ quiet = false } = {}) {
   }
 }
 
-async function checkExecutionReadiness() {
+// A paused support that never opened holds the launch wallet; cancelling checks the chain and frees it.
+async function cancelSavedSupportJob(jobId) {
+  const job = (state.supportJobs?.jobs || []).find((item) => item.jobId === jobId);
+  if (!job || !state.apiClient?.cancelSupportJob) return;
+  const ok = await confirmOperatorAction({ title: 'Cancel buy support',
+    detail: `This checks the chain that the ${formatRawTokenAmount(String(job.depositLamports), 9)} SOL support position was never opened and can no longer be, then frees the launch wallet. Nothing is sent.`,
+    confirmLabel: 'Cancel support' });
+  if (!ok) return;
+  try {
+    await state.apiClient.cancelSupportJob({ jobId, walletPublicKey: job.walletPublicKey });
+    notify('Support cancelled. The launch wallet is free.');
+  } catch (error) {
+    notify(error.message || 'The support could not be cancelled');
+  } finally { await refreshSavedSupportJobs(); renderAll(); }
+}
+
+async function checkExecutionReadiness({ retried = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
@@ -23537,9 +21841,20 @@ async function checkExecutionReadiness() {
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
       rememberLaunchProof(state.executionReadiness);
-      const blockerCount = state.executionReadiness.blockers?.length || 0;
+      const blockers = state.executionReadiness.blockers || [];
+      // The server binds the estimate to more of the plan than the screen does. A stale estimate is
+      // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
+      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
+        state.executionChecking = false;
+        notify('The plan changed since the estimate: estimating again');
+        if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
+        await estimateClassicFunding();
+        return checkExecutionReadiness({ retried: true });
+      }
       renderAll();
-      notify(blockerCount ? `${blockerCount} launch blocker${blockerCount === 1 ? '' : 's'}` : 'Launch ready');
+      notify(blockers.length
+        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+        : 'Launch ready');
       return;
     }
 
@@ -23768,7 +22083,7 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
   const airdropStatus = airdropCompletionStatus(proof, safeConfig.poolTopology);
   const airdropIssue = airdropCompletionIssue(airdropStatus);
   if (airdropIssue) return airdropIssue;
-  if (!proof) return 'Refresh readiness so Trebuchet can verify the launch record before final sweep.';
+  if (!proof) return 'The launch record is not loaded.';
 
   const staleReport = staleReportPublishForProof(proof, safeConfig);
   if (staleReport) return 'Launch report is stale for this proof; republish before final sweep.';
@@ -23790,11 +22105,6 @@ function executeNextTransferFinalizationIssue(readiness, config = currentLaunchC
       : 'Publish or download the launch report before final sweep.';
   }
   return null;
-}
-
-function fullRunPendingAirdropCount(proof) {
-  const config = proofConfigForFingerprint(proof, currentLaunchConfig());
-  return airdropCompletionStatus(proof, config.poolTopology).pending;
 }
 
 function fullRunCompletionAudit(proof = currentLaunchProof(), config = currentLaunchConfig()) {
@@ -24000,7 +22310,19 @@ async function runFullLaunch() {
     ? String(state.lastRunEnvelope.id || '')
     : '';
   if (!runEnvelopeId) {
-    notify('Review and arm the local run before starting a full launch');
+    // A plan edit since the estimate leaves it stale. Re-estimating is read-only, so Launch does it
+    // rather than stopping on the blocker; once the token exists the launch keeps its original estimate.
+    if (!classicFundingEstimateStatus(config).matchesConfig && !launchTokenExists()) {
+      notify('The plan changed since the estimate: estimating again');
+      await estimateClassicFunding();
+      state.executionReadiness = null;
+      if (!classicFundingEstimateStatus(currentLaunchConfig()).matchesConfig) return;
+    }
+    // Launch reviews first: it opens the operation review, and approving it starts the launch.
+    state.launchAfterArm = true;
+    await reviewAndArmRun();
+    if (state.lastRunEnvelope?.status === 'armed') { state.launchAfterArm = false; return runFullLaunch(); }
+    if (!state.approvalOpen) state.launchAfterArm = false;
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
@@ -24088,7 +22410,7 @@ async function runFullLaunch() {
           const failed = Array.isArray(finalization.airdrop?.failed) ? finalization.airdrop.failed.length : 0;
           if (!finalization.airdrop || failed > 0) {
             throw new Error(failed > 0
-              ? `Airdrop has ${failed} failed recipient${failed === 1 ? '' : 's'}; retry before final sweep.`
+              ? `${failed} airdrop recipient${failed === 1 ? '' : 's'} not paid.`
               : 'Airdrop did not complete; final sweep stopped.');
           }
         }
@@ -24096,7 +22418,7 @@ async function runFullLaunch() {
         proofConfig = proofConfigForFingerprint(proof, config);
         airdropStatus = airdropCompletionStatus(proof, proofConfig.poolTopology);
         if (airdropStatus.failed > 0) {
-          throw new Error(`Airdrop has ${airdropStatus.failed} failed recipient${airdropStatus.failed === 1 ? '' : 's'}; retry before final sweep.`);
+          throw new Error(`${airdropStatus.failed} airdrop recipient${airdropStatus.failed === 1 ? '' : 's'} not paid.`);
         }
         if (!airdropStatus.complete) {
           throw new Error(airdropCompletionIssue(airdropStatus) || 'Airdrop is not complete; final sweep stopped.');
@@ -24242,7 +22564,7 @@ async function runLaunchEnvelope() {
   // Once the token exists (next step is liquidity or later), funding is
   // committed: arm with the estimate the launch started from, never send
   // the user back to Fund to re-estimate from half-spent balances.
-  const midLaunch = state.executionReadiness?.nextEndpoint === '/api/create-lp';
+  const midLaunch = launchTokenExists();
   const fundingEstimate = recoveryEndpoint
     ? null
     : currentClassicFundingEstimateForConfig(config) || (midLaunch ? state.classicFundingEstimate : null);
@@ -24286,10 +22608,23 @@ async function runLaunchEnvelope() {
     : state.executionReadiness?.nextEndpoint === '/api/finish-token-creation'
       ? 'Finish token safely'
     : state.executionReadiness?.nextAction || 'the next operation';
+  if (state.launchAfterArm && !recoveryEndpoint) {
+    state.launchAfterArm = false;
+    notify('Approved. Launching.');
+    runFullLaunch().catch((error) => notify(error.message || 'The launch could not start'));
+    return;
+  }
+  state.launchAfterArm = false;
   notify(`Approved. Next: ${nextOperation}.`);
   window.requestAnimationFrame(() => {
     document.querySelector(`[data-classic-workspace="${state.launchWorkspace}"] [data-action="execute-next-run"]`)?.focus();
   });
+}
+
+// Once the token exists, funding is committed: the launch continues on the estimate it started
+// from. Nothing after that point re-estimates or sends you back to Fund.
+function launchTokenExists() {
+  return Boolean(proofTokenMint(currentLaunchProof()));
 }
 
 async function checkForUpdates() {
@@ -24533,6 +22868,9 @@ function applyBootState(boot) {
   state.launchMode = state.demoActive ? 'dry-run' : 'guarded';
   state.environmentReady = true;
   state.rpcActiveUrl = boot.rpc?.activeUrl || null;
+  state.chainNetwork = boot.rpc?.network || null;
+  state.rpcNetwork = boot.rpc?.rpcNetwork || null;
+  state.networkMismatch = boot.rpc?.networkMismatch === true;
   state.rpcSaved = Array.isArray(boot.rpc?.saved) ? boot.rpc.saved : [];
   state.rpcName = boot.rpc?.label || 'Unknown RPC';
   state.rpcHealth = boot.rpc?.health || 'unknown';
@@ -24558,6 +22896,7 @@ function applyBootState(boot) {
     failedJournalCount: boot.recovery?.failedJournalCount || 0,
     pendingWalletCount: boot.recovery?.pendingWalletCount || 0,
   };
+  refreshHeldWallets({ background: true });
   applyPersonalDiscoveryState(boot.discovery || {});
   state.managedWallets = Array.isArray(boot.wallets?.managed)
     ? boot.wallets.managed
@@ -24589,8 +22928,8 @@ function applyBootState(boot) {
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
   state.clmmFeeTiersSource = boot.feeTiers?.available ? 'local-api' : 'fallback';
   state.clmmFeeTiersError = boot.feeTiers?.error || null;
-  if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
+  if (!state.selectedVanityPublicKey) {
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
   // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
@@ -24663,6 +23002,7 @@ async function bootLocalApi() {
   }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
+    client.syncRentRate?.().then(() => { state.classicFundingEstimate = null; renderAll(); }).catch(() => null);
     refreshDestinations({ force: true });
     autoVerifyQuoteTokens();
     // The one-step card is the static web host's launcher. On the desktop it
@@ -24815,124 +23155,162 @@ function startLiveOpsPolling() {
   pollLiveOps().catch(() => null);
 }
 
-async function resumeJournal(journalId) {
-  if (!journalId) return;
-  const journal = state.recovery.journals.find((item) => item.id === journalId);
-  if (canContinueJournalToFinish(journal)) {
-    openJournalFinish(journalId);
-    return;
+// An action that can't run is greyed out with the reason beside it, not answered with a toast.
+// Each guard mirrors the check its handler makes and returns the reason as a short fact, or null
+// when the action can run. Handlers keep their checks as a backstop.
+
+const noDesktopApp = () => (state.apiStatus !== 'connected' ? 'Needs the desktop app' : null);
+const noLaunchWallet = () => (selectedLaunchWalletPublicKey() ? null : 'No launch wallet chosen');
+const launchBusy = () => (state.fullRunRunning || state.realExecutionRunning ? 'A launch step is running' : null);
+const pinDamaged = () => (state.secretPin.damaged ? 'Recovery PIN file is damaged' : null);
+const firstReason = (...checks) => {
+  for (const check of checks) {
+    const reason = check();
+    if (reason) return reason;
   }
-  if (!canResumeJournal(journal)) {
-    notify(state.demoActive ? 'Disable test mode to resume real journals' : 'Journal is not resumable');
-    return;
-  }
-  const plan = journalResumePlan(journal);
-  if (plan.manualRecoveryRequired) {
-    notify('Automatic resume is blocked for this journal; use manual recovery.');
-    return;
-  }
-  {
-    const planRows = plan.items.slice(0, 4).map((item) => `- ${item}`).join('\n');
-    const ok = await confirmOperatorAction({
-      title: plan.title,
-      detail: `${plan.detail}\n${planRows}\nThis can send real transactions from the recovered launch wallet.`,
-      confirmLabel: 'Resume journal',
-      danger: true,
-      confirmationText: 'RESUME',
-    });
-    if (!ok) return;
-  }
-  if (state.apiStatus !== 'connected' || !state.apiClient?.resumeLaunchJournal) {
-    notify('Resume requires the Trebuchet desktop app');
-    return;
-  }
-  state.recoveryActionId = journalId;
-  renderHistory();
-  try {
-    state.lastRecoveryResult = await state.apiClient.resumeLaunchJournal(journalId);
-    await refreshLocalApiState();
-    pollLiveOps().catch(() => null);
-    notify(state.lastRecoveryResult.recovered ? 'Journal recovered for transfer' : 'Journal resume completed');
-  } catch (error) {
-    notify(error.message || 'Journal resume failed');
-  } finally {
-    state.recoveryActionId = null;
-    renderAll();
+  return null;
+};
+
+const ACTION_GUARDS = {
+  'add-coin': () => noDesktopApp(),
+  'start-quote-acquire': () => firstReason(noDesktopApp, noLaunchWallet, () => {
+    const blocked = quoteAcquireBlockedPools()[0];
+    if (blocked) return `${blocked.pool.quoteSymbol ? `$${blocked.pool.quoteSymbol}` : 'A pair token'}: ${blocked.badge.label}`;
+    if (state.customPools.some((pool) => customQuoteInfoRecord(pool)?.loading)) return 'Checking the pair tokens';
+    const status = classicFundingEstimateStatus(currentLaunchConfig());
+    if (!status.matchesConfig) return status.stale ? 'Funding estimate is out of date' : 'No funding estimate yet';
+    if (!quoteAcquireRoutes().length) return quoteAcquireManualCount() ? 'Pair tokens need a manual deposit' : 'No pair tokens to buy';
+    return null;
+  }),
+  'clear-quote-acquire': () => (state.quoteAcquire.running || ['paused', 'recovery_required'].includes(state.quoteAcquire.job?.status)
+    ? 'A saved purchase is unfinished' : null),
+  'review-and-arm-run': () => firstReason(
+    () => (state.demoActive ? 'Test mode is on' : null),
+    () => (walletIsUnlocked() ? null : 'Launch wallet is locked'),
+  ),
+  'toggle-demo-mode': () => noDesktopApp(),
+  'run-demo-launch': () => firstReason(noDesktopApp, () => (state.demoActive ? null : 'Test mode is off'), noLaunchWallet),
+  'execute-next-run': () => firstReason(noDesktopApp, noLaunchWallet, () => (state.demoActive ? 'Test mode is on' : null)),
+  'run-full-launch': () => firstReason(noDesktopApp, noLaunchWallet, launchBusy),
+  'run-launch': () => firstReason(noDesktopApp, () => (walletIsUnlocked() ? null : 'Launch wallet is locked')),
+  'fit-airdrop-budget': () => {
+    const plan = currentAirdropPlan();
+    if (!plan.enabled) return 'No airdrop recipients';
+    return plan.requiredSupplyPercent ? null : 'No amounts to fit';
+  },
+  'preview-pool-support': () => noDesktopApp(),
+  'open-pool-support': () => noLaunchWallet(),
+  'download-v2-dossier': () => {
+    const proof = currentLaunchProof();
+    if (!proof?.token?.mint) return null;
+    const config = proofConfigForFingerprint(proof, currentLaunchConfig());
+    if (!proofCanCreateLocalDossier(proof, config)) return 'Token and pool IDs not recorded yet';
+    return airdropCompletionIssue(airdropCompletionStatus(proof, config.poolTopology));
+  },
+  'sweep-recovery-wallet': (element) => firstReason(noDesktopApp, launchBusy, () => {
+    const wallet = pendingRecoveryWallet(element.dataset.wallet);
+    if (!wallet) return null;
+    if (wallet.decryptionFailed && !wallet.secretPinLocked) return 'Key unreadable';
+    return state.secretPin.locked || wallet.secretPinLocked ? 'Recovery PIN is locked' : null;
+  }),
+  'cancel-refund-launch': () => firstReason(noDesktopApp, noLaunchWallet, () => (
+    state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning || state.reportPublishing || state.airdropRunning || state.quoteAcquire.running
+      ? 'A launch step is running' : null
+  ), () => (state.secretPin.locked ? 'Recovery PIN is locked' : null), () => {
+    const destination = currentLaunchConfig().poolTopology.sweepDestination || '';
+    if (!isProbablySolanaAddress(destination)) return 'No return wallet set';
+    return destination === selectedLaunchWalletPublicKey() ? 'Return wallet is the launch wallet' : null;
+  }),
+  'check-updates': () => firstReason(noDesktopApp, () => (state.updateCheck.checking ? 'Checking…' : null)),
+  'toggle-update-autocheck': () => noDesktopApp(),
+  'toggle-report-publish': () => noDesktopApp(),
+  'test-rpc': () => noDesktopApp(),
+  'add-rpc': () => noDesktopApp(),
+  'select-rpc': () => noDesktopApp(),
+  'remove-rpc': () => firstReason(noDesktopApp, () => (state.rpcSaved.length <= 1 ? 'The only saved RPC' : null)),
+  'import-wallet': () => noDesktopApp(),
+  'setup-secret-pin': () => firstReason(noDesktopApp, pinDamaged, () => (state.secretPin.configured ? 'Already set' : null)),
+  'unlock-secret-pin': () => firstReason(noDesktopApp, pinDamaged),
+  'change-secret-pin': () => firstReason(noDesktopApp, pinDamaged, () => (state.secretPin.configured ? null : 'No Recovery PIN set')),
+  'lock-secret-pin': () => noDesktopApp(),
+  'reset-secret-pin': () => firstReason(noDesktopApp, () => (state.secretPin.configured ? null : 'No Recovery PIN set')),
+  'load-wallet-qr': () => noLaunchWallet(),
+  'reveal-wallet-secret': () => firstReason(noDesktopApp, noLaunchWallet),
+  'discard-wallet': () => firstReason(noDesktopApp, noLaunchWallet, launchBusy),
+  'sign-return-wallet': () => noDesktopApp(),
+  'set-finish-return-wallet': () => noDesktopApp(),
+  'prune-hidden-vanity': () => {
+    const visible = new Set(state.vanityCandidates.slice(-VANITY_VISIBLE_CANDIDATE_LIMIT).map((candidate) => candidate.publicKey));
+    if (state.selectedVanityPublicKey) visible.add(state.selectedVanityPublicKey);
+    return state.vanityCandidates.some((candidate) => !visible.has(candidate.publicKey)) ? null : 'No hidden addresses';
+  },
+  'calibrate-vanity': () => firstReason(noDesktopApp, () => (runningGrindJob() ? 'A grind is running' : null), () => (state.vanityAvailable ? null : 'No grinder in this build')),
+  'select-vanity': (element) => vanityAddressUsedReason(element.dataset.publicKey),
+  'remove-selected-vanity': () => (state.vanityCandidates.some((item) => item.publicKey === state.selectedVanityPublicKey) ? null : 'No saved address selected'),
+  'toggle-held-share': () => (heldShareLocked() ? 'Locked once the token exists' : null),
+};
+
+function actionBlockedReason(element) {
+  const guard = ACTION_GUARDS[element.dataset.action];
+  if (!guard) return null;
+  try { return guard(element) || null; } catch { return null; }
+}
+
+// Grey out every guarded action on the page that can't run, and show why. Only re-enables what it
+// disabled itself, so a button a renderer disabled for its own reason stays disabled.
+function applyActionGuards(root = document) {
+  for (const element of root.querySelectorAll('[data-action]')) {
+    if (!ACTION_GUARDS[element.dataset.action]) continue;
+    const reason = actionBlockedReason(element);
+    if (reason) {
+      if (element.dataset.blockedReason !== reason) element.dataset.blockedReason = reason;
+      if ('disabled' in element && !element.disabled) { element.disabled = true; element.dataset.guardDisabled = 'true'; }
+      element.setAttribute('aria-disabled', 'true');
+      if (element.title !== reason) element.title = reason;
+    } else if (element.dataset.blockedReason) {
+      delete element.dataset.blockedReason;
+      element.removeAttribute('aria-disabled');
+      element.removeAttribute('title');
+      if (element.dataset.guardDisabled) { element.disabled = false; delete element.dataset.guardDisabled; }
+    }
   }
 }
 
-function openJournalFinish(journalId) {
-  const journal = state.recovery.journals.find((item) => item.id === journalId);
-  if (!canContinueJournalToFinish(journal)) {
-    notify('This launch still has incomplete liquidity work');
-    return false;
-  }
-  if (journal.walletPublicKey
-      && state.managedWallets.some((wallet) => wallet.publicKey === journal.walletPublicKey)) {
-    state.selectedWalletPublicKey = journal.walletPublicKey;
-    state.accountId = journal.walletPublicKey;
-  }
-  restoreLaunchConfigFromJournal(journal);
-  state.launchWorkspace = 'finish';
-  state.recoveryWizardStep = 'verify';
-  setView('launch');
-  setLaunchWorkspace('finish');
-  renderAll();
-  checkExecutionReadiness().catch(() => null);
-  notify('Liquidity is complete · Finish opened for return wallet, proof, and sweep');
-  return true;
+let actionGuardFrame = 0;
+function scheduleActionGuards() {
+  if (actionGuardFrame) return;
+  actionGuardFrame = requestAnimationFrame(() => { actionGuardFrame = 0; applyActionGuards(); });
 }
 
-function openTokenRecovery(journalId) {
-  const journal = state.recovery.journals.find((item) => item.id === journalId);
-  if (!journalNeedsTokenFinish(journal)) {
-    notify('This journal does not have an interrupted token to finish');
-    return;
-  }
-  if (journal.walletPublicKey
-      && state.managedWallets.some((wallet) => wallet.publicKey === journal.walletPublicKey)) {
-    state.selectedWalletPublicKey = journal.walletPublicKey;
-    state.accountId = journal.walletPublicKey;
-  }
-  restoreLaunchConfigFromJournal(journal);
-  state.launchWorkspace = 'mint';
-  setView('launch');
-  setLaunchWorkspace('mint');
-  renderAll();
-  checkExecutionReadiness().catch(() => null);
-  notify('Existing mint selected · check and finish only the missing token steps');
+// Renderers replace markup all the time; re-check guards whenever new elements appear.
+function bindActionGuards() {
+  new MutationObserver((records) => {
+    if (records.some((record) => record.addedNodes.length)) scheduleActionGuards();
+  }).observe(document.body, { childList: true, subtree: true });
+  scheduleActionGuards();
 }
 
-async function dismissJournal(journalId) {
-  if (!journalId) return;
-  const journal = state.recovery.journals.find((item) => item.id === journalId);
-  if (!canDismissJournal(journal)) return;
-  {
-    const ok = await confirmOperatorAction({
-      title: 'Dismiss launch journal',
-      detail: 'Remove this journal from the active recovery list? This does not sweep assets.',
-      confirmLabel: 'Dismiss journal',
-      danger: true,
-    });
-    if (!ok) return;
-  }
-  if (state.apiStatus !== 'connected' || !state.apiClient?.dismissLaunchJournal) {
-    notify('Dismiss requires the Trebuchet desktop app');
-    return;
-  }
-  state.recoveryActionId = journalId;
-  renderHistory();
-  try {
-    await state.apiClient.dismissLaunchJournal(journalId);
-    await refreshLocalApiState();
-    pollLiveOps().catch(() => null);
-    notify('Journal dismissed');
-  } catch (error) {
-    notify(error.message || 'Journal dismiss failed');
-  } finally {
-    state.recoveryActionId = null;
-    renderAll();
-  }
+// Closing the window while wallet work is sending transactions asks first. The desktop app shows
+// its own Stay / Leave dialog when beforeunload is cancelled (main.js will-prevent-unload).
+
+function walletWorkRunning() {
+  if (state.fullRunRunning || state.realExecutionRunning || state.demoLaunchRunning) return 'A launch step is running';
+  if (state.sweepingWalletPublicKey || state.cancelRefund.running) return 'A wallet sweep is running';
+  if (state.heldWallets?.sweep && state.heldWallets.sweep.finished === false) return 'A wallet sweep is running';
+  if (state.airdropRunning) return 'An airdrop is sending';
+  if (state.quoteAcquire.running) return 'A pair-token purchase is running';
+  if (state.reportPublishing) return 'A report is publishing';
+  return null;
+}
+
+function bindCloseGuard() {
+  window.addEventListener('beforeunload', (event) => {
+    const reason = walletWorkRunning();
+    if (!reason) return undefined;
+    event.preventDefault();
+    event.returnValue = reason;
+    return reason;
+  });
 }
 
 function drawLaunchCanvas() {
@@ -25064,11 +23442,38 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const solInput = event.target.closest('[data-sol-pool-field]');
+  if (solInput) {
+    const solField = solInput.dataset.solPoolField;
+    if (solField === 'venue') state.solPoolVenue = solInput.value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    else if (solField === 'dammFeeBps') state.solPoolDamm = { ...state.solPoolDamm, feeBps: Number(solInput.value) || 25 };
+    else if (solField === 'dammRange') state.solPoolDamm = { ...state.solPoolDamm, rangeMultiple: Number(solInput.value) || 1000 };
+    else state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(solInput);
+    return;
+  }
+
+  const quoteInput = event.target.closest('[data-quote-pool-field]');
+  if (quoteInput) {
+    if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
+      state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+      if (quoteInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(quoteInput); return; }
+    } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
+      state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
+    }
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    return;
+  }
+
   const customInput = event.target.closest('[data-custom-pool-field]');
   if (customInput) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
     if (!pool) return;
     pool[customInput.dataset.customPoolField] = customInput.value;
+    if (customInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(customInput); return; }
     if (['quoteMint', 'quoteSymbol'].includes(customInput.dataset.customPoolField)) {
       delete state.quoteTokenInfo[pool.id];
     }
@@ -25083,6 +23488,8 @@ function handleDynamicInput(event) {
       state.baseManualLadderText = baseInput.value;
     } else if (baseInput.dataset.baseField === 'baseSupportDepth') {
       state.baseSupportDepth = baseInput.value;
+    } else if (baseInput.dataset.baseField === 'baseSupportLayersText') {
+      state.baseSupportLayersText = baseInput.value;
     }
     invalidateClassicOutputs();
     refreshClassicPreview();
@@ -25103,11 +23510,6 @@ function handleDynamicInput(event) {
     renderVanityCandidates();
   }
 
-  if (event.target.classList?.contains('classic-artifact-text')) {
-    state.classicReportComparison.input = event.target.value;
-    state.classicReportComparison.error = null;
-    persistClassicReportComparison();
-  }
 }
 
 function handleClick(event) {
@@ -25148,13 +23550,15 @@ function handleClick(event) {
 
   const discoveryPane = event.target.closest('[data-discovery-pane]');
   if (discoveryPane) {
-    state.discovery.activePane = discoveryPane.dataset.discoveryPane === 'wallets' ? 'wallets' : 'tokens';
+    state.discovery.activePane = ['wallets', 'inspect', 'saved'].includes(discoveryPane.dataset.discoveryPane) ? discoveryPane.dataset.discoveryPane : 'tokens';
     renderDiscoveryPanes();
     return;
   }
 
   const actionTarget = event.target.closest('[data-action]');
   if (!actionTarget) return;
+  // A greyed-out action shows its reason beside it; clicking it does nothing.
+  if (actionTarget.dataset.blockedReason) return;
 
   const { action } = actionTarget.dataset;
   if (action === 'quick-launch-run') {
@@ -25176,9 +23580,8 @@ function handleClick(event) {
     renderLaunchIdentity();
     return;
   }
-  if (action === 'toggle-launch-details') {
-    state.launchDetailsExpanded = !state.launchDetailsExpanded;
-    renderLiveLaunchMonitor();
+  if (action === 'apply-launch-preset') {
+    applyLaunchPreset(actionTarget.dataset.preset).catch((error) => notify(error.message || 'Could not apply the preset'));
     return;
   }
   if (action === 'select-launch-budget') {
@@ -25192,6 +23595,39 @@ function handleClick(event) {
   }
   if (action === 'launch-rail-act') {
     runLaunchRailAction();
+    return;
+  }
+  if (action === 'hub-picker-page') {
+    hubPicker.page = (Number(hubPicker.page) || 0) + Number(actionTarget.dataset.dir || 0);
+    renderHubPicker();
+    return;
+  }
+  if (action === 'customize-quote-pool') {
+    customizeQuotePool();
+    return;
+  }
+  if (action === 'set-pool-venue' || action === 'set-pool-fee') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'set-pool-tier' || action === 'set-pool-range') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'reconcile-network') {
+    reconcileNetwork(actionTarget.dataset.match);
+    return;
+  }
+  if (action === 'export-pool-config') {
+    exportPoolConfig();
+    return;
+  }
+  if (action === 'import-pool-config') {
+    importPoolConfig();
+    return;
+  }
+  if (action === 'toggle-nav') {
+    setNavMode(document.body.dataset.nav === 'icons' ? 'full' : 'icons');
     return;
   }
   if (action === 'select-environment') {
@@ -25226,22 +23662,6 @@ function handleClick(event) {
     stepNumberInput(input, Number(actionTarget.dataset.direction));
     return;
   }
-  if (action === 'select-history-pane') {
-    const pane = actionTarget.dataset.historyPane;
-    if (['recovery', 'wallets', 'audit', 'journal'].includes(pane)) {
-      state.activeHistoryPane = pane;
-      renderHistoryPanes();
-    }
-    return;
-  }
-  if (action === 'open-token-recovery') {
-    openTokenRecovery(actionTarget.dataset.journalId);
-    return;
-  }
-  if (action === 'continue-journal-finish') {
-    openJournalFinish(actionTarget.dataset.journalId);
-    return;
-  }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
       'start-vanity': 'mint',
@@ -25249,14 +23669,11 @@ function handleClick(event) {
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
       'download-launch-dossier': 'finish',
-      'compare-classic-report': 'finish',
-      'inspect-recovery': 'finish',
       'cancel-refund-launch': 'finish',
-      'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) {
+    if (actionWorkspace && !actionTarget.dataset.stay) {
       // Each of these acts on the phase's own panel, or on the address settings.
-      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : actionWorkspace === 'fund' ? 'cost' : 'run' };
       setLaunchWorkspace(actionWorkspace);
     }
   }
@@ -25282,8 +23699,28 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'add-sol-support') {
+    addSolPoolSupport(actionTarget.dataset.sol);
+    return;
+  }
+
   if (action === 'start-vanity') {
     startVanityGrind().catch((error) => notify(error.message || 'Vanity grind failed'));
+    return;
+  }
+
+  if (action === 'stop-grind-job') {
+    stopGrindJob(actionTarget.dataset.job).catch(() => null);
+    return;
+  }
+
+  if (action === 'dismiss-grind-job') {
+    dismissGrindJob(actionTarget.dataset.job);
+    return;
+  }
+
+  if (action === 'calibrate-vanity') {
+    calibrateVanity().catch(() => null);
     return;
   }
 
@@ -25310,6 +23747,7 @@ function handleClick(event) {
   }
 
   if (action === 'select-vanity') {
+    if (vanityAddressUsedReason(actionTarget.dataset.publicKey)) return;
     state.selectedVanityPublicKey = actionTarget.dataset.publicKey || null;
     renderAll();
     notify(state.selectedVanityPublicKey ? 'Vanity CA selected' : 'Random CA selected');
@@ -25404,6 +23842,11 @@ function handleClick(event) {
   }
   if (action === 'withdraw-coin-position') {
     withdrawCoinPosition(actionTarget.dataset.nft).catch((error) => notify(error.message || 'Withdrawing failed'));
+    return;
+  }
+  if (action === 'refresh-coin-airdrop') {
+    const coin = coinByKey(state.coins.key);
+    if (coin?.mint) loadCoinAirdrop(coin.mint).catch(() => null);
     return;
   }
   if (action === 'refresh-coin-positions') {
@@ -25525,10 +23968,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'clear-execution-audit') {
-    clearExecutionAudit();
-    return;
-  }
 
   if (action === 'cancel-refund-launch') {
     cancelRefundLaunch();
@@ -25584,13 +24023,22 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'load-kol-wallets') {
+    loadKolWallets();
+    return;
+  }
+
+  if (action === 'load-airdrop-list') {
+    loadAirdropList(actionTarget.dataset.list);
+    return;
+  }
+
   if (action === 'sample-airdrop') {
     setAirdropText([
       'wallet,tokens',
       '11111111111111111111111111111111,1000',
       'So11111111111111111111111111111111111111112,2500',
     ].join('\n'));
-    notify('Sample airdrop CSV loaded');
     return;
   }
 
@@ -25601,7 +24049,6 @@ function handleClick(event) {
 
   if (action === 'clear-airdrop') {
     setAirdropText('');
-    notify('Airdrop CSV cleared');
     return;
   }
 
@@ -25655,42 +24102,18 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'compare-classic-artifact') {
-    runClassicArtifactComparison();
-    return;
-  }
 
-  if (action === 'load-classic-artifact') {
-    requestClassicArtifactImport();
-    return;
-  }
 
-  if (action === 'clear-classic-artifact') {
-    clearClassicArtifactComparison();
-    return;
-  }
 
   if (action === 'inspect-recovery') {
-    setView('history');
-    notify('Recovery journal opened');
-    return;
-  }
-
-  if (action === 'inspect-recovery-record') {
-    state.activeHistoryPane = actionTarget.dataset.recoveryPane === 'journal' ? 'journal' : 'wallets';
-    renderHistoryPanes();
-    setView('history');
-    notify(state.activeHistoryPane === 'journal' ? 'Launch journal opened' : 'Recovery wallet inventory opened');
-    return;
-  }
-
-  if (action === 'resume-journal') {
-    resumeJournal(actionTarget.dataset.journalId);
-    return;
-  }
-
-  if (action === 'dismiss-journal') {
-    dismissJournal(actionTarget.dataset.journalId);
+    // A launch with a token is recovered on its coin page, which shows what is left and runs it.
+    const mint = proofTokenMint(currentLaunchProof());
+    if (mint && !isDemoLaunchProof(currentLaunchProof())) {
+      openCoinByMint(mint);
+      return;
+    }
+    state.coins = { ...state.coins, key: null };
+    setView('coins');
     return;
   }
 
@@ -25735,6 +24158,7 @@ function handleClick(event) {
 
   if (action === 'close-approval') {
     state.approvalOpen = false;
+    state.launchAfterArm = false;
     renderExtension();
     return;
   }
@@ -25785,29 +24209,12 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'select-recovery-wallet') {
-    selectRecoveryWallet(actionTarget.dataset.wallet);
-    return;
-  }
 
-  if (action === 'use-recovery-wallet-for-launch') {
-    const wallet = selectRecoveryWallet(actionTarget.dataset.wallet, { switchToWallet: false });
-    if (wallet) {
-      setView('launch');
-      notify('Recovery wallet selected for the next launch run');
-    }
-    return;
-  }
 
-  if (action === 'copy-recovery-wallet') {
-    copyText(actionTarget.dataset.wallet, 'Recovery wallet address');
-    return;
-  }
 
-  if (action === 'reveal-recovery-wallet') {
-    const walletPublicKey = actionTarget.dataset.wallet;
-    selectRecoveryWallet(walletPublicKey, { switchToWallet: true });
-    revealWalletSecret(walletPublicKey).catch((error) => notify(error.message || 'Recovery secret reveal failed'));
+
+  if (action === 'cancel-support-job') {
+    cancelSavedSupportJob(actionTarget.dataset.jobId).catch((error) => notify(error.message || 'Support cancel failed'));
     return;
   }
 
@@ -25816,10 +24223,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'discard-recovery-wallet') {
-    discardSelectedWallet(actionTarget.dataset.wallet).catch((error) => notify(error.message || 'Wallet discard failed'));
-    return;
-  }
 
   if (action === 'copy-wallet-address') {
     copyText(selectedLaunchWalletPublicKey(), 'Funding address');
@@ -25891,6 +24294,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'sweep-all-wallets') {
+    sweepAllWallets().catch((error) => notify(error.message || 'Sweep all failed'));
+    return;
+  }
   if (action === 'unlock-secret-pin') {
     unlockSecretPin().catch((error) => notify(error.message || 'Recovery PIN unlock failed'));
     return;
@@ -25915,7 +24322,6 @@ function handleClick(event) {
     refreshSecretPinStatus({ reloadBoot: true })
       .then(() => {
         renderAll();
-        notify('Recovery PIN status refreshed');
       })
       .catch((error) => notify(error.message || 'Recovery PIN refresh failed'));
     return;
@@ -26132,6 +24538,7 @@ function quickLaunchDemoRun() {
 
 function bindEvents() {
   document.addEventListener('click', handleClick);
+  applyNavMode(readNavMode());
   document.addEventListener('input', handleDynamicInput);
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
@@ -26290,7 +24697,7 @@ function bindEvents() {
     selectTokenLogo(event.target.files?.[0] || null);
   });
   $('#liquidityBudgetSol')?.addEventListener('input', (event) => {
-    applyLaunchBudgetRecommendation(event.target.value, { announce: false });
+    applyLaunchBudgetRecommendation(event.target.value, { announce: false, fromInput: true });
   });
 
   $('#quickTokenName')?.addEventListener('input', renderQuickLaunchCost);
@@ -26340,7 +24747,6 @@ function bindEvents() {
     'sliceShares',
     'ladderBands',
     'supportSol',
-    'airdropWallets',
     'airdropSupplyPercent',
     'airdropAutoFit',
     'feeKeyRecipient',
@@ -26369,9 +24775,11 @@ window.addEventListener?.('solana#initialized', () => {
 
 restoreExecutionLedger();
 restoreLaunchProof();
-restoreClassicReportComparison();
 restoreDiscoveryRegistry();
 bindEvents();
+bindWalletChips();
+bindActionGuards();
+bindCloseGuard();
 initializeSolflareWallet();
 setView('coins');
 renderAll();

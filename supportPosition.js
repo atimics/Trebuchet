@@ -6,10 +6,11 @@ import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/so
 import { deriveLiquidityAccount } from './liquidityExecution.js';
 import { previewSolSupport } from './lpService.js';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 const fail = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const owners = new WeakMap();
-export function createSupportPositionRuntime({ owner, createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+export function createSupportPositionRuntime({ owner, createConnection = () => createExecutionConnection(),
   networkForRequest = getNetwork, genesisForNetwork = (network) => SOLANA_GENESIS_HASHES[network], planSupport = previewSolSupport, now = Date.now, timeoutMs = 60000 }) {
   if (!owners.has(owner)) owners.set(owner, new Set());
   const running = owners.get(owner);
@@ -59,6 +60,18 @@ export function createSupportPositionRuntime({ owner, createConnection = () => n
         const job = await execution.prepare({ scopeId, key, walletPublicKey, poolId: preview.poolId, nftMint: nft.publicKey.toBase58(), requestId, lookupTables,
           depositLamports: String(preview.depositLamports), tickLower: preview.tickLower, tickUpper: preview.tickUpper, review });
         checkHost(job); return view(job);
+      } finally { running.delete(walletPublicKey); store.close(); }
+    },
+    // Release an approved support that never happened. Reads the chain only; nothing is signed.
+    async cancel({ id, walletPublicKey }) {
+      if (running.has(walletPublicKey)) throw fail('OPERATION_IN_FLIGHT', 'Wait for the active support request');
+      owner.assertActive(); const store = openRuntimeStore(owner.profile); running.add(walletPublicKey);
+      try {
+        const execution = service(store), job = execution.get(id);
+        if (!job || job.plan.walletPublicKey !== walletPublicKey) throw fail('OPERATION_UNKNOWN', 'Use the saved support job and its wallet', 404);
+        checkHost(job);
+        await execution.cancel(id);
+        return view(execution.get(id));
       } finally { running.delete(walletPublicKey); store.close(); }
     },
     async execute({ id, ownerKeypair, planDigest, maxSpendLamports }) {

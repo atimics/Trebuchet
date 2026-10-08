@@ -14,6 +14,7 @@ function fixture() {
     journal: { id: 'journal-a', token: { mint: 'mint-a', name: 'Unit Token', symbol: 'UNIT', totalSupply: '1000', metadataUri: 'uri-a', metadataAuthorityKept: true }, events: [] } };
   const launchJournal = {
     activeForWallet: () => state.journal,
+    list: () => state.otherJournals || [],
     errorMessage: (error) => error.message,
     recordEvent: (_wallet, event) => { writes.push(event); },
     upsertForWallet: (_wallet, patch, event) => {
@@ -58,7 +59,7 @@ function fixture() {
     finishSweepWithSolGate: async () => { calls.push('sol-gate'); return { solSweep: { solTransferred: 0.1 }, solSweepError: null, solSweepSkipped: null }; },
     checkWalletBalanceMultiToken: async (_key, options) => { assert.equal(options.commitment, 'finalized'); calls.push('verify-empty'); return { sol: state.empty ? 0 : 1, tokens: {} }; },
     isWalletEffectivelyEmpty: (balance) => balance.sol === 0,
-    pendingWallets: { remove: () => { state.removed++; calls.push('remove-custody'); } },
+    pendingWallets: { retire: () => { state.removed++; calls.push('remove-custody'); }, remove: () => { throw new Error('a finished launch never deletes its key'); } },
     transferJournalSummary: (summary) => summary,
     airdropInFlight: () => false, markAirdropInFlight: () => {}, clearAirdropInFlight: () => {},
     airdropProgressBegin: () => {}, airdropProgressStep: () => {}, airdropProgressEnd: () => {},
@@ -147,6 +148,33 @@ test('an existing vanity mint is adopted through the service failure path', asyn
   assert.equal(f.state.journal.stage, 'token_account_exists');
   assert.equal(f.calls.includes('candidate-remove'), false);
   assert.equal(f.operations.size, 0);
+});
+
+test('an address another launch already minted is refused before anything is signed', async () => {
+  const f = fixture();
+  f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: 'mint-used', symbol: 'TREBUCHET' } }];
+  let created = false;
+  f.deps.createTokenWithMetaplex = async () => { created = true; return { tokenMint: 'mint-used' }; };
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-used' }), (error) => {
+    assert.equal(error.statusCode, 409);
+    assert.equal(error.payload.code, 'VANITY_ADDRESS_USED');
+    assert.equal(error.payload.error, 'Address already used by $TREBUCHET');
+    return true;
+  });
+  assert.equal(created, false);
+  assert.equal(f.calls.includes('signer'), false);
+});
+
+test('another launch\'s mint is never adopted as this launch\'s token', async () => {
+  const f = fixture();
+  f.deps.createTokenWithMetaplex = async () => {
+    // The address became another launch's coin while this one was creating.
+    f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: 'mint-raced' } }];
+    throw new Error('account already in use');
+  };
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-raced' }));
+  assert.notEqual(f.state.journal.token.mint, 'mint-raced');
+  assert.notEqual(f.state.journal.stage, 'token_account_exists');
 });
 
 test('liquidity failures retain public recovery details for every caller', async () => {
@@ -332,6 +360,21 @@ test('airdrop plan validation finishes before any sweep starts', async () => {
   f.deps.prepareAirdrop = () => { throw Object.assign(new Error('recipient amount changed'), { code: 'EXECUTION_RECOVERY_REQUIRED' }); };
   await assert.rejects(f.services().transferAssets(input), { code: 'EXECUTION_RECOVERY_REQUIRED' });
   assert.ok(!f.calls.includes('nfts')); assert.ok(!f.calls.includes('tokens')); assert.equal(f.state.removed, 0);
+});
+
+test('a paused airdrop keeps its reason in the journal and leaves the tokens in the launch wallet', async () => {
+  const rows = [{ wallet: destination, tokens: 2 }];
+  const stop = () => Object.assign(new Error('A token transfer from the launch wallet was not sent.'), { code: 'EXECUTION_RECOVERY_REQUIRED', errorDetails: { code: 'TOKEN_PROGRAM_MISMATCH', message: 'wrong program' } });
+  const sweep = fixture();
+  sweep.deps.prepareAirdrop = async () => ({ tokenMint: 'mint-a', tokenDecimals: 6, recipients: rows });
+  sweep.deps.executeAirdrop = async () => { throw stop(); };
+  await assert.rejects(sweep.services().transferAssets(input), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.deepEqual(sweep.writes.filter((event) => event.stage === 'airdrop_stopped'), [{ stage: 'airdrop_stopped', code: 'TOKEN_PROGRAM_MISMATCH', error: 'A token transfer from the launch wallet was not sent.' }]);
+  assert.ok(!sweep.calls.includes('tokens')); assert.equal(sweep.state.removed, 0); assert.equal(sweep.operations.size, 0);
+  const direct = fixture();
+  direct.deps.executeAirdrop = async () => { throw stop(); };
+  await assert.rejects(direct.services().runAirdrop({ ...input, recipients: rows }), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.equal(direct.writes.filter((event) => event.stage === 'airdrop_stopped').length, 1);
 });
 
 test('a saved airdrop plan is restored when the final transfer request omits it', async () => {

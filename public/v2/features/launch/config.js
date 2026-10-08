@@ -4,7 +4,8 @@ function currentVanityConfig() {
   const selected = state.vanityCandidates.find((item) => item.publicKey === state.selectedVanityPublicKey) || null;
   // A saved any-case address stays valid even if the toggle is off now.
   const caseInsensitive = $('#vanityCaseInsensitive')?.checked === true || selected?.caseInsensitive === true;
-  const length = Number($('#vanityLength')?.value) || selected?.addressLength || null;
+  // A chosen address keeps its own length; the length field only filters the grind.
+  const length = selected ? (Number($('#vanityLength')?.value) || selected.addressLength ? selected.publicKey.length : null) : Number($('#vanityLength')?.value) || null;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
@@ -386,63 +387,6 @@ function selectedClassicQuoteVenue() {
 // neighbouring bands. It reads and writes the same percentage fields the plan
 // builder already consumes, so nothing downstream changes.
 
-function vortexAllocationModel() {
-  const pools = [];
-  (state.customPools || []).forEach((pool, index) => {
-    pools.push({
-      id: `custom-${index}`,
-      symbol: String(pool.quoteSymbol || `Q${index + 1}`).toUpperCase(),
-      mint: String(pool.quoteMint || ''),
-      percent: Number(pool.supplyPercent || 0),
-      minPercent: 0,
-      feeTier: Number(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
-    });
-  });
-  const venue = selectedClassicQuoteVenue();
-  const isFlywheel = venue.key === 'meme' || venue.key === 'reserve';
-  pools.push({
-    id: 'sol',
-    symbol: 'SOL',
-    mint: 'So11111111111111111111111111111111111111112',
-    percent: Number($('#mainPoolPercent')?.value || 0),
-    minPercent: 10,
-    feeTier: state.solPoolConfigIndex,
-  });
-  const quotePercent = Number($('#quotePoolPercent')?.value || 0);
-  // Always present: a pool at 0% still needs a boundary to drag open.
-  if (isFlywheel || quotePercent > 0) {
-    pools.push({
-      id: 'quote',
-      symbol: isFlywheel ? (venue.key === 'meme' ? 'FLY' : 'RESERVE') : 'USDC',
-      mint: isFlywheel ? (venue.quoteMint || '') : '',
-      percent: quotePercent,
-      minPercent: isFlywheel ? 10 : 0,
-      maxPercent: isFlywheel ? 30 : 100,
-      feeTier: state.pairPoolConfigIndex,
-    });
-  }
-  return {
-    pools,
-    depositSol: Number($('#liquidityBudgetSol')?.value || $('#launchSol')?.value || 0),
-    sweepDestination: $('#sweepDestination')?.value || '',
-  };
-}
-
-function applyVortexAllocation(pools = []) {
-  for (const pool of pools) {
-    if (pool.id === 'sol') {
-      if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(pool.percent);
-    } else if (pool.id === 'quote') {
-      if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(pool.percent);
-    } else if (String(pool.id).startsWith('custom-')) {
-      const index = Number(String(pool.id).slice('custom-'.length));
-      if (state.customPools?.[index]) state.customPools[index].supplyPercent = pool.percent;
-    }
-  }
-  renderFlywheelPick();
-  scheduleLaunchAutoSave();
-}
-
 // The flywheel vortex has been removed from the shell (no mount point and
 // no vortex script). Kept as a documented no-op so renderer call sites and
 // the full-input audit stay intact.
@@ -458,54 +402,6 @@ function renderFlywheelPick() {
   host.hidden = venueKey !== 'meme';
   mintEl.textContent = state.memeFlywheelMint ? shortAddress(state.memeFlywheelMint) : '—';
   mintEl.title = state.memeFlywheelMint || '';
-}
-
-// Draw a fresh memecoin from the flywheel pool (never repeating the current
-// pairing when the pool has alternatives).
-// Build a four-token vortex in one action: the flywheel pairing becomes the
-// hub and two more memecoins join SOL as circulating rings, 10% each.
-async function spinFlywheelVortex() {
-  const own = ownTokenMint();
-  const candidates = (state.flywheelPools?.meme || []).filter((mint) => !own || mint !== own);
-  if (candidates.length < 3) {
-    notify('The meme flywheel pool needs at least three mints for a four-token vortex');
-    return;
-  }
-  const drawn = [];
-  const rest = candidates.slice();
-  while (drawn.length < 3) {
-    drawn.push(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
-  }
-  const quoteShare = 10;
-  const solShare = 100 - quoteShare * drawn.length;
-  if (solShare < 10) {
-    notify('Not enough supply for that many flywheel pools');
-    return;
-  }
-
-  state.memeFlywheelMint = drawn[0];
-  state.customPools = drawn.slice(1).map((mint, index) => ({
-    id: `flywheel-ring-${index + 2}`,
-    quoteSymbol: `MEME${index + 2}`,
-    quoteMint: mint,
-    supplyPercent: quoteShare,
-    ammConfigIndex: DEFAULT_POOL_CONFIG_INDEX,
-    sliceShares: '100',
-    feeKeyRecipient: '',
-    ladderBands: 0,
-    ladderText: '',
-    supportSol: 0,
-    supportDepth: 12,
-  }));
-  if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(quoteShare);
-  if ($('#quotePoolVenue')) $('#quotePoolVenue').value = 'meme';
-  // SOL takes the rest, after any held-back or airdrop share.
-  if ($('#mainPoolPercent')) $('#mainPoolPercent').value = String(mainPoolRemainderPercent());
-
-  renderFlywheelPick();
-  renderVortexControl();
-  scheduleLaunchAutoSave();
-  notify(`Four-token vortex: SOL ${solShare}% + ${drawn.length} memecoins at ${quoteShare}%`);
 }
 
 // The token being launched cannot be its own flywheel pairing: a pool with the
@@ -600,17 +496,18 @@ function renderLaunchBudgetRecommendation() {
   const budgetSol = Math.max(0, parseNumericInput(budgetInput.value, 0));
   const strategy = launchBudgetRecommendation(budgetSol);
   $$('.launch-budget-presets button').forEach((button) => {
-    button.classList.toggle('is-selected', Number(button.dataset.budget) === budgetSol);
+    button.classList.toggle('is-selected', button.dataset.preset ? button.dataset.preset === launchPresetSelected() : Number(button.dataset.budget) === budgetSol);
   });
   const depth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
   target.innerHTML = '';
   target.title = '';
 }
 
-function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
+function applyLaunchBudgetRecommendation(value, { announce = true, fromInput = false } = {}) {
   const budgetSol = Math.max(0, Number(value) || 0);
   const strategy = launchBudgetRecommendation(budgetSol);
-  if ($('#liquidityBudgetSol')) $('#liquidityBudgetSol').value = String(budgetSol);
+  // While the amount is being typed it is left alone: rewriting "0." as "0" would make 0.1 untypable.
+  if ($('#liquidityBudgetSol') && !fromInput) $('#liquidityBudgetSol').value = String(budgetSol);
   if ($('#launchSol')) $('#launchSol').value = String(strategy.coreSol);
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = '0';
   // SOL takes the rest: held-back tokens, airdrop, and added pairs stay.
@@ -619,6 +516,8 @@ function applyLaunchBudgetRecommendation(value, { announce = true } = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(strategy.ladderBands);
   if ($('#supportSol')) $('#supportSol').value = String(strategy.supportSol);
   state.baseManualLadderText = '';
+  state.baseSupportLayersText = '';
+  state.launchPresetId = null;
   invalidateClassicOutputs();
   refreshClassicPreview({ includePoolEditor: true });
   renderLaunchBudgetRecommendation();
@@ -639,6 +538,7 @@ function currentClassicModel() {
   const targetMarketCapUsd = Math.max(0, parseNumericInput($('#targetMarketCapUsd').value, 25000));
   const manualBands = parseManualLadderBands(state.baseManualLadderText);
   const supportDepth = clampNumber(parseNumericInput(state.baseSupportDepth, 12), 1, 50);
+  const supportLayers = parseSupportLayers(state.baseSupportLayersText);
   const airdrop = currentAirdropPlan();
   const preallocation = currentPreallocationPlan();
 
@@ -660,7 +560,7 @@ function currentClassicModel() {
       ? classicSimpleLadderConfig(ladderBands)
       : { mode: 'off' },
     support: supportSol > 0
-      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth }
+      ? { mode: 'custom', solValue: supportSol, depthPct: supportDepth, ...(supportLayers.length ? { layers: supportLayers } : {}) }
       : { mode: 'off' },
   };
   const pools = [solPool];
@@ -723,8 +623,27 @@ function currentClassicModel() {
           mode: 'custom',
           solValue: customSupportSol,
           depthPct: clampNumber(parseNumericInput(pool.supportDepth, 12), 1, 50),
+          ...(parseSupportLayers(pool.supportLayersText).length ? { layers: parseSupportLayers(pool.supportLayersText) } : {}),
         }
         : { mode: 'off' },
+    });
+  });
+
+  // A pool set to Meteora is one locked position: no slices, ladder or support.
+  pools.forEach((pool) => {
+    const custom = state.customPools.find((item) => item.id === pool.id) || null;
+    const choice = pool.id === 'sol-main'
+      ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
+      : String(pool.id || '').endsWith('-flywheel')
+        ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+    if (choice?.venue !== 'meteora-damm-v2') return;
+    Object.assign(pool, {
+      venue: 'meteora-damm-v2',
+      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      distribution: [{ sharePercent: 100, recipient: null }],
+      ladder: { mode: 'off' },
+      support: { mode: 'off' },
     });
   });
 

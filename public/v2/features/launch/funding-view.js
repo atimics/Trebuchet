@@ -213,14 +213,14 @@ function manualPrefundStatus(item) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Not checked',
       className: 'warn',
-      detail: state.manualPrefund.polling ? 'Reading the selected wallet balance.' : 'Click Check balance or wait for the live poll.',
+      detail: state.manualPrefund.polling ? 'Reading the balance.' : 'Not checked yet.',
     };
   }
   if (!snapshot.fresh) {
     return {
       label: state.manualPrefund.polling ? 'Checking' : 'Recheck',
       className: 'warn',
-      detail: 'Balance snapshot is stale; wait for the live poll or click Check balance.',
+      detail: 'Out of date.',
     };
   }
 
@@ -482,7 +482,7 @@ function renderQuotePoolGuidance() {
           ? { label: `${autoCount} auto`, className: '' }
           : { label: 'Covered', className: '' };
   const detail = fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : fundingEstimateStatus.matchesConfig
       ? 'Every non-SOL pool is classified by the current funding estimate.'
       : 'Run the estimate before launch so flywheel quote-token funding is explicit.';
@@ -613,11 +613,11 @@ function renderQuoteAcquirePanel() {
   const savedAction = ['review_required', 'paused', 'recovery_required'].includes(job?.status) && job.walletPublicKey === selectedLaunchWalletPublicKey();
   const detail = savedAction ? (job.status === 'recovery_required' ? 'Review cleanup for the saved quote purchase.' : job.status === 'paused' ? 'Resume the saved purchase and verify its original receipts.' : 'Review the saved quote and its complete spending ceiling.')
     : fundingEstimateStatus.stale
-    ? 'Funding estimate is stale for this launch model; rerun it before acquiring quote tokens.'
+    ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
     : acquireStatus.stale
-      ? 'Previous quote acquire belongs to another wallet or launch model; run it again for the selected launch wallet.'
+      ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
       ? (routes.length
         ? `${routes.length} route${routes.length === 1 ? '' : 's'} can be auto-acquired from the launch wallet.`
@@ -641,8 +641,10 @@ function renderQuoteAcquirePanel() {
     ? '<button class="pill-button" type="button" data-action="clear-quote-acquire">Clear</button>'
     : '';
 
+  const manualPanel = renderManualPrefundPanel();
+  // Two parts, each its own tab on the Funding row: the acquire routes, then the tokens you send yourself.
   return `
-    <div class="quote-acquire-panel">
+    <div class="quote-acquire-panel" data-fund-part="acquire">
       <div class="quote-acquire-head">
         <span>
           <span class="eyebrow">Quote-token acquire</span>
@@ -665,8 +667,8 @@ function renderQuoteAcquirePanel() {
         ${rows || '<article><i class="fa-solid fa-wallet"></i><span><strong>No route rows yet</strong><small>Estimate funding first</small></span></article>'}
       </div>
       <div class="operator-toolbar compact">${button}${clear}</div>
-      ${renderManualPrefundPanel()}
       ${state.quoteAcquire.error ? `<p class="quote-acquire-error">${escapeHtml(state.quoteAcquire.error)}</p>` : ''}
     </div>
+    ${manualPanel ? `<div data-fund-part="prefund">${manualPanel}</div>` : ''}
   `;
 }

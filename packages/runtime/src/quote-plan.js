@@ -61,7 +61,7 @@ export function createQuotePlanBuilder({ connection, network, expectedGenesisHas
     async build({ walletPublicKey, autoSwapPlan }) {
       address(walletPublicKey);
       const rows = normalizeQuoteRequest(autoSwapPlan), purchases = [], preparedRows = [];
-      if (await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'Build quotes on the approved chain');
+      if (await connection.getGenesisHash() !== expectedGenesisHash) throw fail('NETWORK_MISMATCH', 'The RPC is on a different network from the app. Match them on the Mode bar or in Settings, then try again');
       for (const row of rows) {
         const output = await mint(row.quoteMint);
         if (row.quoteDecimals !== output.decimals) throw fail('QUOTE_DECIMALS_MISMATCH', 'Refresh the estimate with the quote mint decimals');

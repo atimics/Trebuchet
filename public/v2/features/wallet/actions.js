@@ -11,27 +11,6 @@ function addManagedWallet(wallet, { select = true } = {}) {
   }
 }
 
-function selectRecoveryWallet(publicKey, { switchToWallet = true } = {}) {
-  const wallet = pendingRecoveryWallet(publicKey);
-  if (!wallet) {
-    notify('Recovery wallet not found');
-    return null;
-  }
-  addManagedWallet({
-    ...wallet,
-    label: 'Recovery Wallet',
-    source: wallet.source || 'pending-recovery',
-    hasSecretKey: wallet.hasSecretKey === true,
-    hasMnemonic: wallet.hasMnemonic === true,
-  });
-  state.revealedWallet = null;
-  state.revealError = null;
-  if (switchToWallet) setView('wallet');
-  renderAll();
-  notify('Recovery wallet selected');
-  return wallet;
-}
-
 // A locked PIN asks for the PIN first, then carries on with what was asked.
 async function ensureRecoveryPinUnlocked() {
   if (!(state.secretPin?.configured && state.secretPin?.locked)) return true;
@@ -44,7 +23,6 @@ async function generateManagedWallet() {
     const wallet = await state.apiClient.generateManagedWallet();
     addManagedWallet(wallet);
     renderAll();
-    notify('Launch wallet created');
     return wallet;
   }
 
@@ -73,7 +51,6 @@ async function importManagedWallet() {
   const wallet = await state.apiClient.importManagedWallet(secret);
   addManagedWallet(wallet);
   renderAll();
-  notify('Wallet imported into Trebuchet');
 }
 
 async function refreshSecretPinStatus({ reloadBoot = false } = {}) {
@@ -154,7 +131,6 @@ async function unlockSecretPin({ reason = 'unlock' } = {}) {
     if (selectedLaunchWalletPublicKey() && !walletIsUnlocked()) {
       await refreshLocalApiState();
       if (walletIsUnlocked()) {
-        notify('Launch wallet ready');
         return true;
       }
       if (walletLockReason() === 'unreadable') {
@@ -189,7 +165,6 @@ async function unlockLaunchWalletAndContinue() {
   state.launchWorkspace = 'configure';
   renderAll();
   setLaunchWorkspace('configure');
-  notify('Launch wallet ready. Continue with token and pools.');
   return true;
 }
 
@@ -413,7 +388,6 @@ async function loadWalletQr(publicKey = selectedLaunchWalletPublicKey()) {
     state.managedWallets = state.managedWallets.map((item) => (
       item.publicKey === publicKey ? { ...item, qrCode: result.qrCode } : item
     ));
-    notify('Funding QR loaded');
   } catch (error) {
     state.walletQr = {
       publicKey,
@@ -449,7 +423,6 @@ async function revealWalletSecret(publicKey = selectedLaunchWalletPublicKey()) {
   renderAll();
   try {
     state.revealedWallet = await state.apiClient.revealPendingWallet(publicKey);
-    notify('Recovery secret revealed');
   } catch (error) {
     state.revealedWallet = null;
     state.revealError = error.message || 'Recovery secret reveal failed';
@@ -465,7 +438,6 @@ function clearRevealedWalletSecret(publicKey = selectedLaunchWalletPublicKey()) 
   state.revealedWallet = null;
   state.revealError = null;
   renderWallet();
-  notify('Recovery secret hidden');
 }
 
 async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()) {
@@ -474,25 +446,19 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     return;
   }
   if (state.fullRunRunning || state.realExecutionRunning) {
-    notify('Wait for the launch operation to finish before discarding a wallet');
+    notify('Wait for the launch operation to finish before hiding a wallet');
     return;
   }
   if (state.apiStatus !== 'connected' || !state.apiClient?.dismissPendingWallet) {
-    notify('Wallet discard requires the Trebuchet desktop app');
+    notify('Hiding a wallet requires the Trebuchet desktop app');
     return;
   }
-  const typed = await openOperatorPrompt({
-    eyebrow: 'Destructive wallet operation',
-    title: 'Discard local recovery entry',
-    detail: `This deletes Trebuchet's local secret for ${fullAddress(publicKey)}. Continue only if the wallet is empty, intentionally abandoned, or backed up elsewhere.`,
-    label: 'Type the full wallet address',
-    placeholder: publicKey,
-    confirmLabel: 'Discard local secret',
-    danger: true,
-    message: 'The wallet address must match exactly. This deletion cannot be undone.',
-    validate: (value) => value === publicKey ? null : 'Full wallet address does not match.',
+  const ok = await confirmOperatorAction({
+    title: 'Hide this wallet',
+    detail: `${fullAddress(publicKey)} leaves this list. Trebuchet keeps its key.`,
+    confirmLabel: 'Hide',
   });
-  if (!typed) return;
+  if (!ok) return;
 
   state.discardingWalletPublicKey = publicKey;
   renderAll();
@@ -512,7 +478,7 @@ async function discardSelectedWallet(publicKey = selectedLaunchWalletPublicKey()
     state.selectedWalletPublicKey = nextWallet?.publicKey || null;
     state.accountId = nextWallet?.publicKey || 'launch';
     await refreshLocalApiState();
-    notify('Local wallet recovery entry discarded');
+    notify('Wallet hidden; its key is kept');
   } catch (error) {
     notify(error.message || 'Wallet discard failed');
   } finally {

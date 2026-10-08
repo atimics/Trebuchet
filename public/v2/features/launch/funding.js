@@ -129,8 +129,27 @@ function renderFundingReceipt(estimate) {
       ${split}
       <div class="funding-receipt-total"><span>Total</span><strong>${Number(estimate.totalSol || 0).toFixed(4)} SOL</strong></div>
       ${manualHtml}
-      <details class="funding-receipt-lines"><summary>Breakdown</summary><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></details>
     </div>`;
+}
+
+// The line-by-line cost: its own tab on the Funding row, not a fold under the total.
+function renderFundingBreakdown(estimate) {
+  const lines = Array.isArray(estimate?.solBreakdown) ? estimate.solBreakdown : [];
+  if (!lines.length) return '';
+  const row = (label, sol, note = '') => `
+    <li><span>${escapeHtml(label)}${note ? `<small>${escapeHtml(note)}</small>` : ''}</span><strong>${Number(sol).toFixed(4)}</strong></li>`;
+  const groups = FUNDING_RECEIPT_GROUPS.map((group) => ({ ...group, sol: 0, count: 0 }));
+  const other = [];
+  lines.forEach((line) => {
+    const group = groups.find((item) => item.test.test(String(line.label || '')));
+    if (group) { group.sol += Number(line.sol || 0); group.count += 1; } else other.push(line);
+  });
+  const perPool = lines.filter((line) => /^Pool \d+/.test(String(line.label || '')));
+  const rows = [
+    ...groups.filter((group) => group.sol > 0).map((group) => row(group.label, group.sol)),
+    ...other.map((line) => row(line.label, line.sol)),
+  ].join('');
+  return `<div class="funding-receipt-lines"><ul>${perPool.length ? lines.map((line) => row(line.label, line.sol)).join('') : rows}</ul></div>`;
 }
 
 function renderFundingWalletHint({ compact = false } = {}) {
@@ -317,6 +336,7 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
       error: null,
       lastUpdatedAt: new Date().toISOString(),
     };
+    renderRecoverLedger();
     if (!quiet) notify('Launch wallet balance refreshed');
     refreshDestinations({ force: true }).catch(() => null);
     return balance;
@@ -358,7 +378,6 @@ function refreshClassicPreview({ includePoolEditor = false } = {}) {
   renderAirdropPanel();
   renderReportPanel();
   renderClassicBridge();
-  renderParityPanel();
   renderQueue();
   drawLaunchCanvas();
 }
@@ -383,39 +402,101 @@ function hubPickerRows(catalog = {}, records = []) {
   return rows;
 }
 
+// The picker is a page of the Pairs slide, not a list inside a scrolling box: the pair list steps
+// aside while it is open, the token CA is the first thing in it, and the tokens are a fixed grid
+// that fit the frame, with a pager when there are more.
+const HUB_PICKER_PAGE_SIZE = 9;
+
+// As many tokens as fit the space left in the frame, in whole rows: a tall window shows them all,
+// a short one pages. Measured after each draw; a change redraws once.
+let hubPickerFitSize = HUB_PICKER_PAGE_SIZE;
+function measureHubPickerFit() {
+  const grid = $('#hubPicker .hub-picker-grid');
+  const frame = $('#launchWorkspaceViewport');
+  if (!grid?.getBoundingClientRect || !frame?.getBoundingClientRect || typeof getComputedStyle !== 'function') return hubPickerFitSize;
+  const tile = grid.firstElementChild;
+  const tileHeight = tile ? tile.getBoundingClientRect().height + 4 : 60;
+  const columns = Math.max(1, getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length);
+  const bottom = Math.min(frame.getBoundingClientRect().bottom, window.innerHeight);
+  const pagerRoom = 56;
+  const rows = Math.max(2, Math.floor((bottom - grid.getBoundingClientRect().top - pagerRoom) / tileHeight));
+  return rows * columns;
+}
+globalThis.window?.addEventListener?.('resize', () => {
+  if (!hubPicker?.open) return;
+  window.clearTimeout(measureHubPickerFit.timer);
+  measureHubPickerFit.timer = window.setTimeout(() => renderHubPicker(), 120);
+});
+
 function renderHubPicker() {
   const host = $('#hubPicker');
   if (!host) return;
   host.hidden = !hubPicker.open;
+  const editor = $('#supplyEditor');
+  if (editor) editor.hidden = hubPicker.open;
   if (!hubPicker.open) return;
   const rows = hubPickerRows(hubPicker.catalog || {}, state.discovery.records);
+  const pageSize = hubPickerFitSize;
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  hubPicker.page = Math.min(Math.max(0, Number(hubPicker.page) || 0), pages - 1);
+  const shown = rows.slice(hubPicker.page * pageSize, (hubPicker.page + 1) * pageSize);
   const result = hubPicker.result;
   const pool = result?.solPool;
   host.innerHTML = `
-    <div class="hub-picker-heading"><strong>Choose a hub token</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker">Close</button></div>
-    <div class="hub-picker-scroll" aria-label="Hub tokens">
-      ${['default', 'discovery'].map((source) => `<p class="hub-picker-group">${source === 'default' ? 'Defaults' : 'From Discovery · SOL pools'}</p>
-        ${rows.filter((hub) => hub.source === source).map((hub) => `<button class="hub-picker-token" type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}">
-          <strong>${escapeHtml(hub.name || hub.symbol || shortAddress(hub.mint))}</strong><span>${escapeHtml(hub.symbol || 'HUB')} / SOL</span><code>${escapeHtml(shortAddress(hub.mint))}</code>
-        </button>`).join('')}
-`).join('')}
+    <div class="hub-picker-heading"><strong>Add pair</strong><button type="button" class="pill-button" data-action="close-hub-picker" aria-label="Close hub picker"><i class="fa-solid fa-xmark" aria-hidden="true"></i><span>Close</span></button></div>
+    <div class="hub-picker-find">
+      <input id="hubTokenCa" aria-label="Token CA" value="${escapeHtml(hubPicker.mint)}" placeholder="Token CA" autocomplete="off" spellcheck="false">
+      <button class="pill-button primary" type="button" data-action="find-hub-pool">Find pool</button>
     </div>
-    <label class="hub-picker-ca" for="hubTokenCa">Token CA<input id="hubTokenCa" value="${escapeHtml(hubPicker.mint)}" placeholder="Paste any Solana token CA" autocomplete="off" spellcheck="false"></label>
-    <button class="pill-button" type="button" data-action="find-hub-pool">Find pool</button>
     <p class="hub-picker-status" role="status">${escapeHtml(hubPicker.loading ? 'Finding a pool…' : hubPicker.error)}</p>
-    ${result ? `<div class="hub-picker-result"><strong>${escapeHtml(result.name)} · ${escapeHtml(result.symbol)} / ${escapeHtml(result.via?.symbol || 'SOL')}</strong>
-      <small>Token CA</small><code>${escapeHtml(result.mint)}</code>
-      <small>${escapeHtml(pool.dex)} · existing ${escapeHtml(result.via?.symbol || 'SOL')} pool</small><code>${escapeHtml(pool.address)}</code>
-      <small>${result.via ? `No SOL pool: buys route SOL → ${escapeHtml(result.via.symbol)} → ${escapeHtml(result.symbol)}. ` : ''}Found through ${escapeHtml(pool.source)}. Pair checks run after selection.</small>
-      <button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button></div>` : ''}`;
+    ${result ? `<div class="hub-picker-result">
+      ${hubTileHtml({ ...result, mint: result.mint }, { tag: 'div', trailing: `<button class="pill-button primary" type="button" data-action="use-hub-token">Use ${escapeHtml(result.symbol)}</button>`, status: `${pool.dex}${result.via ? ` · routes SOL → ${result.via.symbol} → ${result.symbol}` : ''} · ${pool.source}` })}</div>` : ''}
+    <div class="hub-picker-grid" role="group" aria-label="Hub tokens">
+      ${shown.map((hub) => hubTileHtml(hub, { tag: 'button', attrs: `type="button" data-action="find-hub-pool" data-hub-mint="${escapeHtml(hub.mint)}" title="${escapeHtml(hub.mint)}"` })).join('')}
+    </div>
+    ${pages > 1 ? `<div class="hub-picker-pager"><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="-1" aria-label="Previous tokens" ${hubPicker.page === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button><span>${hubPicker.page + 1} / ${pages}</span><button type="button" class="pill-button" data-action="hub-picker-page" data-dir="1" aria-label="Next tokens" ${hubPicker.page >= pages - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button></div>` : ''}`;
+  hydrateCoinCards();
+  requestHubLogos(shown.map((hub) => hub.mint));
+  const fit = measureHubPickerFit();
+  if (fit !== hubPickerFitSize && rows.length > 0) {
+    hubPickerFitSize = fit;
+    renderHubPicker();
+  }
+}
+
+// The standard coin tile, as on Coins and Discovery. Logos are read once per token and kept.
+const hubLogos = new Map();
+const hubLogoPending = new Set();
+
+function hubTileHtml(hub = {}, options = {}) {
+  const mint = hub.mint || hubPicker.mint || '';
+  return coinCardHtml(
+    { name: hub.name || hub.symbol, symbol: hub.symbol, address: mint, image: hub.image || hub.imageUrl || hub.logoDataUrl || hubLogos.get(mint) || '' },
+    { variant: 'row', ...options },
+  );
+}
+
+function requestHubLogos(mints) {
+  const missing = mints.filter((mint) => mint && !hubLogos.has(mint) && !hubLogoPending.has(mint));
+  if (!missing.length || !state.apiClient?.getTokenLogos || state.apiStatus !== 'connected') return;
+  missing.forEach((mint) => hubLogoPending.add(mint));
+  state.apiClient.getTokenLogos(missing)
+    .then((logos) => { missing.forEach((mint) => hubLogos.set(mint, logos?.[mint] || null)); })
+    .catch(() => { missing.forEach((mint) => hubLogos.set(mint, null)); })
+    .finally(() => {
+      missing.forEach((mint) => hubLogoPending.delete(mint));
+      if (hubPicker.open) renderHubPicker();
+      // Pool lines show these logos too.
+      const editor = $('#supplyEditor');
+      if (editor?.contains && !editor.contains(document.activeElement)) renderSupplyEditor();
+    });
 }
 
 async function openHubPicker() {
   const requestId = hubPicker.requestId + 1;
-  hubPicker = { open: true, requestId, catalog: null, result: null, loading: false, error: '', mint: '' };
+  hubPicker = { open: true, requestId, catalog: null, result: null, loading: false, error: '', mint: '', page: 0 };
   const picker = hubPicker;
   renderHubPicker();
-  $('#hubPicker')?.scrollIntoView({ block: 'nearest' });
   $('#hubTokenCa')?.focus({ preventScroll: true });
   try {
     if (!state.apiClient?.listFlywheelHubs) throw new Error('Connect to the Trebuchet app to load hub tokens.');
@@ -483,10 +564,51 @@ function useHubToken() {
   resolveCustomQuoteToken(poolId, { quiet: true }).catch(() => {});
 }
 
-function addCustomPool(hub = null) {
-  state.customPoolCounter += 1;
+// Every pair has its own id: its settings are looked up by it, so two pairs sharing
+// one would edit the same pair and show the same values.
+function nextCustomPoolId() {
+  let id;
+  do {
+    state.customPoolCounter += 1;
+    id = `custom-pool-${state.customPoolCounter}`;
+  } while (state.customPools.some((pool) => pool.id === id));
+  return id;
+}
+
+// Turns the flywheel preset pair into an ordinary pair with the same token, share, fee tier and
+// start premium, so its slices, ladder and support can be set like any other pair's.
+function customizeQuotePool() {
+  const venue = selectedClassicQuoteVenue();
+  const percent = parsePercentInput($('#quotePoolPercent').value, 0);
+  if (percent <= 0 || !venue.quoteMint) return;
+  const id = nextCustomPoolId();
   state.customPools.push({
-    id: `custom-pool-${state.customPoolCounter}`,
+    id,
+    quoteSymbol: venue.symbol,
+    quoteMint: venue.quoteMint,
+    supplyPercent: percent,
+    ammConfigIndex: state.pairPoolConfigIndex,
+    startPremiumPct: state.pairStartPremiumPct,
+    sliceShares: '100',
+    feeKeyRecipient: '',
+    ladderBands: 0,
+    ladderText: '',
+    supportSol: 0,
+    supportDepth: 12,
+    supportLayersText: '',
+  });
+  $('#quotePoolPercent').value = '0';
+  $('#quotePoolPercent').dispatchEvent(new Event('input', { bubbles: true }));
+  state.supplyOpenRow = `custom:${id}`;
+  invalidateClassicOutputs();
+  renderAll();
+  scheduleLaunchAutoSave();
+  notify(`${venue.symbol} pair is now editable`);
+}
+
+function addCustomPool(hub = null) {
+  state.customPools.push({
+    id: nextCustomPoolId(),
     quoteSymbol: hub?.symbol || 'QUOTE',
     quoteMint: hub?.mint || '',
     supplyPercent: 5,
@@ -497,6 +619,7 @@ function addCustomPool(hub = null) {
     ladderText: '',
     supportSol: 0,
     supportDepth: 12,
+    supportLayersText: '',
   });
   invalidateClassicOutputs();
   renderAll();

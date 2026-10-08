@@ -1063,20 +1063,20 @@ export async function handleCreateLp(req, res, opts = {}) {
         await sleep(1500);
         // Fake but plausible tick range below currentTick — real ranges
         // depend on depth and spacing; the values here are illustrative.
-        const tickLower = -3000;
-        const tickUpper = -100;
-        supportPositions.push({
-          tickLower,
-          tickUpper,
-          depthPct,
-          // Synthetic raw amount, just for display. Real value would be
-          // (solValue * solUsd / quoteUsd) * 10^quoteDecimals; we don't
-          // need that precision in demo since the launch report shows
-          // the SOL-side budget which the user already knows.
-          quoteRaw: '0',
-          nftMint: demoAddress(),
-          locked: false,
-          txIds: { open: demoSignature(), lock: null },
+        // One position per layer when the plan has layers, else the single range.
+        const layers = Array.isArray(supportCfg.layers) && supportCfg.layers.length ? supportCfg.layers : [null];
+        layers.forEach((layer, layerIndex) => {
+          supportPositions.push({
+            tickLower: -3000 - layerIndex * 1000,
+            tickUpper: -100 - layerIndex * 1000,
+            depthPct: layer ? Number(((1 - Number(layer.lowerMultiplier)) * 100).toFixed(2)) : depthPct,
+            ...(layer ? { lowerMultiplier: Number(layer.lowerMultiplier), upperMultiplier: Number(layer.upperMultiplier) } : {}),
+            // Synthetic raw amount, just for display.
+            quoteRaw: '0',
+            nftMint: demoAddress(),
+            locked: false,
+            txIds: { open: demoSignature(), lock: null },
+          });
         });
         // Deduct the SOL spend from the wallet. For SOL pools the support
         // is funded directly in SOL; for non-SOL pools the SOL has already

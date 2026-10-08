@@ -95,11 +95,11 @@ test('assertLogoConstraints: 200×200 exactly is allowed (limit is inclusive)', 
   assert.deepEqual({ w: r.width, h: r.height }, { w: 200, h: 200 });
 });
 
-test('assertLogoConstraints: 201px in EITHER dimension is rejected with actual size named', () => {
-  assert.throws(() => assertLogoConstraints(pngOf(201, 100)), /201×100.*200×200/s);
-  assert.throws(() => assertLogoConstraints(pngOf(100, 201)), /100×201/);
-  // The old client limit must no longer pass anywhere.
-  assert.throws(() => assertLogoConstraints(pngOf(1024, 1024)), /1024×1024/);
+test('assertLogoConstraints: 1025px in EITHER dimension is rejected with actual size named', () => {
+  assert.throws(() => assertLogoConstraints(pngOf(1025, 100)), /1025×100.*1024×1024/s);
+  assert.throws(() => assertLogoConstraints(pngOf(100, 1025)), /100×1025/);
+  // A 320px logo under the byte cap is fine: pixels are not the chain's limit.
+  assert.doesNotThrow(() => assertLogoConstraints(pngOf(320, 320)));
 });
 
 test('assertLogoConstraints: byte cap rejects a small-pixel, huge-byte file', () => {
@@ -118,18 +118,14 @@ test('assertLogoConstraints: zero-dimension image is rejected as corrupt', () =>
 });
 
 test('constants: limits match the product rule and stay in sync with the frontend', () => {
-  assert.equal(LOGO_MAX_DIMENSION_PX, 200, 'the product rule is 200×200 max');
-  // The frontend's MAX_LOGO_DIMENSION / MAX_LOGO_BYTES (preamble.js) must
-  // agree with the server's — a looser client doesn't bypass anything, it
-  // just moves the rejection to a worse moment (after upload, with a less
-  // friendly error). Pin both pairs together.
-  const preamble = readFileSync(new URL('../public/modules/preamble.js', import.meta.url), 'utf8');
-  const dimMatch = preamble.match(/const MAX_LOGO_DIMENSION = (\d+);/);
-  const bytesMatch = preamble.match(/const MAX_LOGO_BYTES = (\d+) \* 1024;/);
-  assert.ok(dimMatch, 'frontend MAX_LOGO_DIMENSION must exist');
-  assert.ok(bytesMatch, 'frontend MAX_LOGO_BYTES must exist');
-  assert.equal(Number(dimMatch[1]), LOGO_MAX_DIMENSION_PX,
-    'frontend dimension cap must equal the server cap');
-  assert.equal(Number(bytesMatch[1]) * 1024, LOGO_MAX_BYTES,
-    'frontend byte cap must equal the server cap');
+  assert.equal(LOGO_MAX_DIMENSION_PX, 1024, 'the product rule is 1024×1024 max; bytes are the real limit');
+  // The page's caps (public/v2/features/shell/state.js) must agree with the server's: a looser
+  // page doesn't bypass anything, it just moves the rejection to after the upload.
+  const page = readFileSync(new URL('../public/v2/features/shell/state.js', import.meta.url), 'utf8');
+  const dimMatch = page.match(/const CLASSIC_LOGO_MAX_DIMENSION = (\d+);/);
+  const bytesMatch = page.match(/const CLASSIC_LOGO_MAX_BYTES = (\d+) \* 1024;/);
+  assert.ok(dimMatch, 'page dimension cap must exist');
+  assert.ok(bytesMatch, 'page byte cap must exist');
+  assert.equal(Number(dimMatch[1]), LOGO_MAX_DIMENSION_PX, 'page dimension cap must equal the server cap');
+  assert.equal(Number(bytesMatch[1]) * 1024, LOGO_MAX_BYTES, 'page byte cap must equal the server cap');
 });

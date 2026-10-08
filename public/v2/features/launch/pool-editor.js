@@ -73,6 +73,142 @@ const SUPPLY_PAIR_COLORS = ['#78a8ff', '#e07ab0', '#5fc7c7', '#f08a5d', '#8fd06a
 
 // One row per place the supply goes. Pool % inputs write through to the
 // existing form fields (or custom pool state), so the launch model is unchanged.
+// What a fee tier means for a pool: the swap fee, and how coarse its price steps are
+// (one tick is 0.01%, a tier's spacing is that many ticks).
+// A small picture of a pool's shape, in the pool's colour: its main position, its ladder bands above
+// the start price, and its support (layers or one range) below it. The same drawing as the price map,
+// without the words.
+function poolGlyphSvg(pool, color) {
+  if (!pool) return '<span class="supply-glyph" aria-hidden="true"></span>';
+  const W = 72, H = 28, START = 26, BASE = 23, RIGHT = 70;
+  const tint = (pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(1000));
+  const parts = [`<rect x="${START}" y="${BASE - 3}" width="${RIGHT - START}" height="3" style="fill:${tint(45)}"/>`];
+  let bands = [];
+  if (pool.ladder?.mode === 'manual') {
+    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent }));
+  } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+    const count = pool.ladder.bandCount;
+    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1 }));
+  }
+  const top = Math.max(1e-9, ...bands.map((band) => band.weight));
+  bands.forEach((band) => {
+    const h = 4 + 13 * (band.weight / top);
+    const x = xOf(band.lo);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - 3 - h).toFixed(1)}" width="${Math.max(1.5, xOf(band.hi) - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(60)}"/>`);
+  });
+  const support = pool.support?.mode === 'custom' ? pool.support : null;
+  if (support) {
+    const layers = Array.isArray(support.layers) && support.layers.length
+      ? support.layers
+      : [{ sharePercent: 100, lowerMultiplier: 1 - (Number(support.depthPct) || 12) / 100, upperMultiplier: 1 }];
+    const reach = Math.max(12, ...layers.map((layer) => (1 - layer.lowerMultiplier) * 100)) * 1.05;
+    const xDown = (pct) => START - (START - 2) * (pct / reach);
+    const topShare = Math.max(...layers.map((layer) => layer.sharePercent));
+    layers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 5 + 14 * (layer.sharePercent / topShare);
+      parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(1.5, x2 - x1 - 0.8).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(34)};stroke:${color};stroke-width:.6"/>`);
+    });
+  }
+  parts.push(`<line x1="${START}" x2="${START}" y1="3" y2="${BASE + 2}" style="stroke:${color};stroke-width:1.2"/>`);
+  parts.push(`<line x1="1" x2="${RIGHT}" y1="${BASE}" y2="${BASE}" style="stroke:var(--line-strong);stroke-width:.8"/>`);
+  return `<svg class="supply-glyph" viewBox="0 0 ${W} ${H}" aria-hidden="true" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
+}
+
+function feeTierInfo(index) {
+  const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+  const tier = tiers.find((item) => item.index === Math.floor(Number(index)));
+  if (!tier) return null;
+  return {
+    index: tier.index,
+    fee: Number(tier.tradeFeeRate) / 10000,
+    spacing: tier.tickSpacing,
+    step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
+    rank: tiers.indexOf(tier),
+    count: tiers.length,
+  };
+}
+
+function rowTierIndex(row) {
+  if (row.key === 'sol') return state.solPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  if (row.key === 'quote') return state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return pool?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX;
+}
+
+// The fee tier on the pool's own line: a short select showing the fee, so it reads and changes
+// without opening the pool.
+const METEORA_FEES = [25, 50, 100, 200];
+const METEORA_RANGES_UI = [[100, '×100'], [1000, '×1,000'], [10000, '×10,000']];
+const RAYDIUM_ROW_TIERS = [4, 5, 1, 3];
+
+// Where a pool's venue and its fee live: the SOL pool and the preset pair in state, an added pair on the pair itself.
+function poolVenueFor(row) {
+  if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
+  if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
+  const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
+}
+
+function rowIsMeteora(row) {
+  return poolVenueFor(row).venue === 'meteora-damm-v2';
+}
+
+function setPoolVenueChoice(rowKey, patch) {
+  if (rowKey === 'sol') {
+    if (patch.venue) state.solPoolVenue = patch.venue;
+    state.solPoolDamm = { ...state.solPoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.solPoolConfigIndex = patch.tierIndex;
+    return;
+  }
+  if (rowKey === 'quote') {
+    if (patch.venue) state.quotePoolVenue = patch.venue;
+    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
+    return;
+  }
+  const pool = state.customPools.find((item) => `custom:${item.id}` === rowKey);
+  if (!pool) return;
+  if (patch.venue) pool.venue = patch.venue;
+  if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
+  if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
+}
+
+
+// A row of buttons, one pressed: the venue (Raydium or Meteora) and the fee, under the pool's name.
+function toggleGroupHtml({ label, action, rowKey, options, selected, extra = '' }) {
+  return `<span class="pool-toggle" role="group" aria-label="${escapeHtml(label)}">${options.map(([value, text, title]) => (
+    `<button type="button" class="${String(value) === String(selected) ? 'is-on' : ''}" data-action="${action}" data-row-key="${escapeHtml(rowKey)}" data-value="${escapeHtml(String(value))}" data-supply-key="${escapeHtml(rowKey)}:${action}:${escapeHtml(String(value))}" aria-pressed="${String(value) === String(selected)}"${title ? ` title="${escapeHtml(title)}"` : ''}${extra}>${escapeHtml(text)}</button>`
+  )).join('')}</span>`;
+}
+
+function rowSwitchesHtml(row) {
+  const meteora = rowIsMeteora(row);
+  const venue = toggleGroupHtml({
+    label: `${row.label} venue`, action: 'set-pool-venue', rowKey: row.key, selected: meteora ? 'meteora-damm-v2' : 'raydium',
+    options: [['raydium', 'Raydium', 'Ranges: slices, ladder bands and support'], ['meteora-damm-v2', 'Meteora', 'One position, locked when the pool is made']],
+  });
+  let fee;
+  if (meteora) {
+    const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
+    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+  } else {
+    const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
+    const selected = Math.floor(Number(rowTierIndex(row)));
+    const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
+    fee = toggleGroupHtml({
+      label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+        .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
+    });
+  }
+  return `<span class="pool-switches">${venue}${fee}</span>`;
+}
+
 function supplyEditorRows() {
   const topology = currentClassicModel();
   const rows = [];
@@ -133,7 +269,6 @@ const SUPPLY_SHARE_INPUT_IDS = new Set([
   'preallocationSupplyPercent',
   'airdropSupplyPercent',
   'airdropCsvText',
-  'airdropWallets',
   'airdropAutoFit',
   'tokenSupply',
 ]);
@@ -192,6 +327,12 @@ function renderSupplyEditor() {
 
   const supply = parseWholeNumber($('#tokenSupply').value) || 1000000000;
   const rows = supplyEditorRows();
+  const planPools = currentClassicModel().pools;
+  const planPoolFor = (row) => (row.key === 'sol'
+    ? planPools.find((pool) => pool.id === 'sol-main')
+    : row.key === 'quote'
+      ? planPools.find((pool) => String(pool.id).endsWith('-flywheel'))
+      : planPools.find((pool) => pool.id === row.poolId));
   const total = Math.round(rows.reduce((sum, row) => sum + row.percent, 0) * 100) / 100;
   const remainder = Math.round((100 - total) * 100) / 100;
   const pools = rows.filter((row) => row.kind === 'pool');
@@ -221,10 +362,12 @@ function renderSupplyEditor() {
     const poolsHead = target.querySelector('[data-supply-pools-head]');
     if (poolsHead) poolsHead.textContent = `${pools.length} · ${pct(poolPercent)}`;
     rows.forEach((row) => {
-      const amount = target.querySelector(`[data-supply-amount="${CSS.escape(row.key)}"]`);
-      if (amount) amount.textContent = compactAmount(supply * row.percent / 100);
-      const percentInput = target.querySelector(`input[data-supply-key="${CSS.escape(row.key)}"]`);
-      if (percentInput && percentInput !== active) percentInput.value = String(row.percent);
+      target.querySelectorAll(`[data-supply-amount="${CSS.escape(row.key)}"]`).forEach((amount) => {
+        amount.textContent = compactAmount(supply * row.percent / 100);
+      });
+      target.querySelectorAll(`input[data-supply-key="${CSS.escape(row.key)}"]`).forEach((percentInput) => {
+        if (percentInput !== active) percentInput.value = String(row.percent);
+      });
     });
     target.querySelector('.supply-total')?.replaceWith(
       document.createRange().createContextualFragment(totalHtml),
@@ -258,6 +401,13 @@ function renderSupplyEditor() {
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
   const settingsHtml = (row) => {
     const mapHost = '<div class="supply-field-wide pool-map" data-pool-map></div>';
+    if (rowIsMeteora(row)) {
+      const range = Number(poolVenueFor(row).damm?.rangeMultiple) || 1000;
+      return `
+        ${mapHost}
+        <div class="supply-field supply-field-wide"><span>Price range</span>${toggleGroupHtml({ label: `${row.label} price range`, action: 'set-pool-range', rowKey: row.key, selected: range, options: METEORA_RANGES_UI.map(([value, text]) => [value, text]) })}</div>
+        <p class="supply-field-wide supply-settings-empty">One position with this share of the supply, locked when the pool is made. No slices, ladder or support; buyers bring the ${escapeHtml(row.label)}.</p>`;
+    }
     if (row.key === 'sol') {
       return `
         ${mapHost}
@@ -265,8 +415,18 @@ function renderSupplyEditor() {
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
+        ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
+    }
+    // The flywheel pair comes from a preset, not a custom pair: it has the two settings the preset
+    // exposes, and can become a custom pair when it needs slices, a ladder or support.
+    if (row.key === 'quote') {
+      return `
+        ${mapHost}
+        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
     if (!pool) return '<p class="supply-settings-empty">This pool uses the default settings.</p>';
@@ -279,10 +439,18 @@ function renderSupplyEditor() {
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
       ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
+      ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
       ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
   };
+
+  // An accordion: the open pool's settings open under its row and every other row stays put.
+  // A panel that is opening starts closed and one that is closing starts open, so the height
+  // eases whichever way it goes, even when the app redraws more than once per click.
+  const shownKey = target.dataset.rendered === '1' ? (target.dataset.shownKey || '') : (state.supplyOpenRow || '');
+  const wantsOpen = (row) => state.supplyOpenRow === row.key;
+  const wasOpen = (row) => shownKey === row.key;
 
   const rowHtml = (row) => {
     const input = row.poolId
@@ -295,33 +463,58 @@ function renderSupplyEditor() {
         : '<span class="supply-remove-spacer"></span>';
     const editingMint = row.poolId && (row.needsMint || focusKey === `${row.key}:mint`);
     const detail = editingMint
-      ? `<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`
+      ? (`<input class="supply-mint" data-custom-pool-field="quoteMint" data-pool-id="${escapeHtml(row.poolId)}" data-supply-key="${escapeHtml(row.key)}:mint" value="${escapeHtml(row.mint || '')}" placeholder="Paste token mint" autocomplete="off" spellcheck="false">`)
       : `<small>${escapeHtml(row.detail)}</small>`;
     return `
       <li class="supply-row${row.kind === 'pool' && state.supplyOpenRow === row.key ? ' is-open' : ''}">
-        <i class="supply-swatch" style="background:${row.color}"></i>
+        ${supplyRowMarkHtml(row)}
         <span class="supply-name"><strong>${escapeHtml(row.label)}</strong>${detail}</span>
         <span class="supply-amount" data-supply-amount="${escapeHtml(row.key)}">${compactAmount(supply * row.percent / 100)}</span>
+        ${row.kind === 'pool' ? poolGlyphSvg(planPoolFor(row), row.color) : '<span class="supply-glyph"></span>'}
         <label class="supply-percent"><input type="text" inputmode="decimal" autocomplete="off" value="${escapeHtml(String(row.percent))}" ${input} data-supply-key="${escapeHtml(row.key)}" aria-label="${escapeHtml(row.label)} percent of supply"><span>%</span></label>
         ${row.kind === 'pool'
           ? `<button class="supply-gear ${state.supplyOpenRow === row.key ? 'is-open' : ''}" type="button" data-action="supply-toggle-settings" data-supply-row="${escapeHtml(row.key)}" aria-expanded="${state.supplyOpenRow === row.key}" aria-label="${escapeHtml(row.label)} settings"><i class="fa-solid fa-sliders"></i></button>`
           : '<span class="supply-remove-spacer"></span>'}
         ${remove}
+        ${row.kind === 'pool' ? rowSwitchesHtml(row) : ''}
       </li>
-      ${row.kind === 'pool' && state.supplyOpenRow === row.key ? `<li class="supply-settings">${settingsHtml(row)}</li>` : ''}`;
+      ${row.kind === 'pool' && (wantsOpen(row) || wasOpen(row)) ? `<li class="supply-settings-wrap${wasOpen(row) ? ' is-open' : ''}" data-settings-for="${escapeHtml(row.key)}"><div class="supply-settings">${settingsHtml(row)}</div></li>` : ''}`;
   };
 
   target.innerHTML = `
     <div class="supply-bar" role="img" aria-label="Supply split">${segments}${gap}</div>
-    <div class="supply-group-head"><span>Pools</span><span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></div>
-    <ol class="supply-list">${pools.map(rowHtml).join('')}</ol>
+    <div class="supply-group-head"><span>Pools</span><span class="pool-config-actions">
+      <button class="pill-button" type="button" data-action="export-pool-config" title="Copy the pools as CSV"><i class="fa-regular fa-copy" aria-hidden="true"></i> Export</button>
+      <button class="pill-button" type="button" data-action="import-pool-config" title="Load pools from CSV on the clipboard"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import</button>
+      <span data-supply-pools-head>${pools.length} · ${pct(poolPercent)}</span></span></div>
+    <ol class="supply-list">${pools.map((row) => rowHtml(row)).join('')}</ol>
     ${pairArbitrageWarningHtml(pools)}
     <button class="supply-add" type="button" data-action="add-custom-pool"><i class="fa-solid fa-plus"></i> Add pair</button>
     <div class="supply-group-head"><span>Held back</span></div>
-    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map(rowHtml).join('')}</ol>
+    <ol class="supply-list">${rows.filter((row) => row.kind === 'hold').map((row) => rowHtml(row)).join('')}</ol>
     ${totalHtml}`;
+  const nextKey = state.supplyOpenRow || '';
+  if (shownKey !== nextKey) {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      if (!target.isConnected) return;
+      target.querySelectorAll('.supply-settings-wrap').forEach((wrap) => {
+        wrap.classList.toggle('is-open', wrap.dataset.settingsFor === nextKey);
+      });
+      target.dataset.shownKey = nextKey;
+    }));
+    window.setTimeout(() => {
+      target.querySelectorAll('.supply-settings-wrap:not(.is-open)').forEach((wrap) => wrap.remove());
+    }, 360);
+  } else {
+    target.dataset.shownKey = nextKey;
+  }
 
   target.dataset.rendered = '1';
+  // A logo that fails to load gives way to the initials.
+  target.querySelectorAll('.supply-logo img').forEach((image) => {
+    image.addEventListener('error', () => { const mark = image.parentElement; if (mark) mark.textContent = mark.dataset.initials || ''; }, { once: true });
+  });
+  requestHubLogos(pools.map((row) => supplyRowMint(row)).filter(Boolean));
   renderPoolControlFeedback(target);
   renderReturnWalletCard();
 }
@@ -331,9 +524,9 @@ function renderSupplyEditor() {
 // pair, where the SOL pool's price sits. Right of it, price in multiples of the
 // start (log scale): the main position covers all of it, ladder bands add
 // liquidity at their own ranges. Below: the positions the pool is split into.
-function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
+function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, tier = null, supportLayers = [], meteora = null }) {
   const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 150;
-  const maxMult = Math.max(1000, ...bands.map((band) => band.hi));
+  const maxMult = meteora ? Math.max(10, Number(meteora.rangeMultiple) || 1000) : Math.max(1000, ...bands.map((band) => band.hi));
   const xOf = (mult) => START + (RIGHT - START) * (Math.log(mult) / Math.log(maxMult));
   const premiumDrop = premiumPct > 0 ? (premiumPct / (100 + premiumPct)) * 100 : 0;
   const reach = Math.max(depthPct, premiumDrop, 10) * 1.1;
@@ -342,7 +535,16 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
   const parts = [];
   // main position: the whole range above the start price
   parts.push(`<rect class="pm-main" x="${START}" y="${BASE - 22}" width="${RIGHT - START}" height="22"/>`);
-  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">Main position · all prices above the start</text>`);
+  // The fee tier's price steps, drawn as the lattice the position is cut into: wide spacing, few steps.
+  if (tier) {
+    const steps = Math.min(60, Math.max(4, Math.round(480 / tier.spacing)));
+    for (let i = 1; i < steps; i += 1) {
+      const x = START + ((RIGHT - START) * i) / steps;
+      parts.push(`<line class="pm-tick" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${BASE - 22}" y2="${BASE}"/>`);
+    }
+  }
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${BASE - 7}">${meteora ? `Locked position · up to ×${Number(meteora.rangeMultiple).toLocaleString('en-US')}` : 'Main position · all prices above the start'}</text>`);
+  if (meteora) parts.push(`<text class="pm-tag pm-strong" x="${RIGHT}" y="12" text-anchor="end">Meteora · ${Number(meteora.feeBps) / 100}% fee</text>`);
   // ladder bands
   const top = Math.max(...bands.map((band) => band.weight), 1);
   bands.forEach((band) => {
@@ -352,13 +554,27 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
     parts.push(`<rect class="pm-band" x="${x.toFixed(1)}" y="${(BASE - 22 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}"/>`);
     if (band.label && w > 26) parts.push(`<text class="pm-tag" x="${(x + w / 2).toFixed(1)}" y="${(BASE - 22 - h - 5).toFixed(1)}" text-anchor="middle">${band.label}</text>`);
   });
-  // support SOL, just below the start price
+  // support SOL, just below the start price: one range, or a layer per range, each as tall as its
+  // share of the quote
   const xs = xDown(depthPct);
   const supportW = START - xs;
   const supportText = `${fmt(supportSol)} SOL · −${fmt(depthPct)}%`;
-  parts.push(supportSol > 0
-    ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
-    : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  if (supportSol > 0 && supportLayers.length) {
+    const totalShare = supportLayers.reduce((sum, layer) => sum + layer.sharePercent, 0) || 100;
+    const topShare = Math.max(...supportLayers.map((layer) => layer.sharePercent));
+    supportLayers.forEach((layer) => {
+      const x1 = xDown((1 - layer.lowerMultiplier) * 100);
+      const x2 = xDown((1 - layer.upperMultiplier) * 100);
+      const h = 14 + 46 * (layer.sharePercent / topShare);
+      const sol = supportSol * (layer.sharePercent / totalShare);
+      parts.push(`<rect class="pm-support" x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+      if (x2 - x1 > 38) parts.push(`<text class="pm-tag" x="${((x1 + x2) / 2).toFixed(1)}" y="${(BASE - h - 4).toFixed(1)}" text-anchor="middle">${fmt(sol)} SOL</text>`);
+    });
+  } else {
+    parts.push(supportSol > 0
+      ? `<rect class="pm-support" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/><text class="pm-tag" x="${(START - 6).toFixed(1)}" y="${BASE - 66}" text-anchor="end">${supportText}</text>`
+      : `<rect class="pm-off" x="${xs.toFixed(1)}" y="${BASE - 60}" width="${Math.max(3, supportW).toFixed(1)}" height="60"/>${supportW > 70 ? `<text class="pm-note" x="${((xs + START) / 2).toFixed(1)}" y="${BASE - 28}" text-anchor="middle">no support</text>` : ''}`);
+  }
   // the SOL pool's price, for a pair
   if (premiumDrop > 0) {
     const xp = xDown(premiumDrop);
@@ -382,29 +598,119 @@ function poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands }) {
     if (w > 34) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${BASE + 43}" text-anchor="middle">${fmt(share)}%</text>`);
     at += w;
   });
+  // The fee tier as a meter: one notch per tier from the cheapest to the dearest, this one lit.
+  if (tier) {
+    // The meter is 40 wide however many tiers there are.
+    const slot = 40 / tier.count;
+    const mx = RIGHT - 40;
+    for (let i = 0; i < tier.count; i += 1) {
+      const h = 5 + (i * 14) / Math.max(1, tier.count - 1);
+      parts.push(`<rect class="${i === tier.rank ? 'pm-tier-on' : 'pm-tier-off'}" x="${(mx + i * slot).toFixed(1)}" y="${(24 - h).toFixed(1)}" width="${Math.max(1.5, slot - 1).toFixed(1)}" height="${h.toFixed(1)}"/>`);
+    }
+    parts.push(`<text class="pm-tag pm-strong" x="${RIGHT - 44}" y="12" text-anchor="end">${fmt(tier.fee)}% fee</text>`
+      + `<text class="pm-note" x="${RIGHT - 44}" y="24" text-anchor="end">$${fmt(tier.fee * 10)} per $1,000 · steps ${fmt(Number(tier.step.toFixed(2)))}%</text>`);
+  }
   const title = 'Price map: where this pool\'s liquidity sits';
   return `<svg viewBox="0 0 ${W} ${BASE + 56}" role="img" aria-label="${title}" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`;
 }
 
-// The same picture for a pool as the launch will build it (Create liquidity tab).
-function poolMapForPool(pool) {
-  const support = pool?.support?.mode === 'custom' ? pool.support : null;
-  const slices = (pool?.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((share) => share > 0);
-  let bands = [];
-  if (pool?.ladder?.mode === 'manual') {
-    bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: band.supplyPercent, label: `${Number(Number(band.supplyPercent).toFixed(1))}%` }));
-  } else if (pool?.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
-    const count = pool.ladder.bandCount;
-    const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
-    bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: 1, label: '' }));
-  }
-  return poolMapSvg({
-    premiumPct: 0,
-    supportSol: support ? Number(support.solValue) || 0 : 0,
-    depthPct: support ? Number(support.depthPct) || 12 : 12,
-    slices: slices.length ? slices : [100],
-    bands,
+// Every pool of the plan on one price axis, one colour per pool (the supply bar's colours).
+// Each pool's main position is a stripe, support sits left of the start price, ladder bands stand
+// above, and the bar below is every position, its width that position's share of the supply.
+function poolsMapForPlan(pools = []) {
+  const rows = supplyEditorRows();
+  const colorOf = (pool) => {
+    const key = pool.id === 'sol-main' ? 'sol' : pool.id.endsWith('-flywheel') ? 'quote' : `custom:${pool.id}`;
+    return rows.find((row) => row.key === key)?.color || 'var(--green)';
+  };
+  const layers = pools.map((pool) => {
+    const share = Math.max(0, Number(pool.supplyPercent) || 0);
+    const slices = (pool.distribution || []).map((slice) => Number(slice.sharePercent) || 0).filter((value) => value > 0);
+    const sliceTotal = slices.reduce((sum, value) => sum + value, 0) || 100;
+    let bands = [];
+    if (pool.ladder?.mode === 'manual') {
+      bands = (pool.ladder.bands || []).map((band) => ({ lo: band.lowerMultiplier, hi: band.upperMultiplier, weight: share * (Number(band.supplyPercent) || 0) / 100 }));
+    } else if (pool.ladder?.mode === 'simple' && pool.ladder.bandCount > 0) {
+      const count = pool.ladder.bandCount;
+      const unit = Math.log(Number(pool.ladder.ceilingMultiplier) || 1000) / (2 * count - 1);
+      bands = Array.from({ length: count }, (_, i) => ({ lo: Math.exp(2 * i * unit), hi: Math.exp((2 * i + 1) * unit), weight: share / count }));
+    }
+    return {
+      symbol: String(pool.quoteSymbol || pool.quoteToken || 'SOL').toUpperCase(),
+      tier: feeTierInfo(pool.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX),
+      color: colorOf(pool),
+      share,
+      support: pool.support?.mode === 'custom' ? { sol: Number(pool.support.solValue) || 0, depth: Number(pool.support.depthPct) || 12, layers: Array.isArray(pool.support.layers) ? pool.support.layers : [] } : null,
+      slices: (slices.length ? slices : [100]).map((value) => (value / sliceTotal) * share),
+      bands,
+    };
+  }).filter((layer) => layer.share > 0);
+  if (!layers.length) return '';
+  const W = 640, START = 196, LEFT = 24, RIGHT = 620, BASE = 168;
+  const maxMult = Math.max(1000, ...layers.flatMap((layer) => layer.bands.map((band) => band.hi)));
+  const xOf = (mult) => START + (RIGHT - START) * (Math.log(Math.max(1, mult)) / Math.log(maxMult));
+  const maxDepth = Math.max(12, ...layers.map((layer) => layer.support?.depth || 0)) * 1.1;
+  const xDown = (pct) => START - (START - LEFT) * (pct / maxDepth);
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n.toFixed(2)).toString());
+  const tint = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+  const totalShare = layers.reduce((sum, layer) => sum + layer.share, 0) || 100;
+  const parts = [];
+  // main positions: one stripe per pool, thickness by share, stacked on the axis
+  let stackTop = BASE;
+  layers.forEach((layer) => {
+    const h = Math.max(3, 30 * (layer.share / totalShare));
+    stackTop -= h;
+    parts.push(`<rect x="${START}" y="${stackTop.toFixed(1)}" width="${RIGHT - START}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 38)};stroke:${layer.color}" stroke-width="1"/>`);
   });
+  parts.push(`<text class="pm-note" x="${START + 8}" y="${(BASE - 4).toFixed(1)}">Main positions</text>`);
+  // ladder bands, tallest = the largest share of supply
+  const maxWeight = Math.max(1e-9, ...layers.flatMap((layer) => layer.bands.map((band) => band.weight)));
+  layers.forEach((layer) => {
+    layer.bands.forEach((band) => {
+      const h = 12 + 70 * (band.weight / maxWeight);
+      const x = xOf(band.lo);
+      const w = Math.max(3, xOf(band.hi) - x);
+      parts.push(`<rect x="${x.toFixed(1)}" y="${(stackTop - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+    });
+  });
+  // support SOL, left of the start price
+  const maxSol = Math.max(1e-9, ...layers.map((layer) => layer.support?.sol || 0));
+  layers.forEach((layer) => {
+    if (!layer.support || layer.support.sol <= 0) return;
+    if (layer.support.layers.length) {
+      const total = layer.support.layers.reduce((sum, item) => sum + item.sharePercent, 0) || 100;
+      layer.support.layers.forEach((item) => {
+        const x1 = xDown((1 - item.lowerMultiplier) * 100);
+        const x2 = xDown((1 - item.upperMultiplier) * 100);
+        const h = 8 + 52 * ((layer.support.sol * item.sharePercent / total) / maxSol);
+        parts.push(`<rect x="${x1.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(2, x2 - x1 - 1).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+      });
+      return;
+    }
+    const x = xDown(layer.support.depth);
+    const h = 14 + 52 * (layer.support.sol / maxSol);
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(BASE - h).toFixed(1)}" width="${Math.max(3, START - x).toFixed(1)}" height="${h.toFixed(1)}" style="fill:${tint(layer.color, 30)};stroke:${layer.color}" stroke-width="1"/>`);
+  });
+  const supportSol = layers.reduce((sum, layer) => sum + (layer.support?.sol || 0), 0);
+  if (supportSol > 0) parts.push(`<text class="pm-tag" x="${START - 6}" y="${BASE + 30}" text-anchor="end">${fmt(supportSol)} SOL support</text>`);
+  parts.push(`<line class="pm-start" x1="${START}" x2="${START}" y1="22" y2="${BASE + 6}"/><text class="pm-tag pm-strong" x="${START}" y="14" text-anchor="middle">Start price</text>`);
+  parts.push(`<line class="pm-axis" x1="${LEFT}" x2="${RIGHT}" y1="${BASE}" y2="${BASE}"/>`);
+  for (let m = 1; m <= maxMult; m *= 10) {
+    parts.push(`<line class="pm-axis" x1="${xOf(m).toFixed(1)}" x2="${xOf(m).toFixed(1)}" y1="${BASE}" y2="${BASE + 4}"/><text class="pm-note" x="${xOf(m).toFixed(1)}" y="${BASE + 17}" text-anchor="middle">${m === 1 ? 'start' : `${m}×`}</text>`);
+  }
+  // every position, its width its share of the supply
+  let at = LEFT;
+  const barY = BASE + 40;
+  layers.forEach((layer) => {
+    layer.slices.forEach((share) => {
+      const w = (RIGHT - LEFT) * (share / totalShare);
+      parts.push(`<rect x="${at.toFixed(1)}" y="${barY}" width="${Math.max(1, w - 2).toFixed(1)}" height="18" style="fill:${tint(layer.color, 45)};stroke:${layer.color}" stroke-width="1"/>`);
+      if (w > 40) parts.push(`<text class="pm-tag" x="${(at + w / 2).toFixed(1)}" y="${barY + 13}" text-anchor="middle">${fmt(share)}%</text>`);
+      at += w;
+    });
+  });
+  const legend = layers.map((layer) => `<span><i style="background:${layer.color}"></i>${escapeHtml(layer.symbol)} <b>${fmt(layer.share)}%</b>${layer.tier ? ` · ${fmt(layer.tier.fee)}% fee` : ''}</span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${barY + 28}" role="img" aria-label="Where every pool's liquidity sits" preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg><div class="pool-legend">${legend}</div>`;
 }
 
 function renderPoolMap(panel) {
@@ -414,7 +720,10 @@ function renderPoolMap(panel) {
   const number = (text, fallback = 0) => { const n = parseNumericInput(String(text), NaN); return Number.isFinite(n) ? n : fallback; };
   const premiumPct = Math.min(500, Math.max(0, number(value(':premium'), 0)));
   const supportSol = Math.max(0, number(value(':support'), 0));
-  const depthPct = Math.min(50, Math.max(1, number(value(':depth'), 12)));
+  const layerInput = analyzeSupportLayers(value(':layers')).layers;
+  const depthPct = layerInput.length
+    ? Math.min(99, Math.max(1, (1 - Math.min(...layerInput.map((layer) => layer.lowerMultiplier))) * 100))
+    : Math.min(50, Math.max(1, number(value(':depth'), 12)));
   const slices = describeSliceInput(value(':slices')).slices;
   const manual = analyzeManualLadder(value(':manual')).bands;
   const count = Math.floor(Math.min(CLASSIC_LADDER_MAX_BANDS, Math.max(0, number(value(':ladder'), 0))));
@@ -430,7 +739,14 @@ function renderPoolMap(panel) {
   parts.push(supportSol > 0 ? `${supportSol} SOL support to −${depthPct}%` : 'no support');
   parts.push(bands.length ? `${bands.length} ladder band${bands.length === 1 ? '' : 's'}` : 'no ladder');
   if (premiumPct > 0) parts.push(`opens ${premiumPct}% above the SOL price`);
-  const html = `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands })}`;
+  const tierIndex = panel.querySelector('[data-supply-key$=":tier"]')?.value
+    ?? panel.closest('li')?.previousElementSibling?.querySelector('[data-action="set-pool-tier"].is-on')?.dataset.value;
+  const rowKey = panel.closest('.supply-settings-wrap')?.dataset.settingsFor;
+  const venueRow = rowKey ? supplyEditorRows().find((item) => item.key === rowKey) : null;
+  const meteora = venueRow && rowIsMeteora(venueRow) ? poolVenueFor(venueRow).damm : null;
+  const html = meteora
+    ? poolMapSvg({ premiumPct: 0, supportSol: 0, depthPct: 12, slices: [100], bands: [], meteora: { feeBps: Number(meteora.feeBps) || 25, rangeMultiple: Number(meteora.rangeMultiple) || 1000 } })
+    : `${poolMapSvg({ premiumPct, supportSol, depthPct, slices, bands, supportLayers: layerInput, tier: feeTierInfo(tierIndex ?? DEFAULT_POOL_CONFIG_INDEX) })}`;
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -475,6 +791,27 @@ function renderPoolControlFeedback(target) {
       say('manual', parts.join(' '), ladder.rejected.length ? 'warn' : 'ok');
       flag(manual, ladder.rejected.length > 0);
     }
+
+    const layersField = input(':layers');
+    const supportLayers = analyzeSupportLayers(layersField?.value);
+    if (layersField) {
+      const parts = [];
+      if (supportLayers.layers.length) {
+        const total = supportLayers.layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+        const lowest = Math.min(...supportLayers.layers.map((layer) => layer.lowerMultiplier));
+        parts.push(`${supportLayers.layers.length} layer${supportLayers.layers.length === 1 ? '' : 's'} down to ${Number((lowest * 100).toFixed(1))}% of the start price.`);
+        if (Math.abs(total - 100) > 0.01) parts.push(`Shares add up to ${Number(total.toFixed(2))}%; they are scaled to 100%.`);
+      }
+      if (supportLayers.rejected.length) {
+        const shown = supportLayers.rejected.slice(0, 3).map((item) => `line ${item.line} "${item.text.slice(0, 24)}"`).join(', ');
+        parts.push(`Skipped ${shown}${supportLayers.rejected.length > 3 ? ` and ${supportLayers.rejected.length - 3} more` : ''}. Each layer needs share %, low× above 0 and high× up to 1.`);
+      }
+      if (supportLayers.overflow) parts.push(`Only the first ${SUPPORT_LAYERS_MAX} layers are used.`);
+      say('layers', parts.join(' '), supportLayers.rejected.length || supportLayers.overflow ? 'warn' : 'ok');
+      flag(layersField, supportLayers.rejected.length > 0);
+    }
+    const depthField = input(':depth');
+    if (depthField) depthField.disabled = supportLayers.layers.length > 0;
 
     const bands = input(':ladder');
     if (bands) {
@@ -670,7 +1007,50 @@ function renderClassicPhaseTree(topology) {
   `;
 }
 
+// Lists to airdrop to: the bundled KOL wallets (public labels, copied from runner-watch with
+// their source), and each earlier launch's airdrop, read once a session. Each loads as this
+// coin's CSV. A launch list with the same wallets as the KOL list is not offered twice.
+function loadAirdropLists() {
+  if (state.airdropLists || state.apiStatus !== 'connected' || !state.apiClient?.listAirdropLists) return;
+  state.airdropLists = [];
+  state.apiClient.listAirdropLists()
+    .then(({ lists, kol }) => {
+      state.airdropLists = Array.isArray(lists) ? lists : [];
+      state.kolWallets = kol && Array.isArray(kol.wallets) ? kol : null;
+      renderAirdropListButtons();
+    })
+    .catch(() => { state.airdropLists = null; });
+}
+
+function renderAirdropListButtons() {
+  const host = document.getElementById('airdropListButtons');
+  if (!host) return;
+  const kol = state.kolWallets?.wallets || [];
+  const kolSet = kol.map((wallet) => wallet.address).sort().join(',');
+  const lists = (state.airdropLists || []).filter((list) => list.recipients.map((row) => row.wallet).sort().join(',') !== kolSet);
+  const buttons = [
+    kol.length ? `<button class="pill-button" type="button" data-action="load-kol-wallets" title="${escapeHtml(`KOL labels from ${state.kolWallets.label_date || 'the source list'}`)}">KOL wallets · ${kol.length}</button>` : '',
+    ...lists.map((list) => `<button class="pill-button" type="button" data-action="load-airdrop-list" data-list="${escapeHtml(list.id)}" title="${escapeHtml(`${list.name || list.symbol || 'Earlier launch'} · ${list.createdAt ? formatDate(list.createdAt) : ''}`)}">${escapeHtml(list.symbol ? `$${list.symbol}` : 'Earlier')} list · ${list.recipients.length}</button>`),
+  ].filter(Boolean);
+  host.innerHTML = buttons.length ? buttons.join('') : '<button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>';
+}
+
+function loadAirdropList(id) {
+  const list = (state.airdropLists || []).find((item) => item.id === id);
+  if (!list) return;
+  setAirdropText(['wallet,tokens', ...list.recipients.map((row) => `${row.wallet},${row.tokens}`)].join('\n'));
+}
+
+// KOL wallets without amounts: the airdrop budget splits evenly across them.
+function loadKolWallets() {
+  const list = state.kolWallets;
+  if (!list?.wallets?.length) return;
+  setAirdropText(['wallet', `# KOL wallets, labels from ${list.label_date || 'the source list'}`, ...list.wallets.map((wallet) => wallet.address)].join('\n'));
+}
+
 function renderAirdropPanel() {
+  loadAirdropLists();
+  renderAirdropListButtons();
   const topology = currentClassicModel();
   const airdrop = topology.airdrop;
   const summary = $('#airdropSummary');
@@ -704,11 +1084,253 @@ function renderAirdropPanel() {
   }
   const previewRows = airdrop.recipients.slice(0, 4).map((row) => `
     <div class="mini-row">
-      <span>${escapeHtml(shortAddress(row.wallet))}</span>
+      <span>${walletChipHtml(row.wallet)}</span>
       <strong>${compactAmount(row.tokens)} tokens</strong>
     </div>
   `).join('');
-  $('#airdropRecipientPreview').innerHTML = hasError
+  const valueRows = hasError ? '' : airdropValueHtml(airdrop);
+  $('#airdropRecipientPreview').innerHTML = valueRows || (hasError
     ? `<div class="mini-row danger"><span>${escapeHtml(state.airdropParseError || state.airdropBudgetError)}</span><strong>Fix</strong></div>`
-    : previewRows || `<div class="mini-row"><span>${airdrop.enabled ? 'Manual count only; attach CSV before real transfer.' : 'No recipients attached.'}</span><strong>${airdrop.source}</strong></div>`;
+    : previewRows || '<div class="mini-row"><span>No recipients</span></div>');
+}
+
+
+// Pool config as CSV, in the same plain style as the custom ladder field: a line per pool, and
+// `ladder,supply%,low×,high×` lines under a pool for its own bands. No token, wallet or key.
+//
+//   launch SOL,1
+//   market cap USD,25000
+//   symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %
+//   SOL,,85,8,,100,5,0.1,12
+//   RUG,RUGx1zSD…,5,4,25,50|50,0,0,12
+//   ladder,50,2,10
+//   bid,70,0.7,1       (a quote-side support layer: share % of the quote, low x, high x)
+//   meteora,25,1000    (the pool above is a Meteora pool: fee in basis points, price range multiple)
+const POOL_CONFIG_FORMAT = 'trebuchet-pool-config';
+const POOL_CONFIG_HEADER = 'symbol,mint,supply%,fee tier,start premium %,slices,ladder bands,support SOL,support depth %';
+
+function csvCell(value) {
+  return String(value ?? '').replace(/[,\r\n]+/g, ' ').trim();
+}
+
+function buildPoolConfigExport() {
+  const config = currentLaunchConfig();
+  const topology = config.poolTopology || {};
+  return {
+    launchSol: config.launchSol,
+    targetMarketCapUsd: topology.targetMarketCapUsd,
+    pools: topology.pools || [],
+  };
+}
+
+function poolConfigToCsv(data = buildPoolConfigExport()) {
+  const lines = [
+    '# Trebuchet pool config',
+    `launch SOL,${csvCell(data.launchSol)}`,
+    `market cap USD,${csvCell(data.targetMarketCapUsd)}`,
+    POOL_CONFIG_HEADER,
+  ];
+  (data.pools || []).forEach((pool) => {
+    const isSol = String(pool.quoteSymbol || pool.quoteToken || '').toUpperCase() === 'SOL' || pool.id === 'sol-main';
+    const slices = (Array.isArray(pool.distribution) && pool.distribution.length ? pool.distribution : [{ sharePercent: 100 }])
+      .map((slice) => Number(slice.sharePercent || 0)).join('|');
+    const manual = pool.ladder?.mode === 'manual' && Array.isArray(pool.ladder.bands) ? pool.ladder.bands : [];
+    const bandCount = manual.length ? 0 : (pool.ladder?.mode === 'simple' ? Number(pool.ladder.bandCount || 0) : 0);
+    const support = pool.support?.mode === 'custom';
+    lines.push([
+      isSol ? 'SOL' : csvCell(pool.quoteSymbol || 'PAIR'),
+      isSol ? '' : csvCell(pool.quoteMint || pool.quoteToken),
+      Number(pool.supplyPercent || 0),
+      Number(pool.ammConfigIndex ?? ''),
+      isSol ? '' : Number(pool.startPricePremiumPct ?? 0),
+      slices,
+      bandCount,
+      support ? Number(pool.support.solValue || 0) : 0,
+      support ? Number(pool.support.depthPct || 12) : 12,
+    ].join(','));
+    manual.forEach((band) => lines.push(`ladder,${band.supplyPercent},${band.lowerMultiplier},${band.upperMultiplier}`));
+    (support && Array.isArray(pool.support.layers) ? pool.support.layers : []).forEach((layer) => lines.push(`bid,${layer.sharePercent},${layer.lowerMultiplier},${layer.upperMultiplier}`));
+    if (pool.venue === 'meteora-damm-v2') lines.push(`meteora,${pool.damm?.feeBps || 25},${pool.damm?.rangeMultiple || 1000}`);
+  });
+  return `${lines.join('\n')}\n`;
+}
+
+function exportPoolConfig() {
+  return copyText(poolConfigToCsv(), 'Pool config');
+}
+
+function validatePoolConfigPools(pools) {
+  if (!Array.isArray(pools) || !pools.length || pools.length > 24) throw new Error('The pool config has no usable pools');
+  pools.forEach((pool) => {
+    const percent = Number(pool?.supplyPercent);
+    if (!pool || typeof pool !== 'object' || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw new Error('A pool in the config has a bad supply share');
+    }
+  });
+  if (pools.reduce((sum, pool) => sum + Number(pool.supplyPercent), 0) > 100.0001) {
+    throw new Error('The pool shares add up to more than 100%');
+  }
+}
+
+function parsePoolConfigCsv(text) {
+  const data = { launchSol: undefined, targetMarketCapUsd: undefined, pools: [] };
+  let current = null;
+  let ladderText = '';
+  let bidText = '';
+  const finish = () => {
+    if (!current) return;
+    const bands = ladderText ? parseManualLadderBands(ladderText) : [];
+    if (ladderText && !bands.length) throw new Error(`The ladder lines under ${current.quoteSymbol} have no usable band`);
+    if (bands.length) current.ladder = { mode: 'manual', bands };
+    const layers = bidText ? parseSupportLayers(bidText) : [];
+    if (bidText && !layers.length) throw new Error(`The bid lines under ${current.quoteSymbol} have no usable layer`);
+    if (layers.length) {
+      if (current.support.mode !== 'custom') throw new Error(`${current.quoteSymbol} has bid lines but no support SOL`);
+      current.support = { ...current.support, layers };
+    }
+    data.pools.push(current);
+    current = null;
+    ladderText = '';
+    bidText = '';
+  };
+  String(text || '').split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
+    const cells = line.split(',').map((cell) => cell.trim());
+    const key = cells[0].toLowerCase();
+    if (key === 'launch sol') { data.launchSol = Number(cells[1]); return; }
+    if (key === 'market cap usd') { data.targetMarketCapUsd = Number(cells[1]); return; }
+    if (key === 'symbol') return;
+    if (key === 'ladder') {
+      if (!current) throw new Error(`Line ${index + 1}: a ladder line needs a pool above it`);
+      ladderText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    if (key === 'meteora') {
+      if (!current) throw new Error(`Line ${index + 1}: a meteora line needs a pool above it`);
+      current.venue = 'meteora-damm-v2';
+      current.damm = { feeBps: Number(cells[1]) || 25, rangeMultiple: Number(cells[2]) || 1000 };
+      return;
+    }
+    if (key === 'bid') {
+      if (!current) throw new Error(`Line ${index + 1}: a bid line needs a pool above it`);
+      bidText += `${cells.slice(1).join(', ')}\n`;
+      return;
+    }
+    finish();
+    const [symbol, mint, supply, tier, premium, slices, bands, supportSol, supportDepth] = cells;
+    const isSol = symbol.toUpperCase() === 'SOL' && !mint;
+    if (!isSol && !isProbablySolanaAddress(mint)) throw new Error(`Line ${index + 1}: ${symbol || 'the pool'} needs a token mint`);
+    const shares = (slices || '100').split(/[|\s]+/).filter(Boolean).map(Number);
+    if (!shares.length || shares.some((share) => !Number.isFinite(share) || share <= 0)) throw new Error(`Line ${index + 1}: the slices must be numbers like 50|50`);
+    const bandCount = Math.floor(Number(bands || 0));
+    const solValue = Number(supportSol || 0);
+    current = {
+      ...(isSol ? { id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL' } : { quoteToken: mint, quoteMint: mint, quoteSymbol: symbol.toUpperCase() }),
+      supplyPercent: Number(supply),
+      ammConfigIndex: Number.isFinite(Number(tier)) && tier !== '' ? Math.floor(Number(tier)) : undefined,
+      ...(isSol ? {} : { startPricePremiumPct: Number(premium || 0) }),
+      distribution: shares.map((share) => ({ sharePercent: share, recipient: null })),
+      bootstrap: { mode: 'minimal' },
+      ladder: bandCount > 0 ? classicSimpleLadderConfig(bandCount) : { mode: 'off' },
+      support: solValue > 0 ? { mode: 'custom', solValue, depthPct: Number(supportDepth || 12) } : { mode: 'off' },
+    };
+  });
+  finish();
+  return data;
+}
+
+function parsePoolConfigImport(text) {
+  const body = String(text || '').trim();
+  let data;
+  if (body.startsWith('{')) {
+    // The first export format was JSON; it still imports.
+    try { data = JSON.parse(body); } catch { throw new Error('That is not a pool config'); }
+    if (!data || data.format !== POOL_CONFIG_FORMAT || data.version !== 1) throw new Error('That is not a Trebuchet pool config');
+  } else {
+    if (!/^symbol\s*,/im.test(body)) throw new Error('That is not a Trebuchet pool config');
+    data = parsePoolConfigCsv(body);
+  }
+  validatePoolConfigPools(data.pools);
+  return data;
+}
+
+async function readPoolConfigText() {
+  try {
+    if (navigator.clipboard?.readText) return await navigator.clipboard.readText();
+  } catch {}
+  return openOperatorPrompt({
+    eyebrow: 'Import',
+    title: 'Paste a pool config',
+    detail: 'Automatic clipboard access is unavailable. Paste the exported CSV below.',
+    label: 'Pool config',
+    multiline: true,
+    confirmLabel: 'Import',
+  });
+}
+
+async function importPoolConfig() {
+  const text = await readPoolConfigText();
+  if (text == null) return;
+  try {
+    const data = parsePoolConfigImport(text);
+    const current = currentLaunchConfig();
+    // Only the pools, launch SOL and market cap change; token, vanity and
+    // airdrop stay as they are.
+    restoreLaunchConfigFromJournal({
+      launchConfig: {
+        ...current,
+        launchSol: Number.isFinite(Number(data.launchSol)) ? Number(data.launchSol) : current.launchSol,
+        poolTopology: {
+          ...current.poolTopology,
+          pools: data.pools,
+          targetMarketCapUsd: data.targetMarketCapUsd ?? current.poolTopology?.targetMarketCapUsd,
+        },
+      },
+    });
+    renderAll();
+    notify(`Imported ${data.pools.length} pool${data.pools.length === 1 ? '' : 's'}`);
+  } catch (error) {
+    notify(error.message || 'Could not import the pool config');
+  }
+}
+
+// A tier picked on a pool's line also moves the slider and the map inside its settings, so the
+// editor is drawn again in full, and the select that was used keeps the keyboard focus.
+function renderSupplyEditorAfterTier(control) {
+  const key = control?.dataset?.supplyKey;
+  const target = $('#supplyEditor');
+  if (target) target.dataset.rendered = '';
+  renderSupplyEditor();
+  if (key) document.querySelector(`[data-supply-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+}
+
+// A pool line's venue, fee or range button: set it, then redraw the editor and keep focus on the button.
+function applyPoolSwitch(action, control) {
+  const value = control.dataset.value;
+  const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
+    : action === 'set-pool-fee' ? { feeBps: Number(value) }
+      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+        : { tierIndex: Math.floor(Number(value)) };
+  setPoolVenueChoice(control.dataset.rowKey, patch);
+  invalidateClassicOutputs();
+  refreshClassicPreview();
+  renderSupplyEditorAfterTier(control);
+}
+
+// The token a pool line trades against, for its logo: SOL, the preset pair's token, or an added pair's.
+function supplyRowMint(row) {
+  if (row.key === 'sol') return DEFAULT_SOL_MINT;
+  if (row.key === 'quote') return selectedClassicQuoteVenue()?.quoteMint || '';
+  return row.mint || '';
+}
+
+// A pool line's mark: the token's logo framed in the pool's colour, or its initials until the logo is known.
+// Held-back lines keep the plain colour square.
+function supplyRowMarkHtml(row) {
+  if (row.kind !== 'pool') return `<i class="supply-swatch" style="background:${row.color}"></i>`;
+  const mint = supplyRowMint(row);
+  const src = mint ? coinImageSrc(hubLogos.get(mint) || '') : '';
+  const initials = escapeHtml(String(row.label || '?').replace(/^\$/, '').slice(0, 2).toUpperCase());
+  return `<span class="supply-logo" style="--pool-color:${row.color}" data-initials="${initials}" aria-hidden="true">${src ? `<img src="${escapeHtml(src)}" alt="">` : initials}</span>`;
 }

@@ -1059,7 +1059,7 @@ function buildV2ReportPoolSections(results, config) {
         ${renderV2ReportFactRow('Initial price', pool.initialPrice ?? '-')}
         ${renderV2ReportFactRow('Launch side', pool.launchedSide || '-')}
         ${renderV2ReportFactRow('Ladder', ladder.mode === 'manual' ? `${(ladder.bands || []).length} manual bands` : ladder.mode === 'simple' ? `${ladder.bandCount || 0} bands` : 'off')}
-        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth` : 'off')}
+        ${renderV2ReportFactRow('Support', support.mode === 'custom' ? (Array.isArray(support.layers) && support.layers.length ? `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL in ${support.layers.length} layers, down to ${reportPercent(support.depthPct)} depth` : `${reportNumber(support.solValue, { maximumFractionDigits: 3 })} SOL at ${reportPercent(support.depthPct)} depth`) : 'off')}
       </div>
       <div class="slice-strip">${distributionRows}</div>
       <div class="pool-addresses">
@@ -1169,109 +1169,6 @@ function buildV2ReportRecoverySection(data) {
     <table class="report-table">
       <thead><tr><th>Journal</th><th>Status / stage</th><th>Pools</th><th>Resume plan</th></tr></thead>
       <tbody>${journalRows}</tbody>
-    </table>`;
-}
-
-function buildV2ReportFieldVerificationSection(fieldVerification = null) {
-  if (!fieldVerification || typeof fieldVerification !== 'object') return '';
-  const requirements = Array.isArray(fieldVerification.requirements) ? fieldVerification.requirements : [];
-  const criteriaBlockers = Array.isArray(fieldVerification.criteriaBlockers) ? fieldVerification.criteriaBlockers : [];
-  const rows = requirements.length
-    ? requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.action || (item.pass ? 'none' : 'review-blocker'))}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="4">No field verification rows were generated.</td></tr>';
-  const criteriaRows = criteriaBlockers.length
-    ? `<h3 class="subsection">Replacement blockers</h3>
-      <table class="report-table">
-        <thead><tr><th>Criterion</th><th>Action</th><th>Evidence</th></tr></thead>
-        <tbody>${criteriaBlockers.map((item) => `<tr>
-          <td>${escapeHtml(item.label || item.id || '-')}</td>
-          <td>${escapeHtml(item.action || 'review-replacement-criterion')}</td>
-          <td>${escapeHtml(item.detail || '-')}</td>
-        </tr>`).join('')}</tbody>
-      </table>`
-    : '';
-  const criteriaBlockerCount = Number(fieldVerification.criteriaBlockerCount || criteriaBlockers.length || 0);
-  const state = fieldVerification.ready ? 'ok' : 'warn';
-  return `<h3 class="subsection">Field verification packet</h3>
-    <div class="banner banner-${state}">
-      <strong>${escapeHtml(fieldVerification.ready ? 'Field parity packet complete.' : 'Field parity packet blocked.')}</strong>
-      ${escapeHtml(`${fieldVerification.passCount || 0}/${fieldVerification.itemCount || requirements.length || 0} field checks passing · ${criteriaBlockerCount} criterion blocker${criteriaBlockerCount === 1 ? '' : 's'} · next action: ${fieldVerification.nextAction || 'none'}.`)}
-    </div>
-    <div class="pool-facts">
-      ${renderV2ReportFactRow('Packet version', fieldVerification.version || 1)}
-      ${renderV2ReportFactRow('Proof fingerprint', fieldVerification.proofFingerprint || '-')}
-      ${renderV2ReportFactRow('Replacement criteria', `${fieldVerification.criteriaPassCount || 0}/${fieldVerification.criteriaItemCount || 0}`)}
-      ${renderV2ReportFactRow('Criterion blockers', criteriaBlockerCount)}
-      ${renderV2ReportFactRow('Next detail', fieldVerification.nextDetail || '-')}
-    </div>
-    <table class="report-table">
-      <thead><tr><th>Field check</th><th>State</th><th>Action</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    ${criteriaRows}`;
-}
-
-function buildV2ReportParityAuditSection(audit = buildV2ReportParityAudit(), retirementGate = null, fieldVerification = null) {
-  const items = Array.isArray(audit?.items) ? audit.items : [];
-  const rows = items.length
-    ? items.map((item) => `<tr>
-      <td>${escapeHtml(item.label)}</td>
-      <td>${escapeHtml(item.state)}</td>
-      <td>${escapeHtml(item.detail)}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No parity audit rows were generated.</td></tr>';
-  const gate = retirementGate || buildClassicRetirementGate(currentLaunchProof(), audit);
-  const gateRows = Array.isArray(gate?.requirements)
-    ? gate.requirements.map((item) => `<tr>
-      <td>${escapeHtml(item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'blocked')}</td>
-      <td>${escapeHtml(item.detail || '-')}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No Classic retirement gate rows were generated.</td></tr>';
-  const criteria = Array.isArray(gate?.replacementCriteria) ? gate.replacementCriteria : [];
-  const criteriaRows = criteria.length
-    ? criteria.map((item) => `<tr>
-      <td>${escapeHtml(item.label || item.id || '-')}</td>
-      <td>${escapeHtml(item.pass ? 'pass' : 'needs proof')}</td>
-      <td>${escapeHtml(`${item.evidence || '-'} ${item.detail || ''}`.trim())}</td>
-    </tr>`).join('')
-    : '<tr><td colspan="3">No replacement criteria audit rows were generated.</td></tr>';
-  return `<hr class="section-rule">
-    <div class="enum-badge">[ 07 ] &nbsp; Classic Parity</div>
-    <h2 class="section-title">Classic report parity audit</h2>
-    <div class="banner banner-${gate?.state === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(gate?.state === 'pass' ? 'Classic retirement ready.' : 'Classic retirement blocked.')}</strong>
-      ${escapeHtml(`${gate?.passCount || 0}/${gate?.itemCount || 0} retirement checks passing · ${gate?.detail || 'Review live proof before replacing Classic.'}`)}
-    </div>
-    <h3 class="subsection">Classic retirement gate</h3>
-    <table class="report-table">
-      <thead><tr><th>Requirement</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${gateRows}</tbody>
-    </table>
-    ${buildV2ReportFieldVerificationSection(fieldVerification)}
-    <h3 class="subsection">Replacement criteria</h3>
-    <table class="report-table">
-      <thead><tr><th>Criterion</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${criteriaRows}</tbody>
-    </table>
-    <div class="banner banner-${audit?.status === 'pass' ? 'ok' : 'warn'}">
-      <strong>${escapeHtml(audit?.status === 'pass' ? 'Classic evidence complete.' : 'Review before retiring Classic.')}</strong>
-      ${escapeHtml(`${audit?.passCount || 0} of ${audit?.itemCount || items.length || 0} checks pass · ${audit?.missingCount || 0} missing · ${audit?.warnCount || 0} warning${Number(audit?.warnCount || 0) === 1 ? '' : 's'}.`)}
-    </div>
-    <div class="token-summary-grid">
-      <div class="token-stat"><div class="token-stat-label">Pass</div><div class="token-stat-value">${Number(audit?.passCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Warnings</div><div class="token-stat-value">${Number(audit?.warnCount || 0)}</div></div>
-      <div class="token-stat"><div class="token-stat-label">Missing</div><div class="token-stat-value">${Number(audit?.missingCount || 0)}</div></div>
-    </div>
-    <h3 class="subsection">Evidence checklist</h3>
-    <table class="report-table">
-      <thead><tr><th>Classic field</th><th>State</th><th>Evidence</th></tr></thead>
-      <tbody>${rows}</tbody>
     </table>`;
 }
 
@@ -1457,10 +1354,12 @@ function renderReportPanel() {
     : funder ? `Funding wallet · ${fullAddress(funder)}` : 'Funding wallet';
   const publish = topology.report.publish;
   const summary = $('#reportSummary');
-  summary.textContent = publish ? 'Publish on' : 'Local only';
+  summary.textContent = publish ? 'Saved on Arweave' : 'Local only';
   summary.className = `risk-badge ${publish ? '' : 'warn'}`;
+  const publishButton = document.querySelector('[data-action="toggle-report-publish"]');
+  if (publishButton) publishButton.setAttribute('aria-checked', String(Boolean(publish)));
   $('#reportPreview').innerHTML = `
-    <div class="mini-row"><span>Report</span><strong>${publish ? 'Arweave + local' : 'Local download'}</strong></div>
+    <div class="mini-row"><span>Launch report</span><strong>${publish ? 'Saved permanently on Arweave and on this computer' : 'Kept on this computer only'}</strong></div>
     <div class="mini-row ${destination && !isProbablySolanaAddress(destination) ? 'danger' : ''}"><span>Return wallet</span><strong>${escapeHtml(destinationState)}</strong></div>
     <div class="mini-row"><span>Airdrop rows</span><strong>${topology.airdrop.recipients.length || topology.airdrop.recipientCount}</strong></div>
     <div class="mini-row"><span>Fee Key recipient</span><strong>${topology.feeKeyRecipient ? escapeHtml(fullAddress(topology.feeKeyRecipient)) : 'Same as sweep'}</strong></div>

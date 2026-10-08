@@ -99,10 +99,6 @@ const baseUrl = `http://127.0.0.1:${port}`;
 await mkdir(outputDir, { recursive: true });
 await writeFile(path.join(configDir, 'userPrefs.json'), `${JSON.stringify({
   demoMode: true,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }, null, 2)}\n`);
 
 const server = spawn(process.execPath, ['server.js'], {

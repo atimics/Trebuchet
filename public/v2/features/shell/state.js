@@ -14,21 +14,18 @@ const views = {
   coins: { eyebrow: '', title: 'Coins' },
   // A coin being created: the coin page with its creation steps.
   launch: { eyebrow: '', title: 'Coins' },
-  nfts: { eyebrow: '', title: 'NFT collections' },
-  lean: { eyebrow: '', title: 'Lean launch' },
   wallet: { eyebrow: '', title: 'Wallet' },
   discovery: { eyebrow: '', title: 'Discovery' },
-  history: { eyebrow: '', title: 'History' },
   settings: { eyebrow: '', title: 'Settings' },
 };
 
 const launchWorkspaces = [
-  { id: 'wallet', title: 'Launch wallet', detail: 'Choose the isolated local wallet that signs this launch.' },
+  { id: 'wallet', title: 'Launch setup', detail: 'Choose the isolated local wallet that signs this launch.' },
   { id: 'configure', title: 'Token & pools', detail: 'Define the token, liquidity, distribution, and return wallet.' },
   { id: 'fund', title: 'Fund wallet', detail: 'Estimate the exact requirement, deposit SOL, and acquire quote tokens.' },
   { id: 'mint', title: 'Create token', detail: 'Review the permanent token facts, then mint and revoke authorities.' },
   { id: 'liquidity', title: 'Create liquidity', detail: 'Create pools and positions, lock liquidity, and deliver Fee Keys.' },
-  { id: 'finish', title: 'Leftovers', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
+  { id: 'finish', title: 'Finish', detail: 'Run airdrops, sweep every remaining asset, and save launch record.' },
 ];
 
 
@@ -198,12 +195,11 @@ const CLASSIC_QUOTE_VENUES = Object.freeze({
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
 const CLASSIC_LADDER_DEFAULT_CEILING_MULTIPLIER = 1000;
 const CLASSIC_LADDER_MAX_BANDS = 20;
-const CLASSIC_TOKEN_NAME_MAX_BYTES = 32;
-const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10;
-const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000;
 const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n;
 const CLASSIC_LOGO_MAX_BYTES = 100 * 1024;
-const CLASSIC_LOGO_MAX_DIMENSION = 200;
+// No chain limits pixels: the metadata holds a link, and the image is uploaded free under ~100 KB.
+// The byte cap is the real limit; the report embeds the logo only when small and links it otherwise.
+const CLASSIC_LOGO_MAX_DIMENSION = 1024;
 const CLASSIC_LOGO_MIN_DIMENSION = 64;
 const LOGO_SOURCE_MAX_BYTES = 10 * 1024 * 1024;
 const LOGO_SOURCE_MAX_DIMENSION = 8192;
@@ -226,13 +222,7 @@ const LAUNCH_PROOF_STORAGE_LIMIT = 1000000;
 const LAUNCH_PROOF_IMPORT_LIMIT = 2000000;
 const WALLET_BALANCE_REFRESH_INTERVAL_MS = 8000;
 const WALLET_BALANCE_FRESH_MS = 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_STORAGE_KEY = 'trebuchet:v2:classic-report-comparison:v1';
-const CLASSIC_REPORT_COMPARISON_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-const CLASSIC_REPORT_COMPARISON_INPUT_LIMIT = 50000;
-const CLASSIC_REPORT_COMPARISON_ROW_LIMIT = 80;
-const CLASSIC_ARTIFACT_IMPORT_LIMIT = 1000000;
 const V2_HTML_PROOF_AIRDROP_SAMPLE_LIMIT = 100;
-const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object.freeze(['index.html', 'styles.css', 'api-client.js', 'app.js']);
 // Mirror of ../../viewportSmokeContract.js. This file is a classic browser
 // script and cannot import it, so test/viewport-smoke-contract.test.mjs
 // asserts the two stay identical.
@@ -242,7 +232,6 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'tokenomicsChart',
   'liquidityChart',
   'fundingMeter',
-  'parityPanel',
   'firstViewportFit',
   'terminalPanelFit',
   'discoveryTokenViewport',
@@ -276,7 +265,6 @@ try {
 
 const state = {
   activeView: 'launch',
-  activeHistoryPane: 'recovery',
   // The open row of the coin's facts; null opens the row that needs doing.
   launchWorkspace: null,
   launchFactStates: null,
@@ -401,6 +389,8 @@ const state = {
   revealingWalletPublicKey: null,
   discardingWalletPublicKey: null,
   sweepingWalletPublicKey: null,
+  sweepAirdropProgress: null,
+  heldWallets: { list: null, loading: false, at: 0, error: null, sweep: null },
   lastRecoverySweep: null,
   lastSecretPinReset: null,
   lastRunEnvelope: null,
@@ -415,6 +405,11 @@ const state = {
   vanityAvailable: false,
   vanityReason: null,
   vanityRunning: false,
+  grindJobs: [],
+  airdropLists: null,
+  kolWallets: null,
+  vanityCalibrating: false,
+  vanityCalibrationError: null,
   vanityProgress: null,
   vanityProgressStats: null,
   vanitySource: null,
@@ -488,19 +483,13 @@ const state = {
   realExecutionRunning: false,
   fullRunRunning: false,
   fullRunStep: null,
-  launchDetailsExpanded: false,
+  launchAfterArm: false,
   lastFullRun: null,
   lastRealExecution: null,
   executionLedger: [],
   launchProof: null,
   reportPublishing: false,
   lastReportPublish: null,
-  classicReportComparison: {
-    input: '',
-    result: null,
-    comparedAt: null,
-    error: null,
-  },
   airdropRunning: false,
   lastAirdropResult: null,
   demoLaunchRunning: false,
@@ -508,7 +497,6 @@ const state = {
   lastLocalDossier: null,
   recoveryActionId: null,
   lastRecoveryResult: null,
-  recoveryWizardStep: null,
   liveOps: {
     lp: null,
     lpCursor: 0,
@@ -528,6 +516,14 @@ const state = {
   lastClassicDiagnostic: null,
   baseManualLadderText: '',
   baseSupportDepth: 12,
+  baseSupportLayersText: '',
+  launchPresetId: null,
+  launchPresetSignature: null,
+  // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
+  solPoolVenue: 'raydium',
+  solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolVenue: 'raydium',
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -602,9 +598,18 @@ function renderEnvironmentControls() {
   const fixedByMint = state.activeView === 'launch' && Boolean(proofTokenMint(currentLaunchProof()));
   const settingsEnvironment = $('#launchSettingsEnvironment');
   if (settingsEnvironment) {
-    settingsEnvironment.textContent = fixedByMint
-      ? 'Fixed by this coin\'s mint'
-      : environment === 'live' ? 'Real transactions and SOL' : 'Nothing is sent';
+    const networkName = (value) => (value === 'devnet' ? 'Devnet' : value === 'mainnet' ? 'Mainnet' : '');
+    const network = networkName(state.chainNetwork);
+    if (state.networkMismatch && environment === 'live') {
+      // The app's network and its RPC's disagree: say so and offer both ways out.
+      settingsEnvironment.innerHTML = `<span class="network-mismatch" role="alert"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> Network is ${escapeHtml(network)}, RPC is ${escapeHtml(networkName(state.rpcNetwork))}</span>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="rpc">Use ${escapeHtml(networkName(state.rpcNetwork))}</button>
+        <button class="pill-button" type="button" data-action="reconcile-network" data-match="network">Use a ${escapeHtml(network)} RPC</button>`;
+    } else {
+      settingsEnvironment.textContent = fixedByMint
+        ? `Fixed by this coin's mint${network ? ` · ${network}` : ''}`
+        : environment === 'live' ? `${network || 'Live'} · real transactions and SOL` : 'Nothing is sent';
+    }
   }
   $$('.mode-button').forEach((button) => {
     button.classList.toggle('is-selected', button.dataset.mode === state.launchMode);
@@ -641,5 +646,21 @@ async function setExecutionEnvironment(environment, { announce = true } = {}) {
   } finally {
     state.environmentSwitching = false;
     renderAll();
+  }
+}
+
+
+async function reconcileNetwork(match) {
+  if (!state.apiClient?.reconcileNetwork) return;
+  try {
+    const result = await state.apiClient.reconcileNetwork(match);
+    state.chainNetwork = result?.config?.activeNetwork || result?.network || state.chainNetwork;
+    state.rpcNetwork = result?.config?.rpcNetwork || state.rpcNetwork;
+    state.networkMismatch = result?.config?.networkMismatch === true;
+    state.rpcActiveUrl = result?.config?.active || state.rpcActiveUrl;
+    renderAll();
+    notify(`Network and RPC now both ${state.chainNetwork === 'devnet' ? 'devnet' : 'mainnet'}`);
+  } catch (error) {
+    notify(error.message || 'Could not match the network and RPC');
   }
 }

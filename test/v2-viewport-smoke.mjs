@@ -65,13 +65,7 @@ async function smokeViewport(browser, viewport) {
     await page.waitForSelector('#view-coins.is-active', { timeout: 10_000 });
     await page.click('[data-action="new-coin"]');
     await page.waitForSelector('#view-launch.is-active', { timeout: 10_000 });
-    await page.waitForFunction(
-      () => document.querySelector('#tokenomicsChart svg')
-        && (document.querySelector('#parityPanel article')
-          || document.querySelector('#parityPanel .parity-summary')),
-      null,
-      { timeout: 10_000 },
-    );
+    await page.waitForFunction(() => document.querySelector('#tokenomicsChart svg'), null, { timeout: 10_000 });
 
     // One launch flow: it opens on Token & pools with the app chrome visible.
     const firstOpen = await page.evaluate(() => ({
@@ -124,9 +118,8 @@ async function smokeViewport(browser, viewport) {
         docScrollHeight: document.documentElement.scrollHeight,
       };
     });
-    assert.equal(collapsedMetrics.open, false, `${viewport.name}: launch summary should start collapsed`);
-    assert.ok(collapsedMetrics.cockpit?.height > 0 && collapsedMetrics.cockpit.height < 80, `${viewport.name}: collapsed summary is not compact`);
-    await page.click('.launch-summary-drawer > summary');
+    // The Charts drawer is gone from the screen; its charts still render (checked below by their nodes).
+    assert.equal(collapsedMetrics.cockpit?.height ?? 0, 0, `${viewport.name}: the Charts drawer is back on screen`);
 
     const metrics = await page.evaluate(() => {
       const rectFor = (selector) => {
@@ -152,8 +145,6 @@ async function smokeViewport(browser, viewport) {
         chartSvgCount: document.querySelectorAll('#chartDeck svg').length,
         depthNodeCount: document.querySelectorAll('#liquidityChart *').length,
         fundingRowCount: document.querySelectorAll('#fundingMeter .funding-row').length,
-        parityRowCount: document.querySelectorAll('#parityPanel article').length,
-        parityDeferred: Boolean(document.querySelector('#parityPanel .launch-audit-deferred')),
         chartDeckClientWidth: document.querySelector('#chartDeck')?.clientWidth ?? 0,
         chartDeckScrollWidth: document.querySelector('#chartDeck')?.scrollWidth ?? 0,
         rects: {
@@ -172,7 +163,8 @@ async function smokeViewport(browser, viewport) {
     });
 
     const workspaceStates = {};
-    for (const workspace of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
+    // Funding has no row of its own; the rail opens it.
+    for (const workspace of ['wallet', 'mint', 'liquidity', 'finish']) {
       await page.click(`.coin-fact[data-coin-fact="${workspace}"]`);
       workspaceStates[workspace] = await page.evaluate((selectedWorkspace) => {
         const selectedTab = document.querySelector(`.coin-fact[data-coin-fact="${selectedWorkspace}"]`);
@@ -208,8 +200,6 @@ async function smokeViewport(browser, viewport) {
     assert.ok(metrics.fundingRowCount >= 3, `${viewport.name}: funding meter did not render`);
     // Before a launch exists the panel correctly renders its deferred summary;
     // afterwards it renders parity rows. Either is a render, neither is empty.
-    const parityPanel = metrics.parityRowCount >= 3 || metrics.parityDeferred;
-    assert.ok(parityPanel, `${viewport.name}: parity panel rendered neither rows nor its deferred summary`);
     for (const [workspace, workspaceState] of Object.entries(workspaceStates)) {
       assert.equal(workspaceState.bodyWorkspace, workspace, `${viewport.name}: ${workspace} did not become active`);
       assert.equal(workspaceState.selected, true, `${viewport.name}: ${workspace} tab is not selected`);
@@ -239,7 +229,7 @@ async function smokeViewport(browser, viewport) {
         && (actualScrollOwner === 'view'
           ? collapsedMetrics.viewTop + collapsedMetrics.viewScrollHeight + 1 >= collapsedMetrics.workspace.bottom
           : collapsedMetrics.docScrollHeight + 1 >= collapsedMetrics.workspace.bottom)
-      : collapsedMetrics.cockpit.bottom <= viewport.height + 1;
+      : collapsedMetrics.workspace.bottom <= viewport.height + 1 || actualScrollOwner === 'page';
     assert.ok(
       firstViewportFit,
       `${viewport.name}: launch workspace does not fit its intended viewport ${JSON.stringify({
@@ -252,13 +242,11 @@ async function smokeViewport(browser, viewport) {
       })}`,
     );
 
-    for (const selector of ['launchShell', 'cockpit', 'chartDeck', 'tokenomicsChart', 'liquidityChart', 'fundingMeter', 'workspaceTabs', 'workspaceViewport', 'setupDock']) {
+    for (const selector of ['launchShell', 'workspaceTabs', 'workspaceViewport']) {
       assertRectSized(metrics.rects[selector], selector, viewport);
     }
 
-    const initiallyVisibleSelectors = viewport.tier === 'mobile'
-      ? ['cockpit', 'chartDeck', 'tokenomicsChart', 'workspaceTabs', 'setupDock']
-      : ['cockpit', 'chartDeck', 'tokenomicsChart', 'liquidityChart', 'fundingMeter', 'workspaceTabs'];
+    const initiallyVisibleSelectors = ['workspaceTabs'];
     for (const selector of initiallyVisibleSelectors) {
       assertRectVisible(metrics.rects[selector], selector, viewport);
     }
@@ -413,7 +401,6 @@ async function smokeViewport(browser, viewport) {
         tokenomicsChart: metrics.chartSvgCount >= 1,
         liquidityChart: metrics.depthNodeCount > 0,
         fundingMeter: metrics.fundingRowCount >= 3,
-        parityPanel,
         firstViewportFit,
         terminalPanelFit,
         discoveryTokenViewport,

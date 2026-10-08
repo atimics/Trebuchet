@@ -1693,7 +1693,9 @@ test('buildV2ExecutionReadiness blocks underbacked airdrop support before fresh 
   assert.equal(readiness.status, 'blocked');
   assert.equal(readiness.nextEndpoint, null);
   assert.match(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Add at least/);
+  const blocker = readiness.blockers.find((item) => item.id === 'airdrop-support-underbacked');
+  assert.equal(blocker.detail, 'Airdrop and held tokens: 2% of supply ($5,000). Buy support: 1.000 SOL ($100). Needs 50.00 SOL.');
+  assert.deepEqual(blocker.fix, { action: 'add-sol-support', sol: 49 }, 'the shortfall, offered as one button');
   assert.equal(readiness.phases.find((phase) => phase.id === 'liquidity')?.state, 'blocked');
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-airdrop-backing')?.state, 'danger');
 });
@@ -1770,8 +1772,9 @@ test('buildV2ExecutionReadiness blocks underbacked held preallocation support be
 
   assert.equal(readiness.status, 'blocked');
   assert.match(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
-  assert.match(readiness.blockers.map((item) => item.title).join(' '), /Held reserve support underbacked/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Held reserves 5% of supply/);
+  assert.match(readiness.blockers.map((item) => item.title).join(' '), /Airdrop not backed by buy support/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Airdrop and held tokens: 5% of supply/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /Buy support: 1\.000 SOL \(\$100\)\. Needs 125\.00 SOL\./);
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-airdrop-backing')?.state, 'danger');
 });
 
@@ -3276,4 +3279,34 @@ test('server selects the proof-bound journal for v2 report publishing', () => {
     }),
     null,
   );
+});
+
+test('a Meteora SOL pool cannot hold buy support: an unbacked airdrop is a warning, not a dead-end blocker', () => {
+  const readiness = buildV2ExecutionReadiness(
+    {
+      token: { name: 'MoonKit', symbol: 'MKT', supply: '1000000' },
+      poolTopology: {
+        targetMarketCapUsd: 20000,
+        sweepDestination: VALID_SWEEP_DESTINATION,
+        pools: [
+          { id: 'sol-main', quoteToken: 'SOL', quoteSymbol: 'SOL', supplyPercent: 80, venue: 'meteora-damm-v2', damm: { feeBps: 25, rangeMultiple: 1000 }, support: { mode: 'off' } },
+        ],
+        airdrop: { enabled: true, recipientCount: 1, supplyPercent: 0.1, recipients: [{ wallet: VALID_AIRDROP_WALLET_ONE, tokens: 1000 }] },
+      },
+      funding: { estimate: { totalSol: 2.4, solUsd: 120 } },
+    },
+    {
+      demoMode: false,
+      walletPublicKey: '11111111111111111111111111111111',
+      walletAvailable: true,
+      secretAvailable: true,
+      secretPinLocked: false,
+      now: '2026-06-20T12:00:00.000Z',
+    },
+  );
+  assert.doesNotMatch(readiness.blockers.map((item) => item.id).join(','), /airdrop-support-underbacked/);
+  const warning = (readiness.warnings || []).find((item) => item.id === 'airdrop-support-underbacked');
+  assert.ok(warning, 'still said, as a warning');
+  assert.match(warning.detail, /The SOL pool is on Meteora, which holds no buy support/);
+  assert.equal(warning.fix, undefined, 'no button that could not work');
 });

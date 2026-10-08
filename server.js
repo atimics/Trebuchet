@@ -1,4 +1,7 @@
+// First: web3.js captures fetch when it loads, and every RPC request must go through the limiter.
+import './rpcLimiter.js';
 import { listFlywheelHubs, resolveFlywheelHub } from './hubPoolService.js';
+import { setRentLamportsPerByte, rentLamportsPerByte as currentRentRate } from './lpConstants.js';
 import { createSupportPositionRuntime } from './supportPosition.js';
 import { installSupportPositionRoutes } from './supportPositionRoutes.js';
 import { createPositionWithdrawalRuntime } from './positionWithdrawal.js';
@@ -11,6 +14,7 @@ import { createQuoteAcquisitionRuntime } from './quoteAcquisition.js';
 import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
+import { autoResumingLaunchServices } from './autoResume.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
 import { createRuntimeControl } from '@trebuchet/runtime/control';
@@ -69,6 +73,8 @@ import {
   getConfig as getRpcConfig,
   getRpcUrl,
   setActiveRpc,
+  matchNetworkToRpc,
+  matchRpcToNetwork,
   addSavedRpc,
   removeSavedRpc,
   testRpc,
@@ -78,6 +84,12 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
+import { cachedTokenDisplay } from './tokenInfoService.js';
+import { installRpcTrace } from './rpcTrace.js';
+
+if (process.env.TREBUCHET_RPC_TRACE === '1') installRpcTrace();
+import { airdropDeliveries, previousAirdropLists, readAirdropHistory, readAirdropHolders } from './coinAirdrop.js';
+import * as airdropHistoryStore from './airdropHistoryStore.js';
 import * as secretStore from './secretStore.js';
 import { secretInventory, walletSecretState } from './secretInventory.js';
 import { resetWithArchive } from './secretReset.js';
@@ -123,12 +135,9 @@ import {
 import { expectedVanityAttempts, unsafeSweepDestinationReason } from '@trebuchet/core/validators';
 import * as destinationProofStore from './destinationProofStore.js';
 import * as splitJobStore from './splitJobStore.js';
-import * as nftCollectionStore from './nftCollectionStore.js';
-import { registerNftRoutes } from './nftRoutes.js';
-import { registerDammV2Routes } from './dammV2Routes.js';
 import { combineSplitKey, createSplitSecret, matchesVanityPattern, scalarPublicKey } from '@trebuchet/core/split-key';
 import { normalizeDistribution } from './lpDistribution.js';
-import { isWalletEffectivelyEmpty } from './walletRecovery.js';
+import { isWalletEffectivelyEmpty, SOL_DUST_THRESHOLD } from './walletRecovery.js';
 import {
   buildV2RecoveryAuthorizationPlan,
   buildV2ExecutionReadiness,
@@ -663,6 +672,7 @@ const walletExecution = runtimeOwner ? createWalletExecutionRuntime({
 const quoteAcquisition = runtimeOwner ? quoteRuntimeFactory({
   owner: runtimeOwner,
   getScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id,
+  ensureScopeId: (wallet) => launchJournal.activeForWallet(wallet)?.id || launchJournal.start({ walletPublicKey: wallet })?.id,
 }) : null;
 const liquidityExecution = runtimeOwner ? createLiquidityExecutionRuntime({
   owner: runtimeOwner,
@@ -688,15 +698,26 @@ const airdropExecution = runtimeOwner ? createAirdropExecutionRuntime({
   getJournal: (wallet) => launchJournal.activeForWallet(wallet),
   updateJournal: (wallet, patch, event) => launchJournal.upsertForWallet(wallet, patch, event),
 }) : null;
-const prepareAirdrop = (input) => {
+const prepareAirdrop = async (input) => {
   if (!airdropExecution) throw Object.assign(new Error('Start the owned runtime before airdrop execution.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  // The plan is saved under the coin's own token program, so that is known before the plan is read.
+  await airdropExecution.resolveTokenProgram(input);
   return airdropExecution.prepare(input);
 };
 const executeAirdrop = (input) => airdropExecution.execute(input);
 const reconcileAirdrop = (input) => airdropExecution.recover(input);
-const createPoolsAndPositions = (input) => createPoolsWithSdk({ ...input, execution: {
-  ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
-} });
+const createPoolsAndPositions = (requested) => {
+  // Resuming a launch whose liquidity plan is already saved builds the remaining steps from that
+  // plan, not from the current screen.
+  const saved = requireLiquidityExecution().savedPlan(requested);
+  const input = saved && saved.tokenMint === requested.tokenMint
+    ? { ...requested, allocations: saved.allocations, targetMarketCapUsd: saved.targetMarketCapUsd, tokenTotalSupply: saved.tokenTotalSupply,
+      tokenDecimals: saved.tokenDecimals, lockPositions: saved.lockPositions }
+    : requested;
+  return createPoolsWithSdk({ ...input, execution: {
+    ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
+  } });
+};
 const reconcileBeforeLiquidity = async (input) => {
   await requireLiquidityExecution().recover(input);
   await feeKeyExecution.recover(input);
@@ -707,6 +728,7 @@ const requireWalletExecution = () => {
   return walletExecution;
 };
 const sweepSolToDestination = (input) => requireWalletExecution().sweepSolToDestination(input);
+const closeEmptyTokenAccounts = (input) => requireWalletExecution().closeEmptyTokenAccounts(input);
 const transferMetadataAuthority = (input) => requireWalletExecution().transferMetadataAuthority(input);
 const reconcileWalletOperation = async (input) => {
   const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
@@ -728,7 +750,11 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeQuotes = op === 'acquire-quote-tokens' && workflow?.kind === 'quote-token-acquisition' && workflow.id === workflowId;
   if (workflow && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
     throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: workflow.id,
-      workflowId: workflow.id, workflowKind: workflow.kind, error: 'Resume the saved wallet workflow before starting another wallet action.' });
+      workflowId: workflow.id, workflowKind: workflow.kind, error: ({
+        'support-position': 'A saved buy-support position holds this launch wallet. Resume or cancel it on the coin page (Saved support), then try again.',
+        'quote-token-acquisition': 'A saved pair-token purchase holds this launch wallet. Resume it on the Fund page, then try again.',
+        'position-withdrawal': 'A saved position withdrawal holds this launch wallet. Resume it on the coin page (Your positions), then try again.',
+      })[workflow.kind] || 'Resume the saved wallet workflow before starting another wallet action.' });
   }
   const pending = walletExecution?.active(walletPublicKey);
   const canResumeMetadata = pending?.kind === 'metadata-update' && pending.payload.makeImmutable
@@ -737,7 +763,7 @@ function claimLaunchOp(walletPublicKey, op, workflowId = null) {
   const canResumeFeeKey = pending?.kind === 'token-transfer' && ['create-lp', 'resume-launch'].includes(op) && feeKeyExecution?.canRecover(walletPublicKey);
   const canResumeAirdrop = ['token-transfer', 'airdrop-observed-delivery'].includes(pending?.kind) && op === 'run-airdrop' && airdropExecution?.canRecover(walletPublicKey);
   if (pending && op !== 'transfer-assets' && !canResumeMetadata && !canResumeLiquidity && !canResumeFeeKey && !canResumeAirdrop && !canResumeQuotes && !canResumeWithdrawal && !canResumeSupport) {
-    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: 'Resume the saved wallet operation before starting another wallet action.' });
+    throw new LaunchRejection(409, { success: false, code: 'EXECUTION_RECOVERY_REQUIRED', operationId: pending.id, error: `An earlier ${({ 'token-transfer': 'token transfer', 'sol-sweep': 'SOL transfer', 'metadata-update': 'metadata update', 'token-account-close': 'token account close', [LIQUIDITY_OPERATION_KIND]: 'pool step' })[pending.kind] || 'wallet step'} from this launch wallet is not confirmed yet, so this action did not start.` });
   }
   claimLaunchOperation(launchOpsInFlight, walletPublicKey, op);
 }
@@ -897,6 +923,30 @@ if (runtimeControl) app.use(runtimeControl);
 // mutating the launcher API. The frontend gets the token through /api/session;
 // cross-origin pages can make that request, but cannot read the response
 // without CORS, so they cannot attach the required header.
+// Rent per byte as the chain reports it. The funding estimate scales its rent
+// constants by it. The app asks once at start (GET /api/rent); a lookup is
+// repeated at most every six hours, and a failed one keeps the last rate.
+const RENT_PROBE_BYTES = 10240; // one CLMM tick array
+const RENT_ACCOUNT_OVERHEAD_BYTES = 128;
+const RENT_REFRESH_MS = 6 * 60 * 60 * 1000;
+let rentCheckedAt = 0;
+async function refreshRentRate() {
+  if (Date.now() - rentCheckedAt < RENT_REFRESH_MS) return;
+  rentCheckedAt = Date.now();
+  try {
+    const response = await fetch(getRpcUrl(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getMinimumBalanceForRentExemption', params: [RENT_PROBE_BYTES] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const lamports = Number((await response.json())?.result);
+    if (Number.isFinite(lamports) && lamports > 0) {
+      setRentLamportsPerByte(lamports / (RENT_PROBE_BYTES + RENT_ACCOUNT_OVERHEAD_BYTES));
+    }
+  } catch {}
+}
+
 app.get('/api/session', (_req, res) => {
   res
     .set('Cache-Control', 'no-store')
@@ -904,6 +954,11 @@ app.get('/api/session', (_req, res) => {
 });
 
 app.use('/api', apiSessionMiddleware);
+
+app.get('/api/rent', async (_req, res) => {
+  await refreshRentRate();
+  res.set('Cache-Control', 'no-store').json({ success: true, rentLamportsPerByte: currentRentRate });
+});
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -1059,49 +1114,10 @@ function readV2ViewportSmokeProof() {
 app.use(express.static(publicDir));
 
 // Routes
+// The app lives at /v2/.
 app.get('/', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+  res.redirect(302, '/v2/');
 });
-
-// Opt-in diagnostic endpoint for splash-video 404 debugging. It reports local
-// filesystem/process paths, so keep it unavailable in normal desktop/web runs.
-// Enable only for targeted troubleshooting:
-//
-//   TREBUCHET_ENABLE_SPLASH_DEBUG=1 npm run web
-//   fetch('/api/_splash-debug').then(r => r.json()).then(console.log)
-if (process.env.TREBUCHET_ENABLE_SPLASH_DEBUG === '1') {
-  app.get('/api/_splash-debug', (_req, res) => {
-    const introPath = path.join(publicDir, 'intro.mp4');
-    let publicListing = null;
-    let publicListingError = null;
-    try {
-      publicListing = fs.readdirSync(publicDir);
-    } catch (e) {
-      publicListingError = e.message;
-    }
-    let introStat = null;
-    let introStatError = null;
-    try {
-      const s = fs.statSync(introPath);
-      introStat = { size: s.size, isFile: s.isFile(), mtime: s.mtime };
-    } catch (e) {
-      introStatError = e.message;
-    }
-    res.json({
-      __dirname,
-      publicDir,
-      publicDirExists: fs.existsSync(publicDir),
-      publicListing,
-      publicListingError,
-      introPath,
-      introExists: fs.existsSync(introPath),
-      introStat,
-      introStatError,
-      cwd: process.cwd(),
-      execPath: process.execPath,
-    });
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Server log streaming
@@ -1360,7 +1376,7 @@ function rememberManagedDiscoveryWallet(wallet, label = 'Trebuchet wallet') {
 function syncManagedDiscoveryWallets() {
   const sourceWallets = isDemoMode()
     ? Array.from(demoManagedWallets.values())
-    : pendingWallets.list();
+    : pendingWallets.records();
   try {
     discoveryStore.syncManagedWallets(sourceWallets.map((wallet, index) => ({
       publicKey: wallet?.publicKey,
@@ -2036,43 +2052,19 @@ function demoAllocationsForV2(allocations = []) {
 // SOL-only balance (kept for backwards compatibility / Step 1 display)
 // ---------------------------------------------------------------------------
 
-// NFT collections (v2 NFTs view). See nftRoutes.js.
-registerNftRoutes(app, {
-  isDemoMode,
-  rejectIfSecretPinLocked,
-  sendErrorResponse,
-  getRpcUrl,
-  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
-});
-
-// Lean Meteora DAMM v2 launches. See dammV2Routes.js.
-registerDammV2Routes(app, {
-  isDemoMode,
-  rejectIfSecretPinLocked,
-  sendErrorResponse,
-  getRpcUrl,
-  getManagedWallet: (publicKey) => pendingWallets.get(publicKey),
-  createToken: createTokenWithMetaplex,
-  finishToken: finishTokenCreation,
-  getVanityCandidate: (publicKey) => vanityCaStore.get(publicKey),
-  removeVanityCandidate: (publicKey) => vanityCaStore.remove(publicKey),
-  getSolUsd: () => getUsdPrice(KNOWN_QUOTES.SOL.address),
-  addCoin: (coin) => coinStore.add({ ...coin, source: 'added' }),
-  // Same rule as the classic Fee Key send: no placeholder addresses, and an
-  // address the operator has proven, unless it is the wallet that funded the launch.
-  destinationRejection: async (destination, walletPublicKey) => {
-    const funder = (await findFundingWallet(walletPublicKey).catch(() => null))?.funder || null;
-    return unsafeSweepDestinationReason(destination, { launchWallet: walletPublicKey })
-      || await unverifiedDestinationReason(destination, walletPublicKey, { funder });
-  },
-});
-
 app.get('/api/vanity-ca-candidates', (req, res) => {
   try {
     const secretPinLocked = secretStore.isSecretPinLocked();
+    // An address a launch has minted is used. Its key stays saved; it can't be chosen again.
+    const usedBy = new Map();
+    for (const journal of launchJournal.list({ includeCompleted: true, includeArchived: true })) {
+      const mint = String(journal?.token?.mint || journal?.token?.tokenMint || '').trim();
+      if (mint && !usedBy.has(mint)) usedBy.set(mint, { symbol: journal.token?.symbol || null, walletPublicKey: journal.walletPublicKey || null });
+    }
     const candidates = vanityCaStore.listMetadata().map((candidate) => ({
       ...candidate,
       ...(candidate.decryptionFailed && secretPinLocked ? { secretPinLocked: true } : {}),
+      ...(usedBy.has(candidate.publicKey) ? { usedBy: usedBy.get(candidate.publicKey) } : {}),
     }));
     res.json({ success: true, candidates, secretPinLocked });
   } catch (error) {
@@ -2510,6 +2502,18 @@ app.post('/api/cancel-vanity-grind', async (req, res) => {
   }
 });
 
+// Measure this computer's grind speed: a 3-second split-key run that saves nothing.
+app.post('/api/v2/vanity/calibrate', async (_req, res) => {
+  try {
+    if (!(await vanityAvailability()).available) return res.status(503).json({ success: false, error: 'This build has no grinder.' });
+    const mod = await import('./vanityKeygen.js');
+    res.json({ success: true, calibration: await mod.calibrateVanityRate({ seconds: 3 }) });
+  } catch (error) {
+    const busy = /already in progress/i.test(error.message || '');
+    res.status(busy ? 409 : 500).json({ success: false, error: busy ? 'A grind is running' : error.message });
+  }
+});
+
 app.post('/api/generate-vanity-wallet', async (req, res) => {
   try {
     const demoMode = isDemoMode();
@@ -2620,6 +2624,82 @@ app.post('/api/check-balance-detailed', async (req, res) => {
   }
 });
 
+// What an address holds now, for the wallet chip's hover card and the Wallet page: SOL, each
+// token balance, and every open token account with the rent it locks. Also says whether this
+// app holds the address's key. Reads are kept 15 seconds.
+const TOKEN_PROGRAM_ADDRESSES = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
+const walletContentsCache = new Map();
+// Symbols and USD values from prices this process already holds; nothing is fetched for this.
+function withCachedPrices(contents) {
+  const sol = cachedTokenDisplay('So11111111111111111111111111111111111111112').priceUsd;
+  return {
+    ...contents,
+    solUsd: sol,
+    tokens: contents.tokens.map((token) => {
+      const { symbol, priceUsd } = cachedTokenDisplay(token.mint);
+      const amount = Number(token.amountRaw) / 10 ** Number(token.decimals || 0);
+      return { ...token, symbol, valueUsd: priceUsd != null && Number.isFinite(amount) ? amount * priceUsd : null };
+    }),
+  };
+}
+
+// Read from the stored records only: decrypting every saved key to answer this, once per
+// wallet read, logged a failure per key while the PIN was locked.
+function heldKeyKind(address) {
+  const launch = pendingWallets.keyRecord(address);
+  if (launch) return launch.retiredAt ? 'retired' : 'launch';
+  return vanityCaStore.hasAddress(address) ? 'vanity' : null;
+}
+async function readWalletContents(address) {
+  const key = new PublicKey(address).toBase58();
+  const cached = walletContentsCache.get(key);
+  if (cached && Date.now() - cached.at < 15_000) return withCachedPrices({ ...cached.value, key: heldKeyKind(key) });
+  const connection = new Connection(getRpcUrl(), 'confirmed');
+  const owner = new PublicKey(key);
+  const [info, ...programs] = await Promise.all([
+    connection.getAccountInfo(owner),
+    ...TOKEN_PROGRAM_ADDRESSES.map((programId) => connection.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey(programId) })),
+  ]);
+  const tokens = new Map();
+  let openAccounts = 0, accountRentLamports = 0;
+  programs.forEach((response, index) => {
+    for (const { account } of response.value) {
+      const parsed = account.data.parsed.info;
+      openAccounts += 1; accountRentLamports += account.lamports;
+      if (parsed.tokenAmount.amount === '0') continue;
+      const prior = tokens.get(parsed.mint);
+      tokens.set(parsed.mint, { mint: parsed.mint, programId: TOKEN_PROGRAM_ADDRESSES[index], decimals: parsed.tokenAmount.decimals,
+        amountRaw: (BigInt(prior?.amountRaw || 0) + BigInt(parsed.tokenAmount.amount)).toString() });
+    }
+  });
+  const value = { address: key, lamports: info?.lamports || 0, ownerProgram: info?.owner?.toBase58() || null,
+    tokens: [...tokens.values()], openAccounts, accountRentLamports };
+  walletContentsCache.set(key, { at: Date.now(), value });
+  return withCachedPrices({ ...value, key: heldKeyKind(key) });
+}
+app.get('/api/v2/wallets/contents', async (req, res) => {
+  try {
+    const address = String(req.query.address || '').trim();
+    try { new PublicKey(address); } catch { return res.status(400).json({ success: false, error: 'Use a Solana address.' }); }
+    if (isDemoMode()) return res.json({ success: true, contents: { address, lamports: 0, ownerProgram: null, tokens: [], openAccounts: 0, accountRentLamports: 0, key: heldKeyKind(address), demo: true } });
+    if (req.query.fresh === '1') walletContentsCache.delete(address);
+    res.json({ success: true, contents: await readWalletContents(address) });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+});
+// Every key this app holds: launch wallets (in use or finished) and vanity addresses. No secrets.
+app.get('/api/v2/wallets/held', (_req, res) => {
+  try {
+    const launch = pendingWallets.list().map((wallet) => ({ address: wallet.publicKey, kind: wallet.retiredAt ? 'retired' : 'launch', createdAt: wallet.createdAt || null,
+      readable: Array.isArray(wallet.secretKey) }));
+    const vanity = vanityCaStore.listMetadata().map((entry) => ({ address: entry.publicKey, kind: 'vanity', createdAt: entry.createdAt || null }));
+    res.json({ success: true, wallets: [...launch, ...vanity], secretPinLocked: secretStore.isSecretPinLocked() });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+});
+
 // Return the launch journal state for a wallet.  The client uses this
 // to resume a launch after a crash or close — it reads the token mint,
 // decimals, supply, LP pool info, and current stage, then jumps to the
@@ -2661,6 +2741,7 @@ app.get('/api/rpc-config', (req, res) => {
 app.post('/api/rpc-config/select', (req, res) => {
   try {
     setActiveRpc(req.body.url);
+    userPrefs.set({ network: getNetwork() });
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
   } catch (e) {
@@ -2690,6 +2771,22 @@ app.post('/api/rpc-config/remove', (req, res) => {
     removeSavedRpc(req.body.url);
     refreshTokenServiceConnection();
     res.json({ success: true, config: getRpcConfig() });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// The app's network and its RPC's network disagree: make one match the other.
+//   match: 'rpc'      keep the RPC, set the network to what it serves
+//   match: 'network'  keep the network, switch to a saved RPC on it
+app.post('/api/rpc-config/reconcile', (req, res) => {
+  try {
+    if (req.body?.match === 'rpc') matchNetworkToRpc();
+    else if (req.body?.match === 'network') matchRpcToNetwork();
+    else return res.status(400).json({ success: false, error: 'match must be "rpc" or "network"' });
+    userPrefs.set({ network: getNetwork() });
+    refreshTokenServiceConnection();
+    res.json({ success: true, config: getRpcConfig(), network: getNetwork() });
   } catch (e) {
     res.status(400).json({ success: false, error: e.message });
   }
@@ -2726,9 +2823,7 @@ app.post('/api/rpc-config/set-network', (req, res) => {
 // ---------------------------------------------------------------------------
 // User preferences.
 //
-// Small key/value store for user-toggleable settings. Currently only one
-// knob: checkForUpdatesOnStartup. The "don't check automatically" checkbox
-// on the update-check modal in public/app.js POSTs here to flip it.
+// Small key/value store for user-toggleable settings (Settings in the app).
 //
 // Backed by userPrefs.json in TREBUCHET_CONFIG_DIR — same persistence
 // pattern as rpcConfig.json. See userPrefs.js for the schema and defaults.
@@ -3273,18 +3368,18 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
       detail: token.sealedMetadataPending === true ? 'The identity is still sealed.' : 'Recorded as revealed.',
     });
   }
-  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports === 0 ? 'done' : 'not-done';
+  // Swept means what the sweep itself checks: under the dust line. The sweep keeps a small rent
+  // reserve on purpose, so a swept wallet is rarely at exactly zero.
+  const sweptLamports = Math.round(SOL_DUST_THRESHOLD * 1e9);
+  const walletEmptyOnChain = launchWalletLamports === null ? 'unknown' : launchWalletLamports < sweptLamports ? 'done' : 'not-done';
   steps.push({
     id: 'return',
     label: 'Launch wallet',
     state: combine(journal?.transfer?.walletEmpty === true, walletEmptyOnChain),
-    detail: launchWalletLamports === null
-      ? 'Not checked on-chain.'
-      : launchWalletLamports === 0
-        ? 'The launch wallet is empty on-chain.'
-        : `The launch wallet still holds ${(launchWalletLamports / 1e9).toFixed(4)} SOL.`,
+    // The page shows the wallet itself (its chip lists what it holds), not a sentence about it.
+    detail: launchWalletLamports === null ? 'Not checked on-chain.' : null,
   });
-  const walletEntry = journal?.walletPublicKey ? pendingWallets.get(journal.walletPublicKey) : null;
+  const walletEntry = journal?.walletPublicKey ? pendingWallets.keyRecord(journal.walletPublicKey) : null;
   const { events: _events, ...journalWithoutEvents } = journal || {};
   return {
     journalId: journal?.id || null,
@@ -3297,7 +3392,8 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     walletManaged: Boolean(walletEntry),
     journal: journalWithoutEvents,
     steps,
-    nextStep: steps.find((step) => step.state !== 'done')?.id || null,
+    // A step the chain can't check (liquidity locks) holds once it is recorded, as the coin's status says.
+    nextStep: steps.find((step) => !['done', 'recorded'].includes(step.state))?.id || null,
   };
 }
 
@@ -3325,14 +3421,15 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
     const latestJournal = journals
       .slice()
       .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
-    const [account, info, markets, launchWalletLamports] = await Promise.all([
+    const [account, info, listedMarkets, launchWalletLamports] = await Promise.all([
       readMintAccount(connection, mint).catch((error) => ({ error: error.message })),
       getTokenMetadata(mint).catch(() => null),
-      listTokenMarkets(mint).catch((error) => ({ error: error.message, pools: [] })),
+      listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }).catch((error) => ({ error: error.message, pools: [] })),
       latestJournal?.walletPublicKey
         ? connection.getBalance(new PublicKey(latestJournal.walletPublicKey)).catch(() => null)
         : Promise.resolve(null),
     ]);
+    const markets = withRecordedQuoteSymbols(listedMarkets, journals);
     const creation = latestJournal
       ? coinCreationSteps(latestJournal, { account, markets, launchWalletLamports })
       : null;
@@ -3356,7 +3453,9 @@ app.get('/api/v2/coins/:mint/evidence', async (req, res) => {
     const connection = new Connection(getRpcUrl(), 'finalized');
     const account = await readMintAccount(connection, mint, 'finalized');
     if (!account) return res.status(404).json({ success: false, error: 'Token mint needs verification.' });
-    const markets = await listTokenMarkets(mint).catch(() => ({ pools: [] }));
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const markets = await listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }).catch(() => ({ pools: [] }));
     const evidence = await readTokenMarketEvidence(connection, mint, {
       supply: account.supply, pools: markets.pools, network: getNetwork(),
     });
@@ -3379,6 +3478,67 @@ app.post('/api/v2/coins/:mint/sell-quote', async (req, res) => {
   } catch (error) { sendErrorResponse(res, error, 400); }
 });
 
+// The bundled KOL wallet list (public labels, with their source), or null when it can't be read.
+function readKolWallets() {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'v2', 'kol-wallets.json'), 'utf8'));
+    return Array.isArray(list?.wallets) ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+// Airdrop lists used before: each launch's recipients (wallet and tokens), newest first, one
+// per distinct list, so a new coin can airdrop to the same wallets.
+app.get('/api/v2/airdrop-lists', (_req, res) => {
+  try {
+    res.json({
+      success: true,
+      lists: previousAirdropLists(launchJournal.list({ includeCompleted: true, includeArchived: true })),
+      kol: readKolWallets(),
+    });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+});
+
+// The coin's airdrop: each wallet it reached, what it received, and what it holds now.
+app.get('/api/v2/coins/:mint/airdrop', async (req, res) => {
+  try {
+    const mint = String(req.params.mint || '').trim();
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true });
+    const deliveries = airdropDeliveries(journals, mint);
+    if (/^Demo/.test(mint) || !deliveries.length) {
+      return res.json({ success: true, airdrop: { mint, decimals: null, recipients: deliveries.map((row) => ({ wallet: row.wallet, receivedRaw: row.receivedRaw.toString(), nowRaw: null, txIds: row.txIds })) } });
+    }
+    if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
+    const connection = new Connection(getRpcUrl(), 'confirmed');
+    const account = await readMintAccount(connection, mint);
+    if (!account) return res.status(404).json({ success: false, error: 'Not a readable mint' });
+    const recipients = await readAirdropHolders(connection, { mint, tokenProgram: account.program, deliveries });
+    // History is saved per wallet with the balance it explains. It is read again, from where it
+    // left off, only for a wallet whose balance has moved since, or whose last read failed.
+    const known = airdropHistoryStore.get(mint);
+    const stale = recipients.filter((row) => {
+      if (row.nowRaw == null) return false;
+      const saved = known[row.wallet];
+      if (saved) return saved.nowRaw !== row.nowRaw || Boolean(saved.error);
+      return row.nowRaw !== row.receivedRaw;
+    });
+    const fresh = stale.length
+      ? await readAirdropHistory(connection, { mint, tokenProgram: account.program, recipients: stale, known })
+      : [];
+    const nowByWallet = new Map(recipients.map((row) => [row.wallet, row.nowRaw]));
+    airdropHistoryStore.save(mint, Object.fromEntries(fresh.map((row) => [row.wallet, { ...row, nowRaw: nowByWallet.get(row.wallet) }])));
+    const history = { ...known, ...Object.fromEntries(fresh.map((row) => [row.wallet, row])) };
+    const shown = ({ cursors: _cursors, nowRaw: _nowRaw, ...rest }) => rest;
+    const rows = recipients.map((row) => (history[row.wallet] ? { ...row, history: shown(history[row.wallet]) } : row));
+    res.json({ success: true, airdrop: { mint, decimals: account.decimals, recipients: rows, historyRead: fresh.length, readAt: new Date().toISOString() } });
+  } catch (error) {
+    sendErrorResponse(res, error, 502);
+  }
+});
+
 // Positions held by this app's wallets. Withdrawal re-reads each position.
 app.get('/api/v2/coins/:mint/positions', async (req, res) => {
   try {
@@ -3387,7 +3547,15 @@ app.get('/api/v2/coins/:mint/positions', async (req, res) => {
       return res.json({ success: true, positions: demoChainService.listDemoPositions(mint) });
     }
     if (!validMint(mint)) return res.status(400).json({ success: false, error: 'Invalid mint' });
-    const owners = pendingWallets.list().map((wallet) => wallet.publicKey).filter(Boolean);
+    // Positions sit with wallets still in use, or with this coin's own launch wallets. A swept,
+    // retired wallet holds none, and reading every saved wallet cut off the list at 25.
+    const launchWallets = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint)
+      .map((journal) => journal.walletPublicKey);
+    const owners = [...new Set([
+      ...launchWallets,
+      ...pendingWallets.records().filter((wallet) => !wallet.retiredAt).map((wallet) => wallet.publicKey),
+    ].filter(Boolean))];
     const positions = await listCoinPositions({ tokenMint: mint, owners });
     res.json({ success: true, positions });
   } catch (error) {
@@ -3460,6 +3628,23 @@ app.post('/api/v2/launch-configs/remove', (req, res) => {
 app.get('/api/v2/flywheel-hubs', (_req, res) => {
   try {
     res.json({ success: true, ...listFlywheelHubs(discoveryStore.getSnapshot()) });
+  } catch (error) {
+    sendErrorResponse(res, error, 400);
+  }
+});
+
+// Logos for the tokens on the Add pair page: at most 24 mints per call, each read through the
+// token info cache, so a repeat costs nothing. A token with no logo comes back as null.
+app.post('/api/v2/token-logos', async (req, res) => {
+  try {
+    const mints = [...new Set((Array.isArray(req.body?.mints) ? req.body.mints : []).map((mint) => String(mint || '').trim()))]
+      .filter((mint) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)).slice(0, 24);
+    const rpcUrl = getRpcUrl();
+    const found = await Promise.all(mints.map(async (mint) => {
+      const info = await getTokenMetadata(mint, { rpcUrl }).catch(() => null);
+      return [mint, info?.imageUrl || null];
+    }));
+    res.json({ success: true, logos: Object.fromEntries(found) });
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
@@ -4313,6 +4498,23 @@ function v2SortedTextList(values = []) {
 function v2SameTextList(left = [], right = []) {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
+}
+
+// The Meteora pools a coin's launches recorded. Raydium's API lists only Raydium pools, so these
+// are read from the chain by address to appear among the coin's markets.
+function meteoraPoolIdsFor(journals = []) {
+  return [...new Set(journals.flatMap((journal) => v2JournalLiquidityResults(journal))
+    .filter((result) => result?.venue === 'meteora-damm-v2' && result.poolId)
+    .map((result) => String(result.poolId)))];
+}
+
+// A Meteora pair pool's quote symbol, from the launch record (the pool account holds only mints).
+function withRecordedQuoteSymbols(markets, journals = []) {
+  if (!Array.isArray(markets?.pools)) return markets;
+  const symbols = new Map(journals.flatMap((journal) => v2JournalLiquidityResults(journal))
+    .filter((result) => result?.poolId && result.quoteSymbol)
+    .map((result) => [String(result.poolId), String(result.quoteSymbol)]));
+  return { ...markets, pools: markets.pools.map((pool) => (pool.quoteSymbol || !symbols.has(pool.poolId) ? pool : { ...pool, quoteSymbol: symbols.get(pool.poolId) })) };
 }
 
 function v2JournalLiquidityResults(journal = {}) {
@@ -5182,7 +5384,7 @@ async function runV2ClassicLpPreflight(payload = {}) {
   }
 }
 
-const launchServices = createLaunchExecutionServices({
+const launchServices = autoResumingLaunchServices(createLaunchExecutionServices({
   PublicKey,
   airdropInFlight,
   airdropProgressBegin,
@@ -5231,6 +5433,7 @@ const launchServices = createLaunchExecutionServices({
   sweepAllTokensToDestination,
   sweepNftsToDestination,
   sweepSolToDestination,
+  closeEmptyTokenAccounts,
   transferJournalSummary,
   transferMetadataAuthority,
   unsafeSweepDestinationReason,
@@ -5238,7 +5441,7 @@ const launchServices = createLaunchExecutionServices({
   validateTransferAirdropPayload,
   vanityAvailability,
   vanityCaStore,
-});
+}));
 
 async function serveLaunchOperation(res, execute) {
   try { return res.json(await execute()); }
@@ -5933,7 +6136,7 @@ function uploadLogo(req, res, next) {
     }
     if (req.file) {
       try {
-        // Authoritative logo validation: type + byte cap + 200×200 pixel
+        // Authoritative logo validation: type + byte cap + 1024×1024 pixel
         // ceiling (see validators.js for why the ceiling exists). The
         // frontend pre-checks the same rule for a friendlier error, but
         // the server never trusts the client.
@@ -5951,7 +6154,7 @@ function uploadLogo(req, res, next) {
 const V2_LOGO_DATA_URL_RE = /^data:(image\/(?:png|jpeg|gif));base64,([A-Za-z0-9+/=]+)$/;
 const V2_MAX_LOGO_BYTES = 100 * 1024;
 const CLASSIC_LOGO_MIN_DIMENSION = 64;
-const CLASSIC_LOGO_MAX_DIMENSION = 200;
+const CLASSIC_LOGO_MAX_DIMENSION = 1024;
 
 function assertClassicLogoDimensions(buffer) {
   const dimensions = detectLogoImageDimensions(buffer);
@@ -6183,9 +6386,14 @@ function materializePhase1RecoveryResults(journal, priorResults, allocations) {
       txIds: { open: event.txId || null, lock: null },
     }));
 
-    const supportPositions = (journal.events || [])
+    // One support position per layer: the last event for each layer index.
+    const supportByIndex = new Map();
+    (journal.events || [])
       .filter((event) => event.stage === 'support_open_done' && event.allocationIndex === allocationIndex)
-      .slice(-1)
+      .forEach((event) => supportByIndex.set(Number.isFinite(Number(event.supportIndex)) ? Number(event.supportIndex) : 0, event));
+    const supportPositions = [...supportByIndex.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, event]) => event)
       .map((event) => ({
         tickLower: Number.isFinite(event.tickLower) ? event.tickLower : null,
         tickUpper: Number.isFinite(event.tickUpper) ? event.tickUpper : null,
@@ -6396,13 +6604,8 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
   }
 });
 
-// Image proxy for token logos. The 3D coin preview (coinRenderer.js) draws the
-// back-face token logo into a WebGL texture, which requires the source image to
-// be CORS-clean — many logo hosts (CDNs, indexers) don't send CORS headers, so
-// loading them directly with crossOrigin fails and the coin falls back to
-// embossing the symbol text. Re-serving the logo from our own origin sidesteps
-// CORS entirely, so the coin shows the real logo for every token — the same
-// logo the pool-configuration rows already display via plain <img> tags.
+// Image proxy for token logos. Many logo hosts (CDNs, indexers) don't send CORS
+// headers; re-serving the logo from our own origin lets the page read it.
 //
 // This is a read-only passthrough, but we still guard it like a proxy: https
 // only, block loopback/private/link-local hosts (SSRF), enforce a timeout, only
@@ -6636,6 +6839,7 @@ const STEP2_PROBE_TTL_MS = 3 * 60 * 1000;  // 3 minutes
 // a transient failure); read errors are not, so the user can retry.
 const onChainPriceCache = new Map();
 const ON_CHAIN_PRICE_TTL_MS = 60 * 1000;
+const ON_CHAIN_PRICE_MISS_TTL_MS = 60 * 1000;
 
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
@@ -6774,9 +6978,10 @@ app.post('/api/quote-token-info', async (req, res) => {
         } else {
           const solUsdForDisplay = await getUsdPrice(WSOL_MINT_ADDRESS);
           oc = await getQuoteTokenOnChainPrice({ mint: quoteToken, solUsd: solUsdForDisplay });
-          // Cache a price or a spread finding; leave null (nothing usable /
-          // read failure) uncached so a transient RPC blip is retried.
-          if (oc) onChainPriceCache.set(ocKey, { result: oc, expiresAt: Date.now() + ON_CHAIN_PRICE_TTL_MS });
+          // Cache a price or a spread finding. Nothing usable is kept for a minute too: retrying
+          // at once re-ran the whole pool scan on every readiness check while the RPC was
+          // rate-limited, which kept it rate-limited.
+          onChainPriceCache.set(ocKey, { result: oc, expiresAt: Date.now() + (oc ? ON_CHAIN_PRICE_TTL_MS : ON_CHAIN_PRICE_MISS_TTL_MS) });
         }
         if (oc && oc.priceUsd) {
           infoOut.priceUsd = oc.priceUsd.toString();
@@ -7604,6 +7809,14 @@ async function runAirdropHandler(req, res) {
 // share this handler — both are "send to every recipient not yet marked
 // delivered in the journal". The two routes exist so the frontend code
 // reads honestly at each call site.
+// The airdrop plan this launch saved, so the screen confirms and sends exactly those amounts.
+app.get('/api/v2/airdrop-plan', async (req, res) => {
+  const wallet = typeof req.query.wallet === 'string' ? req.query.wallet.trim() : '';
+  if (!wallet) return res.status(400).json({ success: false, error: 'wallet query param required' });
+  if (isDemoMode()) return res.json({ success: true, plan: null });
+  try { res.json({ success: true, plan: await prepareAirdrop({ walletPublicKey: wallet }) || null }); }
+  catch (error) { sendErrorResponse(res, error); }
+});
 app.post('/api/run-airdrop', runAirdropHandler);
 app.post('/api/retry-airdrop', runAirdropHandler);
 
@@ -7965,7 +8178,8 @@ app.get('/api/pending-wallets', (req, res) => {
     // another machine, or the OS keychain rotated): one bad entry must not break
     // the whole panel, so we surface a `decryptionFailed` flag.
     const inventory = secretInventory();
-    const wallets = pendingWallets.list().map((w) => {
+    // A retired wallet belongs to a finished launch: its key is kept, but it is not pending.
+    const wallets = pendingWallets.list().filter((w) => !w.retiredAt).map((w) => {
       const hasSecretKey = Array.isArray(w.secretKey);
       const hasMnemonic = typeof w.mnemonic === 'string';
       const out = {
@@ -8035,7 +8249,8 @@ app.post('/api/pending-wallets/dismiss', (req, res) => {
     if (!publicKey) {
       return res.status(400).json({ success: false, error: 'publicKey required' });
     }
-    pendingWallets.remove(publicKey);
+    // Hiding keeps the key: it only leaves the list (see pendingWallets.retire).
+    pendingWallets.retire(publicKey);
     res.json({ success: true });
   } catch (error) {
     console.error('Error dismissing pending wallet:', error);

@@ -42,3 +42,4 @@ docs/RELEASE-AUDIT-BACKLOG.md
 /pendingWallets.json.*
 /.secretPin.json*
 /.tmp-*.json
+

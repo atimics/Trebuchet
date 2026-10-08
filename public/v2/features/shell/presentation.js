@@ -480,3 +480,33 @@ function executionLedgerAttemptLabel(entry) {
   const attempt = Number(entry?.attempt || 1);
   return attempt > 1 ? `attempt ${attempt}` : '';
 }
+
+
+// The sidebar is an icon rail by default (labels are tooltips); the choice is a per-viewer
+// convenience, so a blocked or empty store just leaves the default.
+function readNavMode() {
+  try { return window.localStorage?.getItem('trebuchet-nav') === 'full' ? 'full' : 'icons'; } catch { return 'icons'; }
+}
+
+function applyNavMode(mode) {
+  document.body.dataset.nav = mode;
+  $$('.nav-item').forEach((item) => {
+    const label = item.querySelector('span')?.textContent?.trim();
+    if (label) item.title = label;
+  });
+  const network = $('#networkButton');
+  if (network) network.title = `${($('#custodySignalLabel')?.textContent || '').trim()} · ${($('#networkLabel')?.textContent || '').trim()}`.replace(/^ · | · $/g, '');
+  const toggle = $('#navToggle');
+  if (toggle) {
+    const label = mode === 'icons' ? 'Expand navigation' : 'Collapse navigation';
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-expanded', mode === 'icons' ? 'false' : 'true');
+    toggle.querySelector('i').className = `fa-solid ${mode === 'icons' ? 'fa-angles-right' : 'fa-angles-left'}`;
+  }
+}
+
+function setNavMode(mode) {
+  applyNavMode(mode);
+  try { window.localStorage?.setItem('trebuchet-nav', mode); } catch { /* the choice just is not remembered */ }
+}

@@ -129,21 +129,3 @@ test('liquidity cleanup requires the current request to own the wallet', () => {
     assert.match(src, /if \(error instanceof LaunchRejection\) throw error;/);
   }
 });
-
-// Frontend contract: the modules that call these endpoints must recognize
-// OP_IN_FLIGHT and avoid rendering it as a launch failure.
-test('frontend modules handle 409 OP_IN_FLIGHT', () => {
-  const modules = [
-    'public/modules/lp-execution.js',
-    'public/modules/transfer.js',
-    'public/modules/cancel-flow.js',
-    'public/modules/funding.js',
-  ];
-  for (const rel of modules) {
-    const src = readFileSync(path.join(REPO, rel), 'utf8');
-    assert.ok(
-      /OP_IN_FLIGHT/.test(src),
-      `${rel} must check for the OP_IN_FLIGHT code`,
-    );
-  }
-});

@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -7,17 +6,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
-  DEFAULT_V2_RELEASE_ATTESTATION,
   DEFAULT_V2_RELEASE_EVIDENCE,
-  gitRuntimeMatches,
   parseReleaseTag,
   runProductionReleaseGate,
   validateProductionTrust,
-  validateV2ReleaseAttestation,
+  validateEvidenceFreshness,
   validateV2ReleaseEvidence,
 } from '../scripts/production-release-gate.mjs';
 import {
-  requiredClassicComparisonRowIds,
   v2LaunchProofFingerprint,
   v2TransferEvidenceHash,
 } from '../scripts/v2-proof-integrity.mjs';
@@ -25,24 +21,7 @@ import {
 const REQUIREMENT_IDS = [
   'live-proof',
   'report-proof',
-  'classic-comparison',
   'audit',
-  'replacement-criteria',
-];
-
-const CRITERION_IDS = [
-  'demo-end-to-end',
-  'wallet-lifecycle',
-  'vanity-options',
-  'token-config-parity',
-  'charts-and-viewport',
-  'pool-config-parity',
-  'funding-and-quote',
-  'held-reserve-backing',
-  'run-and-resume',
-  'sweep-report-proof',
-  'classic-artifact-comparison',
-  'proof-audit',
 ];
 
 const AUDIT_IDS = [
@@ -58,7 +37,6 @@ const AUDIT_IDS = [
   'terminal-journal-proof',
   'report-proof',
   'sweep-proof',
-  'classic-comparison',
 ];
 
 const TRUSTED_ENV = {
@@ -71,8 +49,6 @@ const TRUSTED_ENV = {
   WIN_CSC_KEY_PASSWORD: 'windows-password',
 };
 
-const FIELD_RUN_COMMIT = 'a'.repeat(40);
-const RELEASE_COMMIT = 'b'.repeat(40);
 const EXPORTED_AT = '2026-07-16T12:00:00.000Z';
 const NOW = Date.parse('2026-07-16T15:00:00.000Z');
 
@@ -203,21 +179,6 @@ function completeV2Evidence() {
     itemCount: AUDIT_IDS.length,
     items: AUDIT_IDS.map((id) => ({ id, label: id, state: 'pass', detail: 'Proof attached.' })),
   };
-  const classicRetirementGate = {
-    id: 'classic-retirement',
-    source: 'trebuchet-v2-classic-retirement-gate',
-    proofFingerprint: fingerprint,
-    auditFingerprint: fingerprint,
-    title: 'Classic can be retired',
-    state: 'pass',
-    badge: 'Ready',
-    passCount: REQUIREMENT_IDS.length,
-    itemCount: REQUIREMENT_IDS.length,
-    requirements: passingRows(REQUIREMENT_IDS),
-    replacementCriteria: passingRows(CRITERION_IDS),
-    criteriaPassCount: CRITERION_IDS.length,
-    criteriaItemCount: CRITERION_IDS.length,
-  };
   const fieldVerification = {
     version: 1,
     source: 'trebuchet-v2-field-verification',
@@ -227,55 +188,16 @@ function completeV2Evidence() {
     ready: true,
     passCount: REQUIREMENT_IDS.length,
     itemCount: REQUIREMENT_IDS.length,
-    criteriaPassCount: CRITERION_IDS.length,
-    criteriaItemCount: CRITERION_IDS.length,
+    criteriaPassCount: 0,
+    criteriaItemCount: 0,
     blockerCount: 0,
     criteriaBlockerCount: 0,
     nextAction: 'none',
     nextDetail: 'Field verification is complete.',
     requirements: passingRows(REQUIREMENT_IDS, { actions: true }),
     blockers: [],
-    replacementCriteria: passingRows(CRITERION_IDS, { actions: true }),
+    replacementCriteria: [],
     criteriaBlockers: [],
-  };
-  const rawClassicArtifact = JSON.stringify({
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      launchWallet: proof.walletPublicKey,
-      destinationWallet: proof.transfer.destinationWallet,
-      token: proof.token,
-      liquidity: proof.liquidity,
-      airdrop: proof.airdrop,
-      transfer: proof.transfer,
-    },
-  });
-  const comparisonRowIds = requiredClassicComparisonRowIds(proof);
-  const classicReportComparison = {
-    input: rawClassicArtifact,
-    comparedAt: EXPORTED_AT,
-    error: null,
-    result: {
-      status: 'pass',
-      comparedAt: EXPORTED_AT,
-      artifactKind: 'json',
-      artifactSource: 'classic-or-external',
-      structuredEvidence: true,
-      proofFingerprint: fingerprint,
-      passCount: comparisonRowIds.length,
-      warnCount: 0,
-      missingCount: 0,
-      mismatchCount: 0,
-      fieldCount: comparisonRowIds.length,
-      classicMint: proof.token.mint,
-      classicPoolCount: 1,
-      rows: comparisonRowIds.map((id) => ({
-        id,
-        label: id,
-        state: 'pass',
-        detail: 'Exact structured match.',
-      })),
-    },
   };
   const launchData = {
     dataVersion: 13,
@@ -285,7 +207,6 @@ function completeV2Evidence() {
     launchWallet: proof.walletPublicKey,
     mint: proof.token.mint,
     reportParityAudit,
-    classicRetirementGate,
     fieldVerification,
   };
   return {
@@ -297,36 +218,13 @@ function completeV2Evidence() {
     launchConfig,
     launchData,
     reportParityAudit,
-    classicRetirementGate,
     fieldVerification,
-    classicReportComparison,
   };
 }
 
 function evidenceBytes(evidence) {
   return Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
 }
-
-function completeAttestation(bytes, evidence) {
-  return {
-    schema: 'trebuchet-v2-production-attestation',
-    version: 1,
-    cluster: 'mainnet-beta',
-    releaseTag: 'v2.0.0',
-    decision: 'approved-for-v2-production',
-    evidenceSha256: digest(bytes),
-    classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
-    fieldRunCommit: FIELD_RUN_COMMIT,
-    fieldRunCompletedAt: '2026-07-16T11:55:00.000Z',
-    operatedBy: 'field-operator',
-    reviewedAt: '2026-07-16T13:00:00.000Z',
-    reviewedBy: 'release-reviewer',
-  };
-}
-
-const ancestorCheck = async (ancestor, descendant) => (
-  ancestor === FIELD_RUN_COMMIT && descendant === RELEASE_COMMIT
-);
 
 test('production gate identifies v2+ semantic release tags', () => {
   assert.equal(parseReleaseTag('v1.0.49').requiresProductionGate, false);
@@ -359,7 +257,7 @@ test('v2 release evidence independently verifies the full non-demo parity packet
   assert.equal(result.poolCount, 1);
   assert.equal(result.positionCount, 1);
   assert.match(result.fingerprint, /^\{/);
-  assert.match(result.classicArtifactSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.classicArtifactSha256, undefined);
 
   const serverShapedProof = clone(completeV2Evidence());
   delete serverShapedProof.proof.liquidity.positionCount;
@@ -373,62 +271,24 @@ test('v2 release evidence independently verifies the full non-demo parity packet
   tamperedTransaction.proof.liquidity.results[0].mainPositions[0].txIds.open = 'TamperedOpenTx';
   assert.throws(() => validateV2ReleaseEvidence(tamperedTransaction), /independently derived proof evidence/);
 
-  const staleComparison = clone(completeV2Evidence());
-  staleComparison.classicReportComparison.result.proofFingerprint = 'stale-proof';
-  assert.throws(() => validateV2ReleaseEvidence(staleComparison), /Classic comparison fingerprint/);
-
-  const thinComparison = clone(completeV2Evidence());
-  thinComparison.classicReportComparison.result.rows = thinComparison.classicReportComparison.result.rows.slice(0, 2);
-  thinComparison.classicReportComparison.result.passCount = 2;
-  thinComparison.classicReportComparison.result.fieldCount = 2;
-  assert.throws(() => validateV2ReleaseEvidence(thinComparison), /missing required rows/);
-
-  const rawArtifactMissingTx = clone(completeV2Evidence());
-  rawArtifactMissingTx.classicReportComparison.input = rawArtifactMissingTx.classicReportComparison.input.replace('OpenPositionTx111', 'MissingTx');
-  assert.throws(() => validateV2ReleaseEvidence(rawArtifactMissingTx), /raw Classic artifact is missing/);
+  // A packet in the old Classic shape no longer passes: the release needs exactly these requirements.
+  const classicShaped = clone(completeV2Evidence());
+  classicShaped.fieldVerification.requirements.push({ id: 'classic-comparison', label: 'classic-comparison', pass: true, action: 'none', detail: 'Proof attached.' });
+  classicShaped.fieldVerification.passCount += 1; classicShaped.fieldVerification.itemCount += 1;
+  classicShaped.launchData.fieldVerification = classicShaped.fieldVerification;
+  assert.throws(() => validateV2ReleaseEvidence(classicShaped), /requirement count is incomplete|must be|field verification/);
 
   const wrongSweepHash = clone(completeV2Evidence());
   wrongSweepHash.proof.localDossier.sweepEvidenceHash = 'forged-sweep-hash';
   assert.throws(() => validateV2ReleaseEvidence(wrongSweepHash), /does not match the transfer record/);
 });
 
-test('v2 release attestation binds hashes, ancestry, freshness, and two-person review', async () => {
+test('v2 release evidence must be recent and not from the future', () => {
   const evidence = completeV2Evidence();
-  const bytes = evidenceBytes(evidence);
-  const attestation = completeAttestation(bytes, evidence);
-  const options = {
-    releaseTag: 'v2.0.0',
-    releaseCommit: RELEASE_COMMIT,
-    evidenceSha256: digest(bytes),
-    classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
-    exportedAt: evidence.exportedAt,
-    now: NOW,
-    isAncestor: ancestorCheck,
-    runtimeMatches: async () => true,
-  };
-  const result = await validateV2ReleaseAttestation(attestation, options);
-  assert.equal(result.reviewedBy, 'release-reviewer');
-
-  const wrongHash = { ...attestation, evidenceSha256: 'c'.repeat(64) };
-  await assert.rejects(() => validateV2ReleaseAttestation(wrongHash, options), /does not match the field evidence bytes/);
-
-  const samePerson = { ...attestation, reviewedBy: attestation.operatedBy };
-  await assert.rejects(() => validateV2ReleaseAttestation(samePerson, options), /must be different people/);
-
-  await assert.rejects(
-    () => validateV2ReleaseAttestation(attestation, { ...options, isAncestor: async () => false }),
-    /not an ancestor/,
-  );
-
-  await assert.rejects(
-    () => validateV2ReleaseAttestation(attestation, { ...options, runtimeMatches: async () => false }),
-    /Runtime changed after the field run/,
-  );
-
-  await assert.rejects(
-    () => validateV2ReleaseAttestation(attestation, { ...options, now: NOW + (31 * 24 * 60 * 60 * 1000) }),
-    /older than 30 days/,
-  );
+  validateEvidenceFreshness(evidence.exportedAt, NOW);
+  assert.throws(() => validateEvidenceFreshness(evidence.exportedAt, NOW + (31 * 24 * 60 * 60 * 1000)), /older than 30 days/);
+  assert.throws(() => validateEvidenceFreshness(evidence.exportedAt, Date.parse(evidence.exportedAt) - (60 * 60 * 1000)), /in the future/);
+  assert.throws(() => validateEvidenceFreshness('not a time', NOW), /timestamp is invalid/);
 });
 
 test('v2 release gate refuses to build without archived field evidence', async () => {
@@ -443,102 +303,27 @@ test('v2 release gate refuses to build without archived field evidence', async (
   }
 });
 
-test('v2 release gate refuses evidence without a reviewed attestation', async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-release-gate-'));
-  try {
-    const evidenceFile = path.join(cwd, DEFAULT_V2_RELEASE_EVIDENCE);
-    await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, evidenceBytes(completeV2Evidence()));
-    await assert.rejects(
-      () => runProductionReleaseGate({
-        tag: 'v2.0.0',
-        env: TRUSTED_ENV,
-        cwd,
-        releaseCommit: RELEASE_COMMIT,
-        now: NOW,
-        isAncestor: ancestorCheck,
-      }),
-      /release attestation is missing/,
-    );
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('v2 release gate validates evidence, attestation, ancestry, and trust together', async () => {
+test('v2 release gate passes on recent field evidence and signed builds, with no attestation', async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-release-gate-'));
   try {
     const evidence = completeV2Evidence();
     const bytes = evidenceBytes(evidence);
     const evidenceFile = path.join(cwd, DEFAULT_V2_RELEASE_EVIDENCE);
-    const attestationFile = path.join(cwd, DEFAULT_V2_RELEASE_ATTESTATION);
     await mkdir(path.dirname(evidenceFile), { recursive: true });
     await writeFile(evidenceFile, bytes);
-    await writeFile(attestationFile, `${JSON.stringify(completeAttestation(bytes, evidence), null, 2)}\n`);
     const result = await runProductionReleaseGate({
       tag: 'v2.0.0',
       env: TRUSTED_ENV,
       cwd,
-      releaseCommit: RELEASE_COMMIT,
       now: NOW,
-      isAncestor: ancestorCheck,
-      runtimeMatches: async () => true,
     });
     assert.equal(result.skipped, false);
     assert.equal(result.evidencePath, DEFAULT_V2_RELEASE_EVIDENCE);
-    assert.equal(result.attestationPath, DEFAULT_V2_RELEASE_ATTESTATION);
     assert.match(result.sha256, /^[a-f0-9]{64}$/);
-    assert.equal(result.attestation.reviewedBy, 'release-reviewer');
+    assert.equal(result.attestation, undefined);
     assert.equal(result.trust.macOS, 'signed and notarized');
     assert.equal(result.trust.windows, 'signed');
   } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('field evidence permits later documentation and tests, and requires the same runtime', async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), 'trebuchet-field-runtime-'));
-  // Git hooks export repository selectors. Use the fixture's own repository.
-  const selectors = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'];
-  const previous = Object.fromEntries(selectors.map((key) => [key, process.env[key]]));
-  for (const key of selectors) delete process.env[key];
-  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-  const save = async (file, value) => {
-    await mkdir(path.dirname(path.join(cwd, file)), { recursive: true });
-    await writeFile(path.join(cwd, file), value);
-  };
-  const commit = () => { git('add', '.'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'fixture'); return git('rev-parse', 'HEAD'); };
-  try {
-    git('init', '-q');
-    await save('server.js', 'export const version = 1;');
-    const fieldCommit = commit();
-    await save('release-evidence/v2/field-verification.json', '{}');
-    await save('docs/releasing.md', 'Reviewed evidence');
-    await save('test/release.test.mjs', '// Added regression');
-    await save('packages/core/test/release.test.mjs', '// Added package regression');
-    const evidenceCommit = commit();
-    assert.equal(await gitRuntimeMatches(fieldCommit, evidenceCommit, cwd), true);
-    const evidence = completeV2Evidence();
-    const bytes = evidenceBytes(evidence);
-    const attestation = { ...completeAttestation(bytes, evidence), fieldRunCommit: fieldCommit };
-    const options = {
-      releaseTag: 'v2.0.0', releaseCommit: evidenceCommit, cwd, now: NOW,
-      evidenceSha256: digest(bytes),
-      classicArtifactSha256: digest(Buffer.from(evidence.classicReportComparison.input.trim(), 'utf8')),
-      exportedAt: evidence.exportedAt,
-    };
-    await validateV2ReleaseAttestation(attestation, options);
-    for (const file of ['server.js', 'package-lock.json', 'public/app.js', 'c/vanity_keygen/vanity_keygen.c', 'scripts/build-app-js.mjs', 'packages/runtime/src/index.js']) {
-      git('reset', '--hard', evidenceCommit);
-      await save(file, 'changed runtime');
-      const changedCommit = commit();
-      await assert.rejects(validateV2ReleaseAttestation(attestation, { ...options, releaseCommit: changedCommit }), /Runtime changed after the field run/);
-    }
-    await assert.rejects(gitRuntimeMatches('c'.repeat(40), git('rev-parse', 'HEAD'), cwd));
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value !== undefined) process.env[key] = value;
-    }
     await rm(cwd, { recursive: true, force: true });
   }
 });

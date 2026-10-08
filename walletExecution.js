@@ -4,17 +4,20 @@ import { openRuntimeStore } from '@trebuchet/runtime/store';
 import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 import { createSolSweepService } from '@trebuchet/runtime/sol-sweep';
 import { createTokenTransferService } from '@trebuchet/runtime/token-transfer';
+import { createTokenTransferBatchService, TOKEN_TRANSFER_BATCH_MAX } from '@trebuchet/runtime/token-transfer-batch';
 import { createMetadataUpdateService } from '@trebuchet/runtime/metadata-update';
-import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { createTokenAccountCloseService, closableTokenAccount, TOKEN_ACCOUNT_CLOSE_BATCH } from '@trebuchet/runtime/token-account-close';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
-import { samplePriorityFeeMicroLamports, priorityFeeLamports, CU_SOL_TRANSFER, CU_TOKEN_TRANSFER, CU_METADATA_OPS, SWEEP_FEE_PAD_LAMPORTS } from './priorityFees.js';
+import { samplePriorityFeeMicroLamports, priorityFeeLamports, CU_SOL_TRANSFER, CU_TOKEN_TRANSFER, CU_TOKEN_ACCOUNT_CLOSE, CU_METADATA_OPS, SWEEP_FEE_PAD_LAMPORTS } from './priorityFees.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 // Called after the launch service verifies the transfer request and return
 // wallet. The local API session authorizes this bounded sweep. The shared
 // service records that approval and every signed transaction before sending.
 export function createWalletExecutionRuntime({
   owner, getScopeId,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'),
+  createConnection = () => createExecutionConnection(),
   networkForRequest = getNetwork,
   now = Date.now,
   timeoutMs = 60_000,
@@ -33,14 +36,26 @@ export function createWalletExecutionRuntime({
     const walletPublicKey = wallet.publicKey.toBase58();
     if (method === 'recover' && !active(walletPublicKey)) return null;
     const store = openRuntimeStore(owner.profile);
+    let operationKind = null;
     try {
       const network = networkForRequest();
       const genesisHash = SOLANA_GENESIS_HASHES[network];
       if (!genesisHash) throw new Error('Choose mainnet or devnet for this local runtime');
       const connection = createConnection();
       const pending = store.getActiveOperation(walletPublicKey);
-      const operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'update' ? 'metadata-update' : 'sol-sweep';
-      if (!['sol-sweep', 'token-transfer', 'metadata-update'].includes(operationKind)) throw new Error('Resume the saved wallet operation with its matching adapter');
+      operationKind = method === 'recover' ? pending?.kind : method === 'transfer' ? 'token-transfer' : method === 'transferBatch' ? 'token-transfer-batch'
+        : method === 'update' ? 'metadata-update' : method === 'close' ? 'token-account-close' : 'sol-sweep';
+      if (!['sol-sweep', 'token-transfer', 'token-transfer-batch', 'metadata-update', 'token-account-close'].includes(operationKind)) throw new Error('Resume the saved wallet operation with its matching adapter');
+      // Several recipients in one transaction. On recovery the saved payload names them.
+      const batchInput = operationKind === 'token-transfer-batch' ? (method === 'recover' ? {
+        mint: pending.payload.mint, programId: pending.payload.programId, sourceTokenAccount: pending.payload.sourceTokenAccount, decimals: pending.payload.decimals,
+        recipients: pending.payload.recipients.map((row) => ({ destinationWallet: row.destinationWallet, amountRaw: row.amountRaw })),
+      } : {
+        mint: new PublicKey(input.mint).toBase58(), programId: new PublicKey(input.programId).toBase58(), decimals: input.decimals,
+        sourceTokenAccount: input.sourceTokenAccount ? new PublicKey(input.sourceTokenAccount).toBase58()
+          : getAssociatedTokenAddressSync(new PublicKey(input.mint), wallet.publicKey, false, new PublicKey(input.programId)).toBase58(),
+        recipients: input.recipients.map((row) => ({ destinationWallet: new PublicKey(row.destinationWallet).toBase58(), amountRaw: String(row.amountRaw) })),
+      }) : null;
       const tokenInput = operationKind === 'token-transfer' ? (method === 'recover' ? pending.payload : {
         mint: new PublicKey(input.mint).toBase58(), programId: new PublicKey(input.programId).toBase58(),
         sourceTokenAccount: input.sourceTokenAccount ? new PublicKey(input.sourceTokenAccount).toBase58()
@@ -51,6 +66,7 @@ export function createWalletExecutionRuntime({
         mint: new PublicKey(input.mint).toBase58(), newAuthority: new PublicKey(destinationWallet).toBase58(),
         fields: input.fields || {}, makeImmutable: input.makeImmutable === true,
       }) : null;
+      const closeInput = operationKind === 'token-account-close' ? { accounts: method === 'recover' ? pending.payload.accounts.map((account) => account.address) : [...input.accounts].sort() } : null;
       const scopeId = getScopeId(walletPublicKey);
       if (typeof scopeId !== 'string' || !scopeId) throw new Error('Save the launch recovery record before transferring assets');
       const action = method === 'recover' ? store.getLaunch(pending.launchId)?.config.action : input.action;
@@ -62,8 +78,13 @@ export function createWalletExecutionRuntime({
         maxSpendLamports: Math.max(current.value, pending ? (pending.payload.amountLamports || pending.payload.rentCeilingLamports || pending.payload.rentLamports || 0) + pending.payload.feeCeilingLamports : 0),
         ...(metadataInput ? { metadata: { mint: metadataInput.mint, newAuthority: metadataInput.newAuthority, fields: metadataInput.fields, makeImmutable: metadataInput.makeImmutable } } : {}),
         ...(tokenInput ? { token: { mint: tokenInput.mint, programId: tokenInput.programId, sourceTokenAccount: tokenInput.sourceTokenAccount, amountRaw: tokenInput.amountRaw, decimals: tokenInput.decimals } } : {}),
+        ...(closeInput ? { close: { accounts: closeInput.accounts } } : {}),
+        ...(batchInput ? { batch: { mint: batchInput.mint, programId: batchInput.programId, sourceTokenAccount: batchInput.sourceTokenAccount, decimals: batchInput.decimals,
+          recipients: batchInput.recipients } } : {}),
       };
-      const createService = operationKind === 'token-transfer' ? createTokenTransferService : operationKind === 'metadata-update' ? createMetadataUpdateService : createSolSweepService;
+      const createService = operationKind === 'token-transfer' ? createTokenTransferService : operationKind === 'token-transfer-batch' ? createTokenTransferBatchService
+        : operationKind === 'metadata-update' ? createMetadataUpdateService
+        : operationKind === 'token-account-close' ? createTokenAccountCloseService : createSolSweepService;
       const service = createService({
         owner, store, connection, network, expectedGenesisHash: genesisHash, now, timeoutMs,
         signer: createSolanaSigner({ getSigners: async ({ launch }) => {
@@ -71,20 +92,30 @@ export function createWalletExecutionRuntime({
           return [wallet];
         } }),
         authorize: async ({ approval: candidate }) => candidate === approval && networkForRequest() === network && getScopeId(walletPublicKey) === scopeId,
-        feePolicy: async () => {
+        feePolicy: async ({ accountCount = 0, recipientCount = 0 } = {}) => {
           const microLamports = await samplePriorityFeeMicroLamports(connection);
-          const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER : operationKind === 'metadata-update' ? CU_METADATA_OPS : CU_SOL_TRANSFER;
+          const computeUnitLimit = operationKind === 'token-transfer' ? CU_TOKEN_TRANSFER
+            : operationKind === 'token-transfer-batch' ? Math.min(1_400_000, CU_TOKEN_TRANSFER * Math.max(1, recipientCount))
+            : operationKind === 'metadata-update' ? CU_METADATA_OPS
+            : operationKind === 'token-account-close' ? CU_SOL_TRANSFER + CU_TOKEN_ACCOUNT_CLOSE * accountCount : CU_SOL_TRANSFER;
           return {
-            reserveLamports: operationKind === 'sol-sweep' ? await connection.getMinimumBalanceForRentExemption(0, 'finalized') : 0,
+            // The sweep drains the launch wallet to zero: nothing is left behind as a rent reserve.
+            reserveLamports: 0,
             feeCeilingLamports: 5000 + priorityFeeLamports(computeUnitLimit, microLamports) + SWEEP_FEE_PAD_LAMPORTS,
             computeUnitLimit, microLamports,
           };
         },
       });
-      return await service[method]({ ...tokenInput, ...metadataInput, scopeId, walletPublicKey, destinationWallet, action, approval });
+      return await service[method]({ ...tokenInput, ...metadataInput, ...closeInput, ...batchInput, scopeId, walletPublicKey, destinationWallet, action, approval });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
-      throw Object.assign(new Error('Resume the saved wallet operation to verify its result.', { cause }), {
+      // Say what failed and what to press: the same action checks the chain for this transfer first.
+      console.error(`[wallet] ${operationKind} ${cause.code || 'EXECUTION_INTERRUPTED'}: ${cause.message}`);
+      const what = { 'token-transfer': 'A token transfer', 'token-transfer-batch': 'A group of token transfers', 'sol-sweep': 'The SOL transfer', 'metadata-update': 'The metadata update', 'token-account-close': 'Closing empty token accounts' }[operationKind] || 'A wallet transfer';
+      // A transfer that names the wrong token program is refused before anything is signed.
+      const message = cause.code === 'TOKEN_PROGRAM_MISMATCH' ? `${what} from the launch wallet was not sent. ${cause.message}.`
+        : `${what} from the launch wallet could not be confirmed (${cause.message || 'interrupted'}). Nothing after it was sent.`;
+      throw Object.assign(new Error(message, { cause }), {
         code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409,
         operationId: cause.operationId || store.getActiveOperation(walletPublicKey)?.id,
         errorDetails: { code: cause.code || 'EXECUTION_INTERRUPTED', message: cause.message },
@@ -101,13 +132,23 @@ export function createWalletExecutionRuntime({
       const scopeId = getScopeId(walletPublicKey), network = networkForRequest();
       if (typeof scopeId !== 'string' || !scopeId) throw new Error('Read the saved launch before building its transfer report');
       return withStore((store) => store.transaction(() => store.listWalletOperations(walletPublicKey).filter((operation) => {
-        if (operation.kind !== 'token-transfer' || operation.state !== 'confirmed') return false;
+        if (!['token-transfer', 'token-transfer-batch'].includes(operation.kind) || operation.state !== 'confirmed') return false;
         const launch = store.getLaunch(operation.launchId);
         return launch?.config.scopeId === scopeId && launch.network === network && launch.config.genesisHash === SOLANA_GENESIS_HASHES[network];
+      }).flatMap((operation) => {
+        if (operation.kind !== 'token-transfer-batch') return [operation];
+        // A batch is one receipt per recipient, each with its own action, so recovery reads it like single transfers.
+        const chain = operation.evidence?.chain, action = store.getLaunch(operation.launchId).config.action;
+        if (!chain?.signature || !Array.isArray(chain.recipients)) throw new Error('Read the complete saved transfer receipt');
+        return chain.recipients.map((row) => ({ ...operation, evidence: { ...operation.evidence, chain: { ...chain, recipients: undefined,
+          destinationWallet: row.destinationWallet, destinationTokenAccount: row.destinationTokenAccount, amountRaw: row.amountRaw, receivedRaw: row.receivedRaw, transferFeeRaw: row.transferFeeRaw } },
+          batchAction: action?.context?.recipients ? { key: `${String(action.key).split('/')[0].replace(/-batch$/, '')}/${row.destinationWallet}`,
+            context: { ...Object.fromEntries(Object.entries(action.context).filter(([key]) => key !== 'recipients')), recipient: row.destinationWallet, amountRaw: row.amountRaw } } : null }));
       }).map((operation) => {
         const receipt = operation.evidence?.chain;
         if (!receipt?.signature || !Number.isInteger(receipt.decimals) || !receipt.programId || !receipt.amountRaw) throw new Error('Read the complete saved transfer receipt');
-        return { ...receipt, operationId: operation.id, txId: receipt.signature, ...(store.getLaunch(operation.launchId).config.action ? { action: store.getLaunch(operation.launchId).config.action } : {}),
+        const action = operation.batchAction || store.getLaunch(operation.launchId).config.action;
+        return { ...receipt, operationId: operation.id, txId: receipt.signature, ...(action ? { action } : {}),
           programName: receipt.programId === TOKEN_2022_PROGRAM_ID.toBase58() ? 'token-2022' : 'classic' };
       })));
     },
@@ -144,7 +185,39 @@ export function createWalletExecutionRuntime({
       ...await execute('update', { tempWalletSecretKey, mint: tokenMint, destinationWallet: newAuthority }), transferred: true, newAuthority,
     }),
     sweepSolToDestination: (input) => execute('sweep', input),
+    // Close every empty token account the launch wallet owns, returning the rent to the wallet so
+    // the SOL sweep that follows sends it on. A batch the chain refuses is reported and skipped;
+    // an unconfirmed one stops here, held by its saved operation until it is recovered.
+    closeEmptyTokenAccounts: async ({ tempWalletSecretKey }) => {
+      owner.assertActive();
+      const wallet = Keypair.fromSecretKey(Uint8Array.from(tempWalletSecretKey)), walletPublicKey = wallet.publicKey.toBase58();
+      const connection = createConnection();
+      const found = [];
+      for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+        const response = await connection.getTokenAccountsByOwner(wallet.publicKey, { programId }, 'finalized');
+        for (const { pubkey, account } of response.value) {
+          const row = closableTokenAccount(pubkey.toBase58(), account, walletPublicKey);
+          if (row) found.push(row.address);
+        }
+      }
+      const closed = [], errors = [];
+      let reclaimedLamports = 0;
+      for (let index = 0; index < found.length; index += TOKEN_ACCOUNT_CLOSE_BATCH) {
+        const accounts = found.slice(index, index + TOKEN_ACCOUNT_CLOSE_BATCH);
+        try {
+          const result = await execute('close', { tempWalletSecretKey, accounts });
+          closed.push(...result.closed); reclaimedLamports += result.reclaimedLamports;
+        } catch (error) {
+          if (!['TRANSACTION_FAILED', 'INVALID_INPUT', 'INSUFFICIENT_FUNDS'].includes(error.errorDetails?.code)) throw error;
+          errors.push({ accounts, error: error.errorDetails.message });
+        }
+      }
+      return { closed, reclaimedLamports, errors };
+    },
     transferToken: (input) => execute('transfer', input),
+    // Up to TOKEN_TRANSFER_BATCH_MAX recipients of one token in one transaction.
+    transferTokenBatch: (input) => execute('transferBatch', input),
+    transferBatchMax: TOKEN_TRANSFER_BATCH_MAX,
     transferTokenWithProgram: async ({ ownerKeypair, destination, mint, programId, sourceTokenAccount, amount, decimals }) => {
       const result = await execute('transfer', { tempWalletSecretKey: Array.from(ownerKeypair.secretKey), destinationWallet: destination.toBase58(),
         mint: mint.toBase58(), programId: programId.toBase58(), sourceTokenAccount, amountRaw: amount.toString(), decimals });

@@ -7,14 +7,23 @@
 
 // Per-account rent costs (in SOL). These are reasonably stable on-chain
 // rents for the account types involved.
-export const COST_POOL_RENT_SOL    = 0.062;
+// The rent constants below were measured when rent was 6,960 lamports per
+// byte-year pair. They are live bindings: setRentLamportsPerByte() rescales them
+// to the rate the chain reports now (getMinimumBalanceForRentExemption), so the
+// estimate follows rent instead of a stale snapshot.
+export const RENT_BASELINE_LAMPORTS_PER_BYTE = 6960;
+const BASE_RENT_SOL = {
+  pool: 0.062, tickArray: 0.0722, position: 0.022,
+  cpmmPool: 0.062, cpmmLpMint: 0.002, cpmmVaultAta: 0.001,
+};
+export let COST_POOL_RENT_SOL    = BASE_RENT_SOL.pool;
 // Rent to initialise one CLMM tick array measures 0.07216 SOL on-chain. A
 // full-preset funding audit showed the prior flat 0.072 left the per-array
 // budget a hair under actual, leaning on the 20% safety buffer to cover the
 // gap. Rounding up to 0.0722 covers the measured rent with a sliver of margin,
 // so the buffer stays pure margin rather than load-bearing.
-export const COST_TICK_ARRAY_SOL   = 0.0722;
-export const COST_POSITION_SOL     = 0.022;
+export let COST_TICK_ARRAY_SOL   = BASE_RENT_SOL.tickArray;
+export let COST_POSITION_SOL     = BASE_RENT_SOL.position;
 export const COST_LOCK_SOL         = 0.005;
 export const COST_TRANSFER_SOL     = 0.005;
 export const COST_BS_QUOTE_SOL     = 0.001;
@@ -35,9 +44,26 @@ export function estimateAirdropExecutionCostSol(recipientCount) {
 // one LP mint, two vault/ATA accounts. These values are the working estimate
 // for the two launch programs we publish on; the exact number is confirmed
 // during the next devnet/unfunded drill before a release flags them as fixed.
-export const CPMM_POOL_RENT_SOL = 0.062;
-export const CPMM_LP_MINT_RENT_SOL = 0.002;
-export const CPMM_VAULT_ATA_RENT_SOL = 0.001;
+export let CPMM_POOL_RENT_SOL = BASE_RENT_SOL.cpmmPool;
+export let CPMM_LP_MINT_RENT_SOL = BASE_RENT_SOL.cpmmLpMint;
+export let CPMM_VAULT_ATA_RENT_SOL = BASE_RENT_SOL.cpmmVaultAta;
+
+export let rentLamportsPerByte = RENT_BASELINE_LAMPORTS_PER_BYTE;
+
+// Rescale the rent constants. Ignores anything that is not a sane rate.
+export function setRentLamportsPerByte(rate) {
+  const value = Number(rate);
+  if (!Number.isFinite(value) || value < 500 || value > 50000) return rentLamportsPerByte;
+  const scale = value / RENT_BASELINE_LAMPORTS_PER_BYTE;
+  rentLamportsPerByte = value;
+  COST_POOL_RENT_SOL = BASE_RENT_SOL.pool * scale;
+  COST_TICK_ARRAY_SOL = BASE_RENT_SOL.tickArray * scale;
+  COST_POSITION_SOL = BASE_RENT_SOL.position * scale;
+  CPMM_POOL_RENT_SOL = BASE_RENT_SOL.cpmmPool * scale;
+  CPMM_LP_MINT_RENT_SOL = BASE_RENT_SOL.cpmmLpMint * scale;
+  CPMM_VAULT_ATA_RENT_SOL = BASE_RENT_SOL.cpmmVaultAta * scale;
+  return rentLamportsPerByte;
+}
 // "Lock" on a CPMM is not Burn & Earn — it is transferring the LP token to a
 // committed holder (a regular SPL transfer + rent for a token account the
 // holder already owns). Keep a tiny line so the ledger is honest.
@@ -138,3 +164,25 @@ export const MAX_SECOND_OPINION_SPREAD_PCT = 25;
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+// Support can be layered: several quote-side positions, each a share of the quote over a range of
+// start-price multiples (at most 1x). Shared by the plan check, the executor and the estimator.
+export const MAX_SUPPORT_LAYERS = 6;
+
+// Why a support.layers value cannot be used, or null when it can.
+export function supportLayersProblem(layers) {
+  if (!Array.isArray(layers) || layers.length === 0) return 'must be a non-empty list';
+  if (layers.length > MAX_SUPPORT_LAYERS) return `has ${layers.length} layers; at most ${MAX_SUPPORT_LAYERS} are supported`;
+  let total = 0;
+  for (const [index, layer] of layers.entries()) {
+    const share = Number(layer?.sharePercent);
+    const lower = Number(layer?.lowerMultiplier);
+    const upper = Number(layer?.upperMultiplier);
+    if (!Number.isFinite(share) || share <= 0 || share > 100) return `layer ${index + 1}: share must be above 0 and at most 100`;
+    if (!Number.isFinite(lower) || lower <= 0 || lower >= 1) return `layer ${index + 1}: lower multiplier must be above 0 and below 1`;
+    if (!Number.isFinite(upper) || upper <= lower || upper > 1) return `layer ${index + 1}: upper multiplier must be above the lower and at most 1`;
+    total += share;
+  }
+  if (Math.abs(total - 100) > 0.01) return `shares add up to ${Number(total.toFixed(2))}%; they must add up to 100%`;
+  return null;
+}

@@ -71,6 +71,7 @@ export const SWEEP_FEE_PAD_LAMPORTS = 10_000;
 // transaction every time.
 export const CU_SOL_TRANSFER = 20_000;     // SystemProgram.transfer (~450 CU used)
 export const CU_TOKEN_TRANSFER = 120_000;  // idempotent ATA create + transferChecked
+export const CU_TOKEN_ACCOUNT_CLOSE = 5_000; // closeAccount, per account in the batch
 export const CU_MINT_OPS = 120_000;        // createAccount+initMint / mintTo / setAuthority
 export const CU_METADATA_OPS = 300_000;    // Metaplex createV1 / updateV1 (CPI-heavy)
 

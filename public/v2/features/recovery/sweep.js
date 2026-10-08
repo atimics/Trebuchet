@@ -27,56 +27,6 @@ function recoverySweepMetrics(sweep = {}) {
   };
 }
 
-function recoverySweepNextSteps(sweep = {}) {
-  if (sweep.error) {
-    return [
-      'Check the Recovery PIN, RPC health, and destination address, then retry Sweep.',
-      'Reveal the recovery secret only if you need to recover the wallet manually.',
-    ];
-  }
-  if (sweep.partial || sweep.stillPending) {
-    return [
-      'Recovery entry is still kept locally. Retry Sweep after RPC or token-account state settles.',
-      'Inspect the destination wallet and Activity log before deciding anything is clean.',
-      'Only Discard after confirming the wallet is empty or the secret is backed up elsewhere.',
-    ];
-  }
-  return [
-    'Assets moved to the destination and the local recovery entry was cleared.',
-    'Keep the report/proof bundle with the launch notes if this was final cleanup.',
-  ];
-}
-
-function renderRecoverySweepResult(sweep) {
-  if (!sweep) return '';
-  const metrics = recoverySweepMetrics(sweep);
-  const steps = recoverySweepNextSteps(sweep);
-  const state = sweep.error ? 'danger' : (sweep.partial || sweep.stillPending) ? 'warn' : '';
-  const badge = sweep.error ? 'Failed' : (sweep.partial || sweep.stillPending) ? 'Review' : 'Clean';
-  return `
-    <div class="recovery-sweep-result ${state}">
-      <div class="recovery-sweep-head">
-        <span>
-          <span class="eyebrow">Post-sweep cleanup</span>
-          <strong>${escapeHtml(fullAddress(sweep.publicKey))} to ${escapeHtml(fullAddress(sweep.destinationWallet))}</strong>
-        </span>
-        <span class="risk-badge ${state}">${escapeHtml(badge)}</span>
-      </div>
-      <p>${escapeHtml(sweep.message)}</p>
-      <div class="recovery-sweep-grid">
-        <span><small>Tokens</small><strong>${metrics.tokens}</strong></span>
-        <span><small>NFTs</small><strong>${metrics.nfts}</strong></span>
-        <span><small>SOL</small><strong>${metrics.sol.toFixed(4)}</strong></span>
-        <span><small>Warnings</small><strong>${metrics.warnings}</strong></span>
-        <span><small>Recovery entry</small><strong>${escapeHtml(metrics.entryState)}</strong></span>
-      </div>
-      <ul class="recovery-sweep-steps">
-        ${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}
-      </ul>
-    </div>
-  `;
-}
-
 let sweepConfirmationResolver = null;
 
 function setSweepConfirmationMessage(message, { error = false, input = null } = {}) {
@@ -85,7 +35,7 @@ function setSweepConfirmationMessage(message, { error = false, input = null } = 
     messageNode.textContent = message;
     messageNode.classList.toggle('is-error', error);
   }
-  ['#sweepConfirmDestination', '#sweepConfirmTypedAddress'].forEach((selector) => {
+  ['#sweepConfirmDestination'].forEach((selector) => {
     $(selector)?.removeAttribute('aria-invalid');
   });
   if (input) input.setAttribute('aria-invalid', 'true');
@@ -112,9 +62,7 @@ function submitSweepConfirmation() {
   if (!gate || gate.hidden) return;
   const publicKey = gate.dataset.publicKey || '';
   const destinationInput = $('#sweepConfirmDestination');
-  const typedInput = $('#sweepConfirmTypedAddress');
   const destinationWallet = String(destinationInput?.value || '').trim();
-  const typedAddress = String(typedInput?.value || '').trim();
 
   if (!destinationWallet) {
     setSweepConfirmationMessage('Enter the destination wallet for recovered assets.', { error: true, input: destinationInput });
@@ -131,11 +79,6 @@ function submitSweepConfirmation() {
     destinationInput?.focus();
     return;
   }
-  if (typedAddress !== publicKey) {
-    setSweepConfirmationMessage('Full recovery wallet address does not match.', { error: true, input: typedInput });
-    typedInput?.focus();
-    return;
-  }
 
   closeSweepConfirmation({ destinationWallet });
 }
@@ -149,8 +92,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   sweepConfirmationReturnFocus = document.activeElement;
   $('#sweepConfirmSource').textContent = publicKey;
   $('#sweepConfirmDestination').value = defaultDestination;
-  $('#sweepConfirmTypedAddress').value = '';
-  setSweepConfirmationMessage('The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.');
+  setSweepConfirmationMessage('The launch wallet\'s key stays saved in this app after the sweep.');
   gate.hidden = false;
   gate.setAttribute('aria-hidden', 'false');
   document.body.classList.add('sweep-confirm-open');
@@ -158,7 +100,7 @@ function openSweepConfirmation({ publicKey, defaultDestination = '' } = {}) {
   return new Promise((resolve) => {
     sweepConfirmationResolver = resolve;
     window.requestAnimationFrame(() => {
-      (defaultDestination ? $('#sweepConfirmTypedAddress') : $('#sweepConfirmDestination'))?.focus();
+      (defaultDestination ? $('[data-action="submit-sweep-confirm"]') : $('#sweepConfirmDestination'))?.focus();
     });
   });
 }
@@ -189,7 +131,12 @@ async function sweepRecoveryWallet(publicKey) {
     notify('Recovery sweep requires the Trebuchet desktop app');
     return;
   }
-  const defaultDestination = currentLaunchConfig().poolTopology.sweepDestination || '';
+  // The launch already names its return wallet: use it, so nobody copies addresses around.
+  const journal = (state.recovery?.journals || []).find((item) => item.walletPublicKey === publicKey && !['complete', 'completed'].includes(String(item.status || '').toLowerCase()))
+    || (state.coins?.detail?.creation?.walletPublicKey === publicKey ? state.coins.detail.creation.journal : null);
+  const defaultDestination = journal?.transfer?.destinationWallet
+    || recoveryLaunchConfig(journal || {})?.poolTopology?.sweepDestination
+    || currentLaunchConfig().poolTopology.sweepDestination || '';
   const confirmation = await openSweepConfirmation({ publicKey, defaultDestination });
   if (!confirmation) {
     notify('Recovery sweep cancelled');
@@ -199,7 +146,9 @@ async function sweepRecoveryWallet(publicKey) {
 
   state.sweepingWalletPublicKey = publicKey;
   state.lastRecoverySweep = null;
+  state.sweepAirdropProgress = null;
   renderAll();
+  followSweepAirdropProgress(publicKey);
   try {
     const result = await state.apiClient.sweepPendingWallet({ walletPublicKey: publicKey, destinationWallet });
     const warningCount = recoverySweepWarningCount(result);
@@ -216,7 +165,7 @@ async function sweepRecoveryWallet(publicKey) {
       error: false,
       message: partial
         ? `Sweep returned ${warningCount} warning${warningCount === 1 ? '' : 's'}${stillPending ? '; recovery entry remains for another attempt' : ''}.`
-        : 'Recovery wallet swept and cleared from the local pending-wallet store.',
+        : 'Launch wallet swept. Its key stays saved in this app.',
     };
     notify(partial ? 'Recovery sweep finished with warnings' : 'Recovery sweep completed');
   } catch (error) {
@@ -231,7 +180,25 @@ async function sweepRecoveryWallet(publicKey) {
     notify(error.message || 'Recovery sweep failed');
   } finally {
     state.sweepingWalletPublicKey = null;
+    state.sweepAirdropProgress = null;
     renderAll();
+  }
+}
+
+// The sweep is one long request. The server counts each airdrop recipient as it lands; read that
+// count while the sweep runs so the coin page shows how far it has got.
+async function followSweepAirdropProgress(publicKey) {
+  if (!state.apiClient?.getAirdropProgress) return;
+  while (state.sweepingWalletPublicKey === publicKey) {
+    try {
+      const progress = await state.apiClient.getAirdropProgress(publicKey);
+      if (state.sweepingWalletPublicKey !== publicKey) return;
+      if (progress) {
+        state.sweepAirdropProgress = { ...progress, publicKey };
+        if (state.activeView === 'coins') renderCoins();
+      }
+    } catch { /* the next read tries again */ }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
 

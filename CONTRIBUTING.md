@@ -14,9 +14,6 @@ npm run build:c
 npm start
 ```
 
-The desktop default is v2. Use `npm run start:classic` when validating the
-fallback or comparing behavior.
-
 ## Before editing
 
 - Read [ENG.md](ENG.md) for runtime boundaries and generated-file rules.
@@ -42,8 +39,7 @@ Additional checks by change type:
 
 | Change | Checks |
 | --- | --- |
-| v2 UI or interaction | `npm run test:e2e:v2`, `npm run test:v2:viewport`, `npm run test:visual` |
-| Classic UI/modules | `npm run build:js`, `git diff --exit-code -- public/app.js`, `npm run test:e2e` |
+| UI or interaction | `npm run build:js`, `npm run test:e2e:v2`, `npm run test:v2:viewport` |
 | Electron boot/package | `npm run test:electron:v2`; packaged smoke when practical |
 | Runtime packaging | platform smoke build plus `npm run check:package` |
 | Solana/Raydium compatibility | relevant unit tests and `npm run smoke:mainnet:readonly` |
@@ -61,9 +57,9 @@ It must not send transactions.
 
 ## Generated and packaged files
 
-- `public/app.js` is generated from `public/modules/`. Edit the modules, run
-  `npm run build:js`, and commit the rebuilt bundle.
-- `public/v2/app.js` and `public/v2/styles.css` are direct v2 sources.
+- `public/v2/app.js` and `public/v2/core.js` are generated from
+  `public/v2/features/` and `@trebuchet/core`. Edit those, run `npm run build:js`,
+  and commit the rebuilt files. `public/v2/styles.css` is a direct source.
 - `c/build/` is generated and ignored. CI and releases run `npm run build:c`.
 - Any runtime import reachable from `main.js` must appear in both package file
   lists. `npm run check:package` enforces this.
@@ -88,15 +84,12 @@ as completed on-chain behavior without transaction evidence.
 
 Pull request checks include:
 
-- **Test** — syntax, generated Classic bundle parity, package-file coverage,
+- **Test** — syntax, generated bundle parity, package-file coverage,
   unit/integration tests, a critical audit gate, and a non-blocking high audit
   report.
 - **Build macOS arm64**, **Build Windows**, and **Build Linux** — unpacked
   package smoke builds. Linux also runs the packaged v2 Electron smoke.
-- **E2E UI Flows** — Classic Playwright, v2 API-backed E2E, desktop/mobile
-  viewport proof, visual regression, and tutorial artifact generation.
-- **Capture README screenshots** — runs only when paths covered by the
-  screenshot workflow change.
+- **E2E UI Flows** — the API-backed E2E flow and the desktop/mobile viewport proof.
 
 All jobs should be green before merge. A `continue-on-error` advisory step does
 not make its underlying risk disappear; record known exposure in
@@ -121,5 +114,5 @@ PR labels select the bump:
 - `major`: major (`major` wins if both exist).
 
 A `v2+` release is intentionally different from a v1 prerelease: it requires
-field evidence, a two-person attestation, full signing credentials, and the
+field evidence, full signing credentials, and the
 production gate. See [docs/releasing.md](docs/releasing.md).

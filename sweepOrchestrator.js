@@ -51,11 +51,12 @@ export function hasTokenBalances(balanceSnapshot) {
  * branch:
  *   sweepNfts({tempWalletSecretKey, destinationWallet}) -> {transferred, errors}
  *   sweepTokens({tempWalletSecretKey, destinationWallet}) -> {transferred, errors}
+ *   closeAccounts({tempWalletSecretKey}) -> {closed, reclaimedLamports, errors}   (optional)
  *   sweepSol({tempWalletSecretKey, destinationWallet}) -> {solTransferred, txId?}
  *   enumerate(walletPublicKey, {commitment}) -> {sol, tokens}   (may throw)
  *   recordEvent(event)                                          (durable commit)
  *
- * Returns { solSweep, solSweepError, solSweepSkipped, secondPassRan }.
+ * Returns { solSweep, solSweepError, solSweepSkipped, secondPassRan, accountClose }.
  * Recovery failures propagate. Other sweep failures become gate outcomes.
  */
 export async function finishSweepWithSolGate({
@@ -67,7 +68,7 @@ export async function finishSweepWithSolGate({
   deps,
 }) {
   const {
-    sweepNfts, sweepTokens, sweepSol, enumerate, recordEvent = () => {},
+    sweepNfts, sweepTokens, sweepSol, closeAccounts = null, enumerate, recordEvent = () => {},
   } = deps;
 
   // ---- Straggler pass -----------------------------------------------------
@@ -114,6 +115,7 @@ export async function finishSweepWithSolGate({
   let solSweep = { solTransferred: 0 };
   let solSweepError = null;
   let solSweepSkipped = null;
+  let accountClose = null;
 
   if (!assetSweepClean) {
     solSweepSkipped = 'Assets remain in the launch wallet (or their absence '
@@ -127,6 +129,20 @@ export async function finishSweepWithSolGate({
       tokenErrors: (tokenSweep.errors || []).length,
     });
   } else {
+    // Empty token accounts hold rent only the launch wallet can reclaim: close them first, so
+    // the SOL sweep sends that rent on. An unconfirmed close stops here; a refused one does not.
+    if (closeAccounts) {
+      try {
+        accountClose = await closeAccounts({ tempWalletSecretKey });
+        if (accountClose.closed.length || accountClose.errors.length) {
+          recordEvent({ stage: 'token_accounts_closed', closed: accountClose.closed.length, reclaimedLamports: accountClose.reclaimedLamports, notClosed: accountClose.errors.length });
+        }
+      } catch (e) {
+        throwIfExecutionPaused(e);
+        console.warn('Closing empty token accounts failed:', e.message);
+        accountClose = { closed: [], reclaimedLamports: 0, errors: [{ error: e.message }] };
+      }
+    }
     try {
       solSweep = await sweepSol({ tempWalletSecretKey, destinationWallet });
     } catch (e) {
@@ -139,7 +155,7 @@ export async function finishSweepWithSolGate({
     }
   }
 
-  return { solSweep, solSweepError, solSweepSkipped, secondPassRan };
+  return { solSweep, solSweepError, solSweepSkipped, secondPassRan, accountClose };
 }
 
 

@@ -33,10 +33,6 @@ const baseUrl = `http://127.0.0.1:${port}`;
 
 writeFileSync(path.join(configDir, 'userPrefs.json'), JSON.stringify({
   demoMode: true,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }, null, 2));
 
 const server = spawn(process.execPath, ['server.js'], {
@@ -172,16 +168,11 @@ try {
   assert.equal(await page.inputValue('#operatorPromptInput'), '');
   assert.doesNotMatch(await page.locator('body').innerText(), new RegExp(sentinelSecret));
 
-  await page.click('.nav-item[data-view="history"]');
-  await page.waitForSelector('#view-history.is-active');
-  await page.focus('#historyTabRecovery');
-  await page.keyboard.press('ArrowRight');
-  await page.waitForSelector('#historyPanelWallets:not([hidden])');
-  assert.equal(await page.getAttribute('#historyTabWallets', 'aria-selected'), 'true');
-  assert.equal(await page.getAttribute('#historyTabRecovery', 'tabindex'), '-1');
-  await page.keyboard.press('End');
-  await page.waitForSelector('#historyPanelJournal:not([hidden])');
-  assert.equal(await page.getAttribute('#historyTabJournal', 'aria-selected'), 'true');
+  // Every key lives on the Wallet page; there is no separate History or Recovery page.
+  assert.equal(await page.locator('.nav-item[data-view="history"]').count(), 0);
+  await page.click('.nav-item[data-view="wallet"]');
+  await page.waitForSelector('#view-wallet.is-active');
+  await page.waitForFunction(() => /Keys in Trebuchet/.test(document.querySelector('#heldWallets')?.textContent || ''));
 
   await page.click('.nav-item[data-view="coins"]');
   await page.click('[data-action="new-coin"]');
@@ -208,7 +199,8 @@ try {
       .map((panel) => panel.dataset.classicWorkspace)
   )), [], 'Classic phases leaked into Phase 2');
 
-  await page.click('.coin-fact[data-coin-fact="fund"]');
+  // Funding has no row; the rail's Funding details link opens its panel.
+  await page.evaluate(() => setLaunchWorkspace('fund'));
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'fund');
   assert.match(await page.locator('#fundStepTitle').textContent(), /^Fund$/i);
   // Assets return to the wallet that funds the launch (or one that signs),
@@ -352,7 +344,7 @@ try {
   });
   await page.waitForFunction(() => document.querySelector('#mainPoolPercent').value === '90');
   // Where assets go is its own slide of the Plan row.
-  await page.click('.coin-fact[data-coin-fact="finish"]');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.click('[data-plan-tab="return"]');
   assert.match(await page.locator('#returnWalletCard').innerText(), /Funding wallets show here once SOL arrives/);
   await page.evaluate(async () => {
@@ -374,8 +366,8 @@ try {
 
   await page.click('.coin-fact[data-coin-fact="mint"]');
   await page.click('[data-plan-tab="run"]');
-  // The rail's one button runs the whole test launch.
-  assert.match(await page.locator('#launchNextRail .rail-act').innerText(), /test launch/i);
+  // The rail's Launch button, red once ready, runs the whole test launch.
+  assert.equal((await page.locator("#launchNextRail .rail-launch.is-ready").innerText()).trim(), "Launch");
   await page.click('#launchNextRail [data-action="launch-rail-act"]');
   await page.waitForFunction(() => document.body.dataset.launchWorkspace === 'finish', null, { timeout: 60_000 });
   const finishText = await page.locator('[data-classic-workspace="finish"]').innerText();
@@ -396,11 +388,13 @@ try {
       body: JSON.stringify({ publicKey: selectedLaunchWalletPublicKey(), sol: 1 }),
     });
   });
-  // The practiced coin is listed under Coins with its own page; buy support
-  // is an action there.
+  // The practiced coin opens on the same page as its steps, now read from the
+  // chain; buy support is an action on its Liquidity row.
   await page.click('#viewEyebrow [data-action="coins-back"]');
   await page.click('.coin-card-ui:has-text("Test coin")');
-  await page.waitForSelector('#view-coins.is-active #coinPage:not([hidden])');
+  await page.waitForSelector('body[data-coin-mode="onchain"] #view-launch.is-active');
+  await page.click('.coin-fact[data-coin-fact="liquidity"]');
+  await page.waitForSelector('#coinChainPane:not([hidden])');
   await page.waitForSelector('#poolSupportPanel:not([hidden])');
   await page.fill('#poolSupportSol', '0.1');
   await page.click('[data-action="preview-pool-support"]');
@@ -424,6 +418,8 @@ try {
   await page.fill('#operatorPromptInput', 'WITHDRAW');
   await page.click('#operatorPromptSubmit');
   await page.waitForFunction(() => document.querySelectorAll('.coin-positions li').length === 0, null, { timeout: 30_000 });
+  assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
+  await page.click('.coin-fact[data-coin-fact="wallet"]');
   await page.waitForFunction(() => /Position withdrawn/.test(document.querySelector('.coin-activity')?.textContent || ''), null, { timeout: 30_000 });
   assert.equal(await page.locator('[data-action="read-coin-evidence"]').count(), 0, 'Practice coins explain how to inspect a live coin');
 
@@ -465,6 +461,25 @@ try {
   const evidenceDownload = await downloadEvent;
   assert.deepEqual(JSON.parse(readFileSync(await evidenceDownload.path(), 'utf8')), evidence);
   assert.deepEqual(nativeDialogs, [], 'Trebuchet opened a native prompt/confirm dialog');
+  // Pairs have their own ids even after a restore: one numbered past the count must not repeat.
+  const pairIds = await page.evaluate(() => {
+    const pair = (id, symbol, mint) => ({ id, quoteToken: mint, quoteMint: mint, quoteSymbol: symbol, supplyPercent: 5, ammConfigIndex: 5, distribution: [{ sharePercent: 100 }], ladder: { mode: 'off' }, support: { mode: 'off' }, startPricePremiumPct: 25 });
+    const config = JSON.parse(JSON.stringify(currentLaunchConfig()));
+    config.poolTopology.pools = [config.poolTopology.pools[0],
+      pair('custom-pool-2', 'RUG', 'RUGx1zSD7LCVqFgTYQWNiJKSkDcfN3yRR5XoFoAXRUG'),
+      pair('custom-pool-3', 'DGU', '7AL5rfx4Jf1DLFzZpQEPHkmR9BJjpcmWwne1f9xqfmTu')];
+    restoreLaunchConfigFromJournal({ launchConfig: config });
+    addCustomPool({ mint: 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj', name: 'XLRT', symbol: 'XLRT' });
+    const ids = state.customPools.map((pool) => pool.id);
+    // A saved launch that already repeats an id is repaired on restore.
+    config.poolTopology.pools.push(pair('custom-pool-3', 'DUP', 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj'));
+    restoreLaunchConfigFromJournal({ launchConfig: config });
+    return { ids, repaired: state.customPools.map((pool) => pool.id) };
+  });
+  assert.equal(new Set(pairIds.ids).size, pairIds.ids.length, `pairs share an id: ${pairIds.ids}`);
+  assert.equal(new Set(pairIds.repaired).size, pairIds.repaired.length, `restore kept a repeated id: ${pairIds.repaired}`);
+  await page.evaluate(() => { state.customPools = []; renderAll(); });
+
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 

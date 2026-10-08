@@ -1,5 +1,6 @@
 function bindEvents() {
   document.addEventListener('click', handleClick);
+  applyNavMode(readNavMode());
   document.addEventListener('input', handleDynamicInput);
   document.addEventListener('input', scheduleLaunchAutoSave);
   // A pasted pair mint resolves its symbol as soon as the field is left.
@@ -158,7 +159,7 @@ function bindEvents() {
     selectTokenLogo(event.target.files?.[0] || null);
   });
   $('#liquidityBudgetSol')?.addEventListener('input', (event) => {
-    applyLaunchBudgetRecommendation(event.target.value, { announce: false });
+    applyLaunchBudgetRecommendation(event.target.value, { announce: false, fromInput: true });
   });
 
   $('#quickTokenName')?.addEventListener('input', renderQuickLaunchCost);
@@ -208,7 +209,6 @@ function bindEvents() {
     'sliceShares',
     'ladderBands',
     'supportSol',
-    'airdropWallets',
     'airdropSupplyPercent',
     'airdropAutoFit',
     'feeKeyRecipient',
@@ -237,9 +237,11 @@ window.addEventListener?.('solana#initialized', () => {
 
 restoreExecutionLedger();
 restoreLaunchProof();
-restoreClassicReportComparison();
 restoreDiscoveryRegistry();
 bindEvents();
+bindWalletChips();
+bindActionGuards();
+bindCloseGuard();
 initializeSolflareWallet();
 setView('coins');
 renderAll();

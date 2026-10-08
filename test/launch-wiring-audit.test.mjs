@@ -18,11 +18,6 @@ const lpSrc = readFileSync(path.join(REPO, 'lpService.js'), 'utf8');
 // launchJournal.js is a thin adapter. Audit the Core module's source.
 const journalSrc = readFileSync(path.join(REPO, 'packages/core/src/launch-journal.js'), 'utf8');
 const coreExecSrc = readFileSync(path.join(REPO, 'packages/core/src/v2-execution-context.js'), 'utf8');
-const transferSrc = readFileSync(path.join(REPO, 'public', 'modules', 'transfer.js'), 'utf8');
-const tokenConfigSrc = readFileSync(path.join(REPO, 'public', 'modules', 'token-config.js'), 'utf8');
-const journalsSrc = readFileSync(path.join(REPO, 'public', 'modules', 'journals.js'), 'utf8');
-const lpExecSrc = readFileSync(path.join(REPO, 'public', 'modules', 'lp-execution.js'), 'utf8');
-const poolEditorSrc = readFileSync(path.join(REPO, 'public', 'modules', 'pool-editor.js'), 'utf8');
 
 function loadV2ServerFingerprintHarness() {
   const start = serverSrc.indexOf('function v2ProofPositionCount');
@@ -167,45 +162,6 @@ test('retry-airdrop dedupes, merges, and returns the merged record', () => {
   );
 });
 
-test('frontend replaces lastAirdropResult wholesale from the merged response', () => {
-  assert.ok(
-    /lastAirdropResult = \{\r?\n\s*transferred: data\.airdrop\?\.transferred \|\| \[\],\r?\n\s*failed: data\.airdrop\?\.failed \|\| \[\],\r?\n\s*\};/.test(transferSrc),
-    'retry handler must replace (not append) — the server already merged prior delivered rows',
-  );
-});
-
-test('airdrop plan is journaled at create-lp and restored on resume', () => {
-  // Frontend sends the plan with create-lp.
-  assert.ok(
-    /const plan = buildAirdropTransferPayload\(\);[\s\S]{0,100}?return plan \? \{ airdrop: plan \} : \{\};/.test(lpExecSrc),
-    'create-lp request must carry the airdrop plan',
-  );
-  // Server stores it under poolPlan.airdropPlan.
-  assert.ok(
-    /airdropPlan: \(input\.airdrop/.test(serviceSrc),
-    'create-lp handler must journal poolPlan.airdropPlan',
-  );
-  // Resume restores both the plan and the result record.
-  assert.ok(
-    /restoredAirdropPayload = journal\.poolPlan\?\.airdropPlan \|\| null;/.test(journalsSrc),
-    'journal resume must restore the airdrop plan',
-  );
-  assert.ok(
-    /lastAirdropResult = \(journal\.airdrop && typeof journal\.airdrop === 'object'\)/.test(journalsSrc),
-    'journal resume must restore the per-recipient result record',
-  );
-  // The payload builder falls back to the restored plan, pinned to the mint.
-  assert.ok(
-    /restoredAirdropPayload\.tokenMint === createdTokenInfo\.mint/.test(tokenConfigSrc),
-    'restored-plan fallback must be pinned to the current token mint',
-  );
-  // New-launch reset clears the restored plan.
-  assert.ok(
-    /lastAirdropResult = null;\r?\n\s*restoredAirdropPayload = null;/.test(poolEditorSrc),
-    'launch reset must clear the restored plan',
-  );
-});
-
 test('classic resume materializes recoverable Phase 1 pool events before retrying', () => {
   assert.match(serverSrc, /app\.post\('\/api\/resume-launch', resumeLaunchHandler\);/);
   const resumeStart = serviceSrc.indexOf('async function resumeLiquidity(');
@@ -251,74 +207,6 @@ test('Phase 1 recovery materializer reconstructs opened slices and blocks duplic
   assert.ok(
     /multiple created pools recorded for one allocation/.test(serverSrc),
     'materializer must block ambiguous duplicate pool creations',
-  );
-});
-
-test('active LP failure UI stops offering resume for unsafe partial pool state', () => {
-  assert.ok(
-    /data\.manualRecoveryRequired \|\| data\.code === 'UNSAFE_PARTIAL_POOL_STATE'/.test(lpExecSrc),
-    'resume handler must branch on the unsafe partial-pool response',
-  );
-  const unsafeBranchStart = lpExecSrc.indexOf("data.code === 'UNSAFE_PARTIAL_POOL_STATE'");
-  assert.ok(unsafeBranchStart >= 0, 'unsafe partial-pool branch must exist');
-  const unsafeBranch = lpExecSrc.slice(unsafeBranchStart, unsafeBranchStart + 2500);
-  assert.ok(
-    /btn\.classList\.add\('hidden'\)/.test(unsafeBranch),
-    'unsafe partial-pool branch must hide the resume button',
-  );
-  assert.ok(
-    /completed position state was recorded/.test(unsafeBranch),
-    'unsafe partial-pool copy must explain why automatic retry stopped',
-  );
-});
-
-test('report prefers result-recorded pool facts over live config', () => {
-  const reportSrc = readFileSync(path.join(REPO, 'public', 'modules', 'launch-report.js'), 'utf8');
-  assert.ok(
-    /Number\(r\.supplyPercent \?\? userPool\.supplyPercent \?\? 0\)/.test(reportSrc),
-    'supply percent must prefer the result-recorded value (live config does not survive a restart)',
-  );
-  assert.ok(
-    /const qm = r\.quoteAddress \|\| userPool\.quoteToken;/.test(reportSrc),
-    'quote mint must prefer the result-recorded address',
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Step-6 ordering: airdrop -> publish report -> sweep.
-//
-// The permanent launch report must be written AFTER every on-chain
-// token-setup transaction (pools, locks, transfers, airdrop) and BEFORE the
-// sweep — so the Arweave record carries the real airdrop delivery results
-// instead of a forever-"pending" section. These pin the orchestration and
-// the idempotency that makes re-running it safe.
-// ---------------------------------------------------------------------------
-
-test('runTransfer orders airdrop -> publish -> sweep', () => {
-  const fnStart = transferSrc.indexOf('async function runTransfer()');
-  assert.ok(fnStart >= 0);
-  const fn = transferSrc.slice(fnStart, fnStart + 12000);
-  const airdropIdx = fn.indexOf("fetch('/api/run-airdrop'");
-  const publishIdx = fn.indexOf('await publishLaunchReportToArweave()');
-  const sweepIdx = fn.indexOf("fetch('/api/transfer-assets'");
-  assert.ok(airdropIdx >= 0, 'step 6a must call /api/run-airdrop');
-  assert.ok(publishIdx >= 0, 'step 6b must await the report publish');
-  assert.ok(sweepIdx >= 0, 'step 6c must call /api/transfer-assets');
-  assert.ok(airdropIdx < publishIdx, 'airdrop must run before the publish');
-  assert.ok(publishIdx < sweepIdx, 'publish must run before the sweep');
-  // The cached report rebuilds before publishing so the HTML includes the
-  // airdrop section.
-  const resetIdx = fn.indexOf('_resetCachedReport();');
-  assert.ok(resetIdx >= 0 && resetIdx < publishIdx, 'report cache must reset before the publish');
-  // The sweep request must NOT carry the airdrop (it already ran in 6a).
-  const sweepBody = fn.slice(sweepIdx, fn.indexOf('});', sweepIdx));
-  assert.ok(!/airdrop: airdropPayload/.test(sweepBody), 'sweep request must not include the airdrop payload');
-});
-
-test('step 5 no longer auto-publishes the report', () => {
-  assert.ok(
-    !/publishLaunchReportToArweave\(data\);/.test(lpExecSrc),
-    'the step-5 publish trigger must be gone — the report publishes in step 6 after the airdrop',
   );
 });
 
@@ -664,51 +552,6 @@ test('v2 server derives report fingerprints from launchData evidence', () => {
   assert.ok(zeroLiquidityCompleteness.missing.includes('fee key count'));
 });
 
-test('large airdrop lists warn (no cap)', () => {
-  assert.ok(
-    /if \(n <= 1000\) return '';/.test(tokenConfigSrc),
-    'the size warning must trigger above 1,000 recipients',
-  );
-  assert.ok(
-    !/recipients\.length > \d+[\s\S]{0,120}?(throw|status\(400\))/.test(tokenConfigSrc),
-    'there must be no recipient-count cap',
-  );
-});
-
-test('journal resume restores the publish state', () => {
-  assert.ok(
-    /journal\.reportPublish && journal\.reportPublish\.jsonUri/.test(journalsSrc),
-    'resume must restore _publishedReport from journal.reportPublish',
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Sweep-round regressions: publish size safety, mutex coverage, UI dedupe.
-// ---------------------------------------------------------------------------
-
-test('published report HTML stays small (remote logo + capped airdrop tables)', () => {
-  const reportSrc = readFileSync(path.join(REPO, 'public', 'modules', 'launch-report.js'), 'utf8');
-  // The report cache (preview + publish) prefers the logo's Arweave URI
-  // over the base64 data URL, which alone could exceed the ~100KB
-  // sponsored-upload cap.
-  assert.ok(
-    /createdTokenInfo && createdTokenInfo\.imageUri/.test(reportSrc.replace(/\r/g, '')),
-    '_getReportHtml must prefer the remote imageUri',
-  );
-  // Airdrop tables cap their rendered rows.
-  assert.ok(
-    /MAX_REPORT_AIRDROP_ROWS = 100;/.test(reportSrc),
-    'airdrop tables must cap rendered rows',
-  );
-  assert.ok(
-    (reportSrc.match(/slice\(0, MAX_REPORT_AIRDROP_ROWS\)/g) || []).length === 3,
-    'all three tables (pending/delivered/failed) must apply the cap',
-  );
-  // imageUri propagates from token creation.
-  const tokenSrc = readFileSync(path.join(REPO, 'tokenService.js'), 'utf8');
-  assert.ok(/imageUri: imageUri \|\| null,/.test(tokenSrc), 'createTokenWithMetaplex must return imageUri');
-});
-
 test('publish service degrades gracefully on oversized HTML', () => {
   const svcSrc = readFileSync(path.join(REPO, 'launchReportService.js'), 'utf8');
   assert.ok(/HTML_UPLOAD_MAX_BYTES = 95 \* 1024;/.test(svcSrc), 'size guard constant must exist');
@@ -739,93 +582,6 @@ test('transfer-assets response exposes authoritative sweep verification', () => 
   const handler = transferAssetsHandlerSource();
 
   assert.match(handler, /return \{[\s\S]*?walletEmpty,[\s\S]*?hasPartialFailure,/);
-});
-
-test('index.html has no duplicate element ids', () => {
-  const html = readFileSync(path.join(REPO, 'public', 'index.html'), 'utf8');
-  const ids = [...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
-  const counts = new Map();
-  for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
-  const dupes = [...counts.entries()].filter(([, c]) => c > 1).map(([id]) => id);
-  assert.deepEqual(dupes, [], `duplicate ids found: ${dupes.join(', ')} — getElementById silently resolves the first, shadowing the rest`);
-});
-
-test('success modal hands the 3D coin back to the preview card on close', () => {
-  const fundingSrc = readFileSync(path.join(REPO, 'public', 'modules', 'funding.js'), 'utf8');
-  const hideStart = fundingSrc.indexOf('function hideLaunchSuccessModal()');
-  assert.ok(hideStart >= 0);
-  const hide = fundingSrc.slice(hideStart, hideStart + 2500);
-  // The modal borrows the singleton WebGL renderer from the travelling
-  // preview card (alive on step 6, behind the modal); destroying it on
-  // close without re-rendering the card left the step-6 coin area empty.
-  assert.ok(
-    /window\.coinRenderer\.destroy\(\);/.test(hide),
-    'close must still free the modal coin context',
-  );
-  assert.ok(
-    /renderTokenPreview\(\);/.test(hide),
-    'close must re-render the preview card so its coin re-initialises',
-  );
-  // And the destroy must come BEFORE the hand-back (one context at a time).
-  assert.ok(
-    hide.indexOf('coinRenderer.destroy()') < hide.indexOf('renderTokenPreview()'),
-    'free the modal context before the card re-claims the singleton',
-  );
-});
-
-test('parked-coin pose is wired end to end', () => {
-  const renderer = readFileSync(new URL('../public/coinRenderer.js', import.meta.url), 'utf8');
-  // The renderer exposes the switch and holds the documented pose.
-  assert.match(renderer, /setParked,/, 'coinRenderer must export setParked');
-  assert.match(renderer, /PARKED_YAW = -Math\.PI \/ 6/, 'parked pose is ~30° yaw, logo forward');
-  // Render-on-demand: every texture lands in applyFace, which must kick
-  // frames or parked mode would never show new faces.
-  assert.match(renderer, /function applyFace\(material, content\) \{\n    \/\/ Parked mode renders on demand/,
-    'applyFace must kick parked rendering');
-
-  const preview = readFileSync(new URL('../public/modules/coin-preview.js', import.meta.url), 'utf8');
-  // Prefs actually consumed (coinPreview was a dead pref before this).
-  assert.match(preview, /data\.prefs\.coinPreview !== false/, 'coinPreview pref must be read');
-  assert.match(preview, /data\.prefs\.coinPreviewParked === true/, 'coinPreviewParked pref must be read');
-
-  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-  assert.match(html, /id="coinPreviewToggle"/, 'settings panel must have the show-coin toggle');
-  assert.match(html, /id="coinParkedToggle"/, 'settings panel must have the parked-pose toggle');
-
-  const prefs = readFileSync(new URL('../userPrefs.js', import.meta.url), 'utf8');
-  assert.match(prefs, /coinPreviewParked: false/, 'userPrefs must default coinPreviewParked off');
-});
-
-test('journal resume is gated on resolvability, not the mere presence of incomplete pools', () => {
-  // Regression guard. The old gate disabled "Resume launch" for ANY recorded-
-  // but-unfinished pool (unsafeCreatedPoolEvents().length === 0), which pre-
-  // empted the on-chain reconciliation the server + orchestrator already run for
-  // the common mid-flight-death case (recoveringPhase1 adopting landed-but-
-  // unrecorded positions). canResume must defer to unsafePoolStateIsUnresolvable,
-  // which mirrors the server's UNSAFE_PARTIAL_POOL_STATE conditions, and let
-  // resolvable pools through.
-  assert.ok(
-    journalsSrc.includes('function unsafePoolStateIsUnresolvable(journal)'),
-    'journals.js must define unsafePoolStateIsUnresolvable',
-  );
-  assert.ok(
-    journalsSrc.includes('!unsafePoolStateIsUnresolvable(journal)'),
-    'canResumeLaunchJournal must gate on resolvability',
-  );
-  assert.ok(
-    !journalsSrc.includes('unsafeCreatedPoolEvents(journal).length === 0'),
-    'the old blanket unsafe-pool veto must be gone',
-  );
-  const fnStart = journalsSrc.indexOf('function unsafePoolStateIsUnresolvable');
-  const fnSrc = journalsSrc.slice(fnStart, fnStart + 700);
-  assert.ok(
-    fnSrc.includes('if (!event.poolId) return true'),
-    'must treat a pool_create event with no poolId as unresolvable (nothing to read on-chain)',
-  );
-  assert.ok(
-    fnSrc.includes('.size > 1'),
-    'must treat two pools recorded for one allocation as unresolvable (ambiguous)',
-  );
 });
 
 test('an existing mint account is adopted instead of re-created forever', () => {
@@ -933,23 +689,3 @@ test('display price and launch price share one on-chain adapter definition', () 
 });
 
 
-test('classic airdrop requests and retries keep the saved token program', async () => {
-  const start = tokenConfigSrc.indexOf('function buildLiveAirdropTransferPayload()');
-  const end = tokenConfigSrc.indexOf('\n// Compute the preallocation', start);
-  const retryStart = transferSrc.indexOf('async function runAirdropRetry()');
-  const retryEnd = transferSrc.indexOf('\n}', retryStart) + 2;
-  for (const mintFormat of ['classic-spl', 'token-2022']) {
-    let sent;
-    const context = vm.createContext({ createdTokenInfo: { mint: 'mint-a', decimals: 9, mintFormat },
-      simpleConfig: { preallocationEnabled: true, airdrop: { enabled: true, parsedRows: [{ wallet: 'recipient-a', tokens: 2 }] } },
-      lastAirdropResult: { transferred: [], failed: [{ wallet: 'recipient-a', tokens: 2 }] }, tempWallet: { publicKey: 'wallet-a' }, demoModeActive: false,
-      document: { getElementById: () => ({}) }, setLoading() {}, log() {}, startAirdropProgressPoll() {}, stopAirdropProgressPoll() {}, hideAirdropProgressPanel() {},
-      fetch: async (_url, options) => { sent = JSON.parse(options.body); return { json: async () => ({ success: true, airdrop: { transferred: [], failed: [] } }) }; },
-      renderAirdropResult() {}, logAirdropOutcome() {},
-    });
-    vm.runInContext(tokenConfigSrc.slice(start, end) + '\n' + transferSrc.slice(retryStart, retryEnd), context);
-    assert.equal(vm.runInContext('buildLiveAirdropTransferPayload().isToken2022', context), mintFormat === 'token-2022');
-    await vm.runInContext('runAirdropRetry()', context);
-    assert.equal(sent.isToken2022, mintFormat === 'token-2022');
-  }
-});

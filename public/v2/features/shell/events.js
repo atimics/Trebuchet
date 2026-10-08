@@ -127,11 +127,38 @@ function handleDynamicInput(event) {
     return;
   }
 
+  const solInput = event.target.closest('[data-sol-pool-field]');
+  if (solInput) {
+    const solField = solInput.dataset.solPoolField;
+    if (solField === 'venue') state.solPoolVenue = solInput.value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    else if (solField === 'dammFeeBps') state.solPoolDamm = { ...state.solPoolDamm, feeBps: Number(solInput.value) || 25 };
+    else if (solField === 'dammRange') state.solPoolDamm = { ...state.solPoolDamm, rangeMultiple: Number(solInput.value) || 1000 };
+    else state.solPoolConfigIndex = Math.floor(parseNumericInput(solInput.value, DEFAULT_POOL_CONFIG_INDEX));
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    renderSupplyEditorAfterTier(solInput);
+    return;
+  }
+
+  const quoteInput = event.target.closest('[data-quote-pool-field]');
+  if (quoteInput) {
+    if (quoteInput.dataset.quotePoolField === 'ammConfigIndex') {
+      state.pairPoolConfigIndex = Math.floor(parseNumericInput(quoteInput.value, DEFAULT_POOL_CONFIG_INDEX));
+      if (quoteInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(quoteInput); return; }
+    } else if (quoteInput.dataset.quotePoolField === 'startPremiumPct') {
+      state.pairStartPremiumPct = clampNumber(parseNumericInput(quoteInput.value, state.pairStartPremiumPct), 0, 500);
+    }
+    invalidateClassicOutputs();
+    refreshClassicPreview();
+    return;
+  }
+
   const customInput = event.target.closest('[data-custom-pool-field]');
   if (customInput) {
     const pool = state.customPools.find((item) => item.id === customInput.dataset.poolId);
     if (!pool) return;
     pool[customInput.dataset.customPoolField] = customInput.value;
+    if (customInput.classList.contains('supply-tier')) { invalidateClassicOutputs(); refreshClassicPreview(); renderSupplyEditorAfterTier(customInput); return; }
     if (['quoteMint', 'quoteSymbol'].includes(customInput.dataset.customPoolField)) {
       delete state.quoteTokenInfo[pool.id];
     }
@@ -146,6 +173,8 @@ function handleDynamicInput(event) {
       state.baseManualLadderText = baseInput.value;
     } else if (baseInput.dataset.baseField === 'baseSupportDepth') {
       state.baseSupportDepth = baseInput.value;
+    } else if (baseInput.dataset.baseField === 'baseSupportLayersText') {
+      state.baseSupportLayersText = baseInput.value;
     }
     invalidateClassicOutputs();
     refreshClassicPreview();
@@ -166,11 +195,6 @@ function handleDynamicInput(event) {
     renderVanityCandidates();
   }
 
-  if (event.target.classList?.contains('classic-artifact-text')) {
-    state.classicReportComparison.input = event.target.value;
-    state.classicReportComparison.error = null;
-    persistClassicReportComparison();
-  }
 }
 
 function handleClick(event) {
@@ -211,13 +235,15 @@ function handleClick(event) {
 
   const discoveryPane = event.target.closest('[data-discovery-pane]');
   if (discoveryPane) {
-    state.discovery.activePane = discoveryPane.dataset.discoveryPane === 'wallets' ? 'wallets' : 'tokens';
+    state.discovery.activePane = ['wallets', 'inspect', 'saved'].includes(discoveryPane.dataset.discoveryPane) ? discoveryPane.dataset.discoveryPane : 'tokens';
     renderDiscoveryPanes();
     return;
   }
 
   const actionTarget = event.target.closest('[data-action]');
   if (!actionTarget) return;
+  // A greyed-out action shows its reason beside it; clicking it does nothing.
+  if (actionTarget.dataset.blockedReason) return;
 
   const { action } = actionTarget.dataset;
   if (action === 'quick-launch-run') {
@@ -239,9 +265,8 @@ function handleClick(event) {
     renderLaunchIdentity();
     return;
   }
-  if (action === 'toggle-launch-details') {
-    state.launchDetailsExpanded = !state.launchDetailsExpanded;
-    renderLiveLaunchMonitor();
+  if (action === 'apply-launch-preset') {
+    applyLaunchPreset(actionTarget.dataset.preset).catch((error) => notify(error.message || 'Could not apply the preset'));
     return;
   }
   if (action === 'select-launch-budget') {
@@ -255,6 +280,39 @@ function handleClick(event) {
   }
   if (action === 'launch-rail-act') {
     runLaunchRailAction();
+    return;
+  }
+  if (action === 'hub-picker-page') {
+    hubPicker.page = (Number(hubPicker.page) || 0) + Number(actionTarget.dataset.dir || 0);
+    renderHubPicker();
+    return;
+  }
+  if (action === 'customize-quote-pool') {
+    customizeQuotePool();
+    return;
+  }
+  if (action === 'set-pool-venue' || action === 'set-pool-fee') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'set-pool-tier' || action === 'set-pool-range') {
+    applyPoolSwitch(action, actionTarget);
+    return;
+  }
+  if (action === 'reconcile-network') {
+    reconcileNetwork(actionTarget.dataset.match);
+    return;
+  }
+  if (action === 'export-pool-config') {
+    exportPoolConfig();
+    return;
+  }
+  if (action === 'import-pool-config') {
+    importPoolConfig();
+    return;
+  }
+  if (action === 'toggle-nav') {
+    setNavMode(document.body.dataset.nav === 'icons' ? 'full' : 'icons');
     return;
   }
   if (action === 'select-environment') {
@@ -289,22 +347,6 @@ function handleClick(event) {
     stepNumberInput(input, Number(actionTarget.dataset.direction));
     return;
   }
-  if (action === 'select-history-pane') {
-    const pane = actionTarget.dataset.historyPane;
-    if (['recovery', 'wallets', 'audit', 'journal'].includes(pane)) {
-      state.activeHistoryPane = pane;
-      renderHistoryPanes();
-    }
-    return;
-  }
-  if (action === 'open-token-recovery') {
-    openTokenRecovery(actionTarget.dataset.journalId);
-    return;
-  }
-  if (action === 'continue-journal-finish') {
-    openJournalFinish(actionTarget.dataset.journalId);
-    return;
-  }
   if (state.activeView === 'launch') {
     const actionWorkspace = {
       'start-vanity': 'mint',
@@ -312,14 +354,11 @@ function handleClick(event) {
       'start-quote-acquire': 'fund',
       'publish-launch-report': 'finish',
       'download-launch-dossier': 'finish',
-      'compare-classic-report': 'finish',
-      'inspect-recovery': 'finish',
       'cancel-refund-launch': 'finish',
-      'resume-journal': 'finish',
     }[action];
-    if (actionWorkspace) {
+    if (actionWorkspace && !actionTarget.dataset.stay) {
       // Each of these acts on the phase's own panel, or on the address settings.
-      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : 'run' };
+      state.phaseSlide = { ...(state.phaseSlide || {}), [actionWorkspace]: action === 'start-vanity' ? 'address' : actionWorkspace === 'fund' ? 'cost' : 'run' };
       setLaunchWorkspace(actionWorkspace);
     }
   }
@@ -345,8 +384,28 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'add-sol-support') {
+    addSolPoolSupport(actionTarget.dataset.sol);
+    return;
+  }
+
   if (action === 'start-vanity') {
     startVanityGrind().catch((error) => notify(error.message || 'Vanity grind failed'));
+    return;
+  }
+
+  if (action === 'stop-grind-job') {
+    stopGrindJob(actionTarget.dataset.job).catch(() => null);
+    return;
+  }
+
+  if (action === 'dismiss-grind-job') {
+    dismissGrindJob(actionTarget.dataset.job);
+    return;
+  }
+
+  if (action === 'calibrate-vanity') {
+    calibrateVanity().catch(() => null);
     return;
   }
 
@@ -373,6 +432,7 @@ function handleClick(event) {
   }
 
   if (action === 'select-vanity') {
+    if (vanityAddressUsedReason(actionTarget.dataset.publicKey)) return;
     state.selectedVanityPublicKey = actionTarget.dataset.publicKey || null;
     renderAll();
     notify(state.selectedVanityPublicKey ? 'Vanity CA selected' : 'Random CA selected');
@@ -467,6 +527,11 @@ function handleClick(event) {
   }
   if (action === 'withdraw-coin-position') {
     withdrawCoinPosition(actionTarget.dataset.nft).catch((error) => notify(error.message || 'Withdrawing failed'));
+    return;
+  }
+  if (action === 'refresh-coin-airdrop') {
+    const coin = coinByKey(state.coins.key);
+    if (coin?.mint) loadCoinAirdrop(coin.mint).catch(() => null);
     return;
   }
   if (action === 'refresh-coin-positions') {
@@ -588,10 +653,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'clear-execution-audit') {
-    clearExecutionAudit();
-    return;
-  }
 
   if (action === 'cancel-refund-launch') {
     cancelRefundLaunch();
@@ -647,13 +708,22 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'load-kol-wallets') {
+    loadKolWallets();
+    return;
+  }
+
+  if (action === 'load-airdrop-list') {
+    loadAirdropList(actionTarget.dataset.list);
+    return;
+  }
+
   if (action === 'sample-airdrop') {
     setAirdropText([
       'wallet,tokens',
       '11111111111111111111111111111111,1000',
       'So11111111111111111111111111111111111111112,2500',
     ].join('\n'));
-    notify('Sample airdrop CSV loaded');
     return;
   }
 
@@ -664,7 +734,6 @@ function handleClick(event) {
 
   if (action === 'clear-airdrop') {
     setAirdropText('');
-    notify('Airdrop CSV cleared');
     return;
   }
 
@@ -718,42 +787,18 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'compare-classic-artifact') {
-    runClassicArtifactComparison();
-    return;
-  }
 
-  if (action === 'load-classic-artifact') {
-    requestClassicArtifactImport();
-    return;
-  }
 
-  if (action === 'clear-classic-artifact') {
-    clearClassicArtifactComparison();
-    return;
-  }
 
   if (action === 'inspect-recovery') {
-    setView('history');
-    notify('Recovery journal opened');
-    return;
-  }
-
-  if (action === 'inspect-recovery-record') {
-    state.activeHistoryPane = actionTarget.dataset.recoveryPane === 'journal' ? 'journal' : 'wallets';
-    renderHistoryPanes();
-    setView('history');
-    notify(state.activeHistoryPane === 'journal' ? 'Launch journal opened' : 'Recovery wallet inventory opened');
-    return;
-  }
-
-  if (action === 'resume-journal') {
-    resumeJournal(actionTarget.dataset.journalId);
-    return;
-  }
-
-  if (action === 'dismiss-journal') {
-    dismissJournal(actionTarget.dataset.journalId);
+    // A launch with a token is recovered on its coin page, which shows what is left and runs it.
+    const mint = proofTokenMint(currentLaunchProof());
+    if (mint && !isDemoLaunchProof(currentLaunchProof())) {
+      openCoinByMint(mint);
+      return;
+    }
+    state.coins = { ...state.coins, key: null };
+    setView('coins');
     return;
   }
 
@@ -798,6 +843,7 @@ function handleClick(event) {
 
   if (action === 'close-approval') {
     state.approvalOpen = false;
+    state.launchAfterArm = false;
     renderExtension();
     return;
   }
@@ -848,29 +894,12 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'select-recovery-wallet') {
-    selectRecoveryWallet(actionTarget.dataset.wallet);
-    return;
-  }
 
-  if (action === 'use-recovery-wallet-for-launch') {
-    const wallet = selectRecoveryWallet(actionTarget.dataset.wallet, { switchToWallet: false });
-    if (wallet) {
-      setView('launch');
-      notify('Recovery wallet selected for the next launch run');
-    }
-    return;
-  }
 
-  if (action === 'copy-recovery-wallet') {
-    copyText(actionTarget.dataset.wallet, 'Recovery wallet address');
-    return;
-  }
 
-  if (action === 'reveal-recovery-wallet') {
-    const walletPublicKey = actionTarget.dataset.wallet;
-    selectRecoveryWallet(walletPublicKey, { switchToWallet: true });
-    revealWalletSecret(walletPublicKey).catch((error) => notify(error.message || 'Recovery secret reveal failed'));
+
+  if (action === 'cancel-support-job') {
+    cancelSavedSupportJob(actionTarget.dataset.jobId).catch((error) => notify(error.message || 'Support cancel failed'));
     return;
   }
 
@@ -879,10 +908,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === 'discard-recovery-wallet') {
-    discardSelectedWallet(actionTarget.dataset.wallet).catch((error) => notify(error.message || 'Wallet discard failed'));
-    return;
-  }
 
   if (action === 'copy-wallet-address') {
     copyText(selectedLaunchWalletPublicKey(), 'Funding address');
@@ -954,6 +979,10 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'sweep-all-wallets') {
+    sweepAllWallets().catch((error) => notify(error.message || 'Sweep all failed'));
+    return;
+  }
   if (action === 'unlock-secret-pin') {
     unlockSecretPin().catch((error) => notify(error.message || 'Recovery PIN unlock failed'));
     return;
@@ -978,7 +1007,6 @@ function handleClick(event) {
     refreshSecretPinStatus({ reloadBoot: true })
       .then(() => {
         renderAll();
-        notify('Recovery PIN status refreshed');
       })
       .catch((error) => notify(error.message || 'Recovery PIN refresh failed'));
     return;

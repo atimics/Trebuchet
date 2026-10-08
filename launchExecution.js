@@ -1,4 +1,4 @@
-import { throwIfExecutionPaused } from './chainRetry.js';
+import { throwIfExecutionPaused, isExecutionPaused } from './chainRetry.js';
 import { mergeTransferReceipts } from './sweepOrchestrator.js';
 // Live launch services use ordinary inputs and shared host interfaces.
 // HTTP routes translate the result; the runtime can call these methods directly.
@@ -80,6 +80,7 @@ export function createLaunchExecutionServices({
   sweepAllTokensToDestination,
   sweepNftsToDestination,
   sweepSolToDestination,
+  closeEmptyTokenAccounts = null,
   transferJournalSummary,
   transferMetadataAuthority,
   unsafeSweepDestinationReason,
@@ -88,6 +89,23 @@ export function createLaunchExecutionServices({
   vanityAvailability,
   vanityCaStore,
 }) {
+  // A paused airdrop leaves the launch active and writes nothing else, so its reason is kept here.
+  // The launch (from another wallet) whose token is this address, or null.
+  const vanityAddressUsedBy = (address, walletPublicKey) => {
+    const mint = String(address || '').trim();
+    if (!mint) return null;
+    return launchJournal.list({ includeCompleted: true, includeArchived: true }).find((journal) => (
+      String(journal?.token?.mint || journal?.token?.tokenMint || '').trim() === mint
+      && journal.walletPublicKey !== walletPublicKey
+    )) || null;
+  };
+
+  const recordAirdropStop = (walletPublicKey, error) => {
+    if (!isExecutionPaused(error)) return;
+    try { launchJournal.recordEvent(walletPublicKey, { stage: 'airdrop_stopped', code: error.errorDetails?.code || error.code, error: error.message }); }
+    catch { /* the stop itself is what the caller reports */ }
+  };
+
   async function finishToken(input = {}) {
     let walletPublicKey = null;
     let claimedLaunchOp = false;
@@ -269,6 +287,15 @@ export function createLaunchExecutionServices({
       const normalizedMintFormat = normalizeMintFormat(mintFormat);
 
       if (input.walletPublicKey || vanityCAPublicKey) requireSecretPinUnlocked('creating a token with saved recovery secrets');
+      // A saved address another launch already minted is used: refuse it before anything is signed.
+      const usedBy = vanityAddressUsedBy(vanityCAPublicKey, input.walletPublicKey);
+      if (usedBy) {
+        throw new LaunchRejection(409, {
+          success: false,
+          code: 'VANITY_ADDRESS_USED',
+          error: `Address already used by ${usedBy.token?.symbol ? `$${usedBy.token.symbol}` : 'another launch'}`,
+        });
+      }
 
       let normalizedVanityPrefix = String(vanityPrefix ?? '').trim();
       let normalizedVanitySuffix = String(vanitySuffix ?? '').trim();
@@ -483,7 +510,8 @@ export function createLaunchExecutionServices({
         // so readiness routes to finish-token-creation instead.
         const existingMint = String(error?.tokenMint || input.vanityCAPublicKey || '').trim();
         const accountAlreadyInUse = /already in use|custom program error: 0x0/i.test(error?.message || '');
-        if (existingMint && accountAlreadyInUse) {
+        // Only this wallet's own interrupted mint is adopted, never a coin another launch made.
+        if (existingMint && accountAlreadyInUse && !vanityAddressUsedBy(existingMint, walletPublicKey)) {
           launchJournal.upsertForWallet(
             walletPublicKey,
             {
@@ -1050,7 +1078,7 @@ export function createLaunchExecutionServices({
       const signer = resolveSigner(input);
       walletPublicKey = signer.walletPublicKey;
       claimLaunchOp(walletPublicKey, 'run-airdrop'); claimed = true;
-      prepareAirdrop({ walletPublicKey, airdrop: input });
+      await prepareAirdrop({ walletPublicKey, airdrop: input });
       await reconcileAirdrop({ tempWalletSecretKey: signer.secretKeyArr, tokenMint: input.tokenMint });
       const priorAirdrop = launchJournal.activeForWallet(walletPublicKey)?.airdrop || {};
       const priorDelivered = priorAirdrop.transferred || [], deliveredWallets = new Set(priorDelivered.map((row) => row.wallet));
@@ -1067,7 +1095,10 @@ export function createLaunchExecutionServices({
         stage: 'airdrop_retry', retried: pendingRecipients.length, delivered: result.transferred.length, stillFailed: result.failed.length,
       });
       return { success: true, airdrop: mergedAirdrop };
-    } catch (error) { throw serviceError(error); }
+    } catch (error) {
+      if (claimed) recordAirdropStop(walletPublicKey, error);
+      throw serviceError(error);
+    }
     finally {
       if (tracking) { clearAirdropInFlight(walletPublicKey); airdropProgressEnd(walletPublicKey); }
       if (claimed) clearLaunchOpInFlight(walletPublicKey);
@@ -1150,7 +1181,7 @@ export function createLaunchExecutionServices({
         },
         { stage: 'transfer_started', destinationWallet },
       );
-      input = { ...input, airdrop: prepareAirdrop({ walletPublicKey, airdrop: input.airdrop }) };
+      input = { ...input, airdrop: await prepareAirdrop({ walletPublicKey, airdrop: input.airdrop }) };
       await reconcileWalletOperation({ tempWalletSecretKey: secretKeyArr, destinationWallet });
 
       // 0. Metadata authority handoff (keep-authority launches only). The
@@ -1301,6 +1332,7 @@ export function createLaunchExecutionServices({
               },
             );
           } catch (e) {
+            recordAirdropStop(walletPublicKey, e);
             throwIfExecutionPaused(e);
             // An UNEXPECTED airdrop failure (one that bypassed per-recipient
             // try/catch — likely a bad mint or connection init failure)
@@ -1348,7 +1380,7 @@ export function createLaunchExecutionServices({
       //    deps are the real walletHelpers functions; the journal recorder is
       //    a closure over this wallet.
       const {
-        solSweep, solSweepError, solSweepSkipped,
+        solSweep, solSweepError, solSweepSkipped, accountClose,
       } = await finishSweepWithSolGate({
         walletPublicKey,
         tempWalletSecretKey: secretKeyArr,
@@ -1359,6 +1391,7 @@ export function createLaunchExecutionServices({
           sweepNfts: sweepNftsToDestination,
           sweepTokens: sweepAllTokensToDestination,
           sweepSol: sweepSolToDestination,
+          closeAccounts: closeEmptyTokenAccounts,
           enumerate: (pk, opts) => checkWalletBalanceMultiToken(pk, opts),
           recordEvent: (event) => launchJournal.recordEvent(walletPublicKey, event),
         },
@@ -1440,7 +1473,8 @@ export function createLaunchExecutionServices({
         },
       );
       // Keep recovery custody until the final chain observation is durable.
-      if (walletEmpty) pendingWallets.remove(walletPublicKey);
+      // The key is kept (retired), never deleted here: "empty" allows dust and open token accounts.
+      if (walletEmpty) pendingWallets.retire(walletPublicKey);
       return {
         success: true,
         tokensTransferred,
@@ -1458,6 +1492,7 @@ export function createLaunchExecutionServices({
         walletEmpty,
         hasPartialFailure,
         airdrop: airdropResult,
+        accountClose,
       };
     } catch (error) {
       throwIfExecutionPaused(error);

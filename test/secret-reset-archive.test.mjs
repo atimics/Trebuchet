@@ -15,8 +15,6 @@ const secretStore = await import('../secretStore.js');
 const pendingWallets = await import('../pendingWallets.js');
 const vanityCaStore = await import('../vanityCaStore.js');
 const splitJobStore = await import('../splitJobStore.js');
-const nftCollectionStore = await import('../nftCollectionStore.js');
-const dammStore = await import('../dammV2Store.js');
 const { archiveSecrets } = await import('../secretArchive.js');
 const { secretInventory } = await import('../secretInventory.js');
 const { resetWithArchive, RESET_PHRASE } = await import('../secretReset.js');
@@ -24,32 +22,6 @@ const { resetWithArchive, RESET_PHRASE } = await import('../secretReset.js');
 const PIN = '4821';
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const bytes = (n) => Array.from(crypto.randomBytes(n));
-
-test('Meteora mint and position keys appear in the reset inventory and archive', (t) => {
-  const dir = freshConfig(t);
-  secretPinStore.setPin(PIN);
-  const mintKey = bytes(64), positionKey = bytes(64);
-  const record = dammStore.create({ config: { token: { name: 'Recovery' } } });
-  dammStore.saveTokenMint(record.id, { publicKey: 'SavedMint', secretKey: mintKey });
-  dammStore.savePositionNft(record.id, positionKey);
-  const inventory = secretInventory();
-  assert.equal(inventory.stores.dammKeys.length, 2);
-  assert.equal(inventory.totals.wouldBeLostByReset, 2);
-  assert.equal(inventory.resetAllowed, false);
-  assert.throws(() => resetWithArchive({ confirmReset: RESET_PHRASE }), /Some keys can still be read/);
-  const file = path.join('dammLaunches', `${record.id}.json`);
-  const before = fs.readFileSync(path.join(dir, file));
-  secretPinStore.lock();
-  const result = resetWithArchive({ confirmReset: RESET_PHRASE });
-  assert.equal(result.removed.dammKeys, 2);
-  const archived = path.join(dir, result.archive.path);
-  assert.ok(fs.readFileSync(path.join(archived, file)).equals(before));
-  fs.copyFileSync(path.join(archived, '.secretPin.json'), path.join(dir, '.secretPin.json'));
-  fs.copyFileSync(path.join(archived, file), path.join(dir, file));
-  assert.equal(secretPinStore.unlock(PIN), true);
-  assert.deepEqual(dammStore.loadTokenMint(record.id).secretKey, mintKey);
-  assert.deepEqual(Array.from(dammStore.loadPositionNft(record.id)), positionKey);
-});
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -83,12 +55,15 @@ function seed(dir) {
   vanityCaStore.add({ publicKey: 'VanitySeed1111', secretKey: secrets.vanitySeed, attempts: 123456789, epochs: 3 });
   vanityCaStore.add({ publicKey: 'VanityScalar1111', keyType: 'scalar', scalar: secrets.vanityScalar, attempts: 987654321 });
   const job = splitJobStore.create({ secretScalar: secrets.split, publicPoint: 'ab'.repeat(32), prefix: 'AB' });
-  const collection = nftCollectionStore.create({ name: 'Test' });
-  nftCollectionStore.update(collection.id, (record) => {
-    record.collectionKey = nftCollectionStore.keyRecord({ scalar: Uint8Array.from(secrets.nft), address: 'NftKeyAddr1111' });
-    return record;
-  });
-  return { secrets, jobId: job.id, collectionId: collection.id, dir };
+  // An NFT collection key saved before the NFTs view was removed: the file stays on disk, and a
+  // PIN reset still archives it and leaves it in place.
+  const collectionId = 'collection-test';
+  fs.mkdirSync(path.join(dir, 'nftCollections', collectionId), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'nftCollections', collectionId, 'collection.json'), JSON.stringify({
+    id: collectionId, name: 'Test',
+    collectionKey: { address: 'NftKeyAddr1111', scalarEnc: secretStore.encryptString(JSON.stringify(secrets.nft)) },
+  }), { mode: 0o600 });
+  return { secrets, jobId: job.id, collectionId, dir };
 }
 
 function snapshot(dir) {
@@ -153,7 +128,8 @@ test('reset archives every encrypted file byte for byte, then removes the PIN', 
   assert.equal(result.removed.pendingWallets, 2);
   assert.equal(result.removed.vanityCAs, 2);
   assert.equal(result.removed.splitJobs, 1);
-  assert.equal(result.removed.nftKeys, 1);
+  assert.equal('nftKeys' in result.removed, false, 'saved NFT keys are kept on disk');
+  assert.ok(fs.readFileSync(path.join(dir, 'nftCollections', collectionId, 'collection.json')).equals(before[path.join('nftCollections', collectionId, 'collection.json')]));
   assert.ok(secrets);
 });
 
@@ -281,8 +257,8 @@ test('copying the archive back and unlocking with the original PIN restores ever
   assert.equal(sha(wallet.mnemonic), expected.mnemonic);
   assert.equal(sha(JSON.stringify(vanityCaStore.get('VanityScalar1111').scalar)), expected.vanity);
   assert.equal(sha(JSON.stringify(splitJobStore.getWithSecret(jobId).secretScalar)), expected.split);
-  const record = nftCollectionStore.get(collectionId);
-  assert.equal(sha(JSON.stringify(Array.from(nftCollectionStore.keyScalar(record.collectionKey)))), expected.nft);
+  const record = JSON.parse(fs.readFileSync(path.join(dir, 'nftCollections', collectionId, 'collection.json'), 'utf8'));
+  assert.equal(sha(secretStore.decryptString(record.collectionKey.scalarEnc)), expected.nft);
   assert.equal(secretInventory().totals.readable, secretInventory().totals.total);
 });
 

@@ -69,14 +69,12 @@ function jsonResponse(data, status = 200) {
 const optionalDecimalsSource = js.match(/function optionalDecimals\(value\) \{[\s\S]*?\n\}/)[0];
 
 function loadClassicComparisonHarness() {
-  const statusSource = js.match(/function classicComparisonStatusFromCounts[\s\S]*?\n}\n/)?.[0];
   const proofCountStart = js.indexOf('function proofPositions');
   const proofCountEnd = js.indexOf('function buildV2ReportAirdropAudit');
-  const comparisonStart = js.indexOf('function collectArtifactAddresses');
+  const comparisonStart = js.indexOf('function optionalBoolean');
   const comparisonEnd = js.indexOf('function buildV2ReportParityAudit');
   const finalizeStart = js.indexOf('function proofReportArtifactFinalizesDestination');
   const finalizeEnd = js.indexOf('\nfunction mergeLaunchConfigSnapshot', finalizeStart);
-  assert.ok(statusSource, 'classic comparison status helper should be extractable');
   assert.ok(proofCountStart >= 0 && proofCountEnd > proofCountStart, 'proof count helpers should be extractable');
   assert.ok(comparisonStart >= 0 && comparisonEnd > comparisonStart, 'classic comparison helpers should be extractable');
   assert.ok(finalizeStart >= 0 && finalizeEnd > finalizeStart, 'proof artifact finalization helper should be extractable');
@@ -95,14 +93,9 @@ function loadClassicComparisonHarness() {
   };
   vm.runInNewContext(
     [
-      statusSource,
       js.slice(finalizeStart, finalizeEnd),
       js.slice(proofCountStart, proofCountEnd),
       js.slice(comparisonStart, comparisonEnd),
-      'globalThis.compareClassicReportArtifact = compareClassicReportArtifact;',
-      'globalThis.classicComparisonProofFingerprint = classicComparisonProofFingerprint;',
-      'globalThis.classicComparisonRequiredEvidence = classicComparisonRequiredEvidence;',
-      'globalThis.classicComparisonRequiredRows = classicComparisonRequiredRows;',
       'globalThis.proofConfigForFingerprint = proofConfigForFingerprint;',
       'globalThis.launchProofFingerprint = launchProofFingerprint;',
       'globalThis.reportPublishMatchesProof = reportPublishMatchesProof;',
@@ -222,9 +215,6 @@ function loadClassicComparisonPersistenceHarness() {
   assert.ok(normalizeStart >= 0 && normalizeEnd > normalizeStart, 'classic comparison persistence helpers should be extractable');
   const sandbox = {
     Date,
-    CLASSIC_REPORT_COMPARISON_INPUT_LIMIT: 1_000_000,
-    CLASSIC_REPORT_COMPARISON_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
-    CLASSIC_REPORT_COMPARISON_ROW_LIMIT: 80,
     compactLedgerText: (value, limit = 120) => String(value || '').slice(0, limit),
   };
   vm.runInNewContext(
@@ -241,13 +231,10 @@ function loadClassicComparisonPersistenceHarness() {
 
 function loadStoredProofHarness() {
   const proofStorageStart = js.indexOf('function storedLaunchProofConfig');
-  const proofStorageEnd = js.indexOf('\nfunction normalizeClassicComparisonRow', proofStorageStart);
-  const comparisonShapeStart = js.indexOf('function classicComparisonResultObject');
-  const comparisonShapeEnd = js.indexOf('\nfunction reportParityClassicComparison', comparisonShapeStart);
+  const proofStorageEnd = js.indexOf('\n}\n', js.indexOf('function clearStoredLaunchProof', proofStorageStart)) + 3;
   const proofPruneStart = js.indexOf('function pruneLaunchProofReportParity');
   const proofPruneEnd = js.indexOf('\nfunction mergeLaunchProofEvidence', proofPruneStart);
   assert.ok(proofStorageStart >= 0 && proofStorageEnd > proofStorageStart, 'stored proof helpers should be extractable');
-  assert.ok(comparisonShapeStart >= 0 && comparisonShapeEnd > comparisonShapeStart, 'classic comparison shape helper should be extractable');
   assert.ok(proofPruneStart >= 0 && proofPruneEnd > proofPruneStart, 'proof prune helpers should be extractable');
 
   const storage = new Map();
@@ -314,7 +301,6 @@ function loadStoredProofHarness() {
   };
   vm.runInNewContext(
     [
-      js.slice(comparisonShapeStart, comparisonShapeEnd),
       js.slice(proofPruneStart, proofPruneEnd),
       js.slice(proofStorageStart, proofStorageEnd),
       'globalThis.storedLaunchProofConfig = storedLaunchProofConfig;',
@@ -336,7 +322,7 @@ function loadStoredProofHarness() {
 
 function loadClassicRetirementGateHarness() {
   const gateStart = js.indexOf('function demoRunHasCompletedReadiness');
-  const gateEnd = js.indexOf('\nfunction replacementCriteriaById', gateStart);
+  const gateEnd = js.indexOf('\nfunction walletChipHtml', gateStart);
   const demoConfigStart = js.indexOf('function demoRunLaunchConfig');
   const demoConfigEnd = js.indexOf('\nfunction proofFromDemoRun', demoConfigStart);
   const txEvidenceStart = js.indexOf('function v2LiquidityTransactionEvidenceCounts');
@@ -345,14 +331,11 @@ function loadClassicRetirementGateHarness() {
   const reportEnd = js.indexOf('\nfunction renderV2ReportAddressRow', reportStart);
   const heldAuditStart = js.indexOf('function buildV2ReportHeldReserveAudit');
   const heldAuditEnd = js.indexOf('\nfunction buildV2LaunchReportData', heldAuditStart);
-  const comparisonSelectorStart = js.indexOf('function currentClassicComparisonForProof');
-  const comparisonSelectorEnd = js.indexOf('\nfunction pruneLaunchProofReportParity', comparisonSelectorStart);
-  assert.ok(gateStart >= 0 && gateEnd > gateStart, 'classic retirement gate helpers should be extractable');
+  assert.ok(gateStart >= 0 && gateEnd > gateStart, 'release evidence gate helpers should be extractable');
   assert.ok(demoConfigStart >= 0 && demoConfigEnd > demoConfigStart, 'demo run config helper should be extractable');
   assert.ok(txEvidenceStart >= 0 && txEvidenceEnd > txEvidenceStart, 'liquidity tx evidence helper should be extractable');
   assert.ok(reportStart >= 0 && reportEnd > reportStart, 'report helper should be extractable');
   assert.ok(heldAuditStart >= 0 && heldAuditEnd > heldAuditStart, 'held reserve audit helper should be extractable');
-  assert.ok(comparisonSelectorStart >= 0 && comparisonSelectorEnd > comparisonSelectorStart, 'comparison selector helper should be extractable');
 
   const harnessState = {
     classicReportComparison: {},
@@ -404,19 +387,14 @@ function loadClassicRetirementGateHarness() {
   const sandbox = {
     console,
     state: harnessState,
-    V2_VIEWPORT_SMOKE_REQUIRED_ASSETS: ['index.html', 'styles.css', 'api-client.js', 'app.js'],
     V2_VIEWPORT_SMOKE_REQUIRED_CHECKS: [
       'launchVisible',
       'horizontalOverflow',
       'tokenomicsChart',
       'liquidityChart',
       'fundingMeter',
-      'parityPanel',
       'firstViewportFit',
     ],
-    CLASSIC_TOKEN_NAME_MAX_BYTES: 32,
-    CLASSIC_TOKEN_SYMBOL_MAX_BYTES: 10,
-    CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES: 1000,
     CLASSIC_MAX_WHOLE_TOKEN_SUPPLY: 10_000_000_000n,
     CLASSIC_LOGO_MAX_BYTES: 100 * 1024,
     CLASSIC_LOGO_MAX_DIMENSION: 1024,
@@ -1027,19 +1005,15 @@ function loadClassicRetirementGateHarness() {
       js.slice(txEvidenceStart, txEvidenceEnd),
       js.slice(reportStart, reportEnd),
       js.slice(heldAuditStart, heldAuditEnd),
-      js.slice(comparisonSelectorStart, comparisonSelectorEnd),
       js.slice(gateStart, gateEnd),
-      'globalThis.currentClassicComparisonForProof = currentClassicComparisonForProof;',
       'globalThis.demoRunHasCompletedReadiness = demoRunHasCompletedReadiness;',
       'globalThis.launchPlanConfigFingerprint = launchPlanConfigFingerprint;',
       'globalThis.launchPlanWalletFingerprint = launchPlanWalletFingerprint;',
       'globalThis.stampLaunchPlanConfigFingerprint = stampLaunchPlanConfigFingerprint;',
       'globalThis.localApiLaunchPlanStatus = localApiLaunchPlanStatus;',
-      'globalThis.localApiLaunchPlanStaleReason = localApiLaunchPlanStaleReason;',
       'globalThis.classicFundingEstimateFingerprint = classicFundingEstimateFingerprint;',
       'globalThis.stampClassicFundingEstimate = stampClassicFundingEstimate;',
       'globalThis.buildClassicRetirementGate = buildClassicRetirementGate;',
-      'globalThis.buildV2ReplacementCriteriaAudit = buildV2ReplacementCriteriaAudit;',
     ].join('\n'),
     sandbox,
     { filename: 'public/v2/app.js classic retirement gate harness' },
@@ -1048,16 +1022,14 @@ function loadClassicRetirementGateHarness() {
 }
 
 function loadProofImportHarness() {
-  const statusSource = js.match(/function classicComparisonStatusFromCounts[\s\S]*?\n}\n/)?.[0];
   const proofCountStart = js.indexOf('function proofPositions');
   const proofCountEnd = js.indexOf('function buildV2ReportAirdropAudit');
-  const comparisonStart = js.indexOf('function collectArtifactAddresses');
+  const comparisonStart = js.indexOf('function optionalBoolean');
   const comparisonEnd = js.indexOf('function buildV2ReportParityAudit');
   const finalizeStart = js.indexOf('function proofReportArtifactFinalizesDestination');
   const finalizeEnd = js.indexOf('\nfunction mergeLaunchConfigSnapshot', finalizeStart);
   const importStart = js.indexOf('function exportableLaunchConfigSnapshot');
-  const importEnd = js.indexOf('\nfunction restoreImportedProofComparison', importStart);
-  assert.ok(statusSource, 'classic comparison status helper should be extractable');
+  const importEnd = js.indexOf('\nasync function loadV2ProofFile', importStart);
   assert.ok(proofCountStart >= 0 && proofCountEnd > proofCountStart, 'proof count helpers should be extractable');
   assert.ok(comparisonStart >= 0 && comparisonEnd > comparisonStart, 'classic comparison helpers should be extractable');
   assert.ok(finalizeStart >= 0 && finalizeEnd > finalizeStart, 'proof artifact finalization helper should be extractable');
@@ -1283,7 +1255,6 @@ function loadProofImportHarness() {
   };
   vm.runInNewContext(
     [
-      statusSource,
       js.slice(finalizeStart, finalizeEnd),
       js.slice(proofCountStart, proofCountEnd),
       js.slice(comparisonStart, comparisonEnd),
@@ -1296,8 +1267,6 @@ function loadProofImportHarness() {
       'globalThis.importedLocalDossierEvidence = importedLocalDossierEvidence;',
       'globalThis.launchProofFingerprint = launchProofFingerprint;',
       'globalThis.comparisonTransferEvidenceHash = comparisonTransferEvidenceHash;',
-      'globalThis.classicComparisonRequiredRows = classicComparisonRequiredRows;',
-      'globalThis.classicComparisonRequiredEvidence = classicComparisonRequiredEvidence;',
     ].join('\n'),
     sandbox,
     { filename: 'public/v2/app.js proof import harness' },
@@ -1504,13 +1473,10 @@ function loadV2FieldVerificationHarness() {
   const evidenceHelperEnd = js.indexOf('\nfunction v2ReportAuditNumber', evidenceHelperStart);
   const fieldStart = js.indexOf('const V2_FIELD_VERIFICATION_REQUIREMENTS');
   const fieldEnd = js.indexOf('\nfunction buildV2LaunchReportData', fieldStart);
-  const sectionStart = js.indexOf('function buildV2ReportFieldVerificationSection');
-  const sectionEnd = js.indexOf('\nfunction buildV2ReportParityAuditSection', sectionStart);
   assert.ok(escapeStart >= 0 && escapeEnd > escapeStart, 'escape helper should be extractable');
   assert.ok(factStart >= 0 && factEnd > factStart, 'fact row helper should be extractable');
   assert.ok(evidenceHelperStart >= 0 && evidenceHelperEnd > evidenceHelperStart, 'evidence text matcher should be extractable');
   assert.ok(fieldStart >= 0 && fieldEnd > fieldStart, 'field verification helper should be extractable');
-  assert.ok(sectionStart >= 0 && sectionEnd > sectionStart, 'field verification section should be extractable');
 
   const sandbox = {
     Date,
@@ -1563,9 +1529,7 @@ function loadV2FieldVerificationHarness() {
       js.slice(factStart, factEnd),
       js.slice(evidenceHelperStart, evidenceHelperEnd),
       js.slice(fieldStart, fieldEnd),
-      js.slice(sectionStart, sectionEnd),
       'globalThis.buildV2FieldVerification = buildV2FieldVerification;',
-      'globalThis.buildV2ReportFieldVerificationSection = buildV2ReportFieldVerificationSection;',
     ].join('\n'),
     sandbox,
     { filename: 'public/v2/app.js field verification harness' },
@@ -1632,7 +1596,7 @@ function loadFieldRunbookHarness() {
 
 function loadProofShareSummaryHarness() {
   const start = js.indexOf('function buildProofShareSummary');
-  const end = js.indexOf('\nfunction reportParityClass', start);
+  const end = js.indexOf('\nfunction fieldVerificationHandoffLines', start);
   assert.ok(start >= 0 && end > start, 'proof share summary helper should be extractable');
   const sandbox = {
     Number,
@@ -1876,15 +1840,15 @@ test('v2 navigation and views stay wired together', () => {
     .filter((id) => id.startsWith('view-'))
     .map((id) => id.replace(/^view-/, ''))
     .sort();
-  const viewKeys = [...js.matchAll(/^\s{2}([a-z-]+): \{ eyebrow:/gm)]
+  const viewKeys = [...js.matchAll(/^\s{2}['"]?([a-z-]+)['"]?: \{ eyebrow:/gm)]
     .map((match) => match[1])
     .sort();
 
   // Coins come first. Creating a token is an action on a coin, so the create
   // view (still "launch" internally) is opened from a coin, not the nav.
-  // 'lean' is not a nav item: it is a button on the Coins page, another way to create a coin
+  // 'lean' is not a nav item: earlier Meteora launches open from a link on Coins
   // (test/damm-v2-ui.test.mjs checks it is not in the nav).
-  assert.deepEqual(navViews, ['coins', 'discovery', 'history', 'lean', 'nfts', 'settings', 'wallet']);
+  assert.deepEqual(navViews, ['coins', 'discovery', 'settings', 'wallet']);
   assert.deepEqual(sectionViews, [...navViews, 'launch'].sort());
   assert.deepEqual(viewKeys, [...navViews, 'launch'].sort());
 });
@@ -1929,7 +1893,7 @@ test('v2 recovery sweep uses an in-app typed confirmation instead of native prom
 
   assert.match(html, /id="sweepConfirmGate"[^>]*role="dialog"[^>]*aria-modal="true"/);
   assert.match(html, /id="sweepConfirmDestination"/);
-  assert.match(html, /id="sweepConfirmTypedAddress"/);
+  assert.doesNotMatch(html, /id="sweepConfirmTypedAddress"/);
   assert.match(html, /data-action="cancel-sweep-confirm"/);
   assert.match(html, /data-action="submit-sweep-confirm"/);
   assert.match(js, /function openSweepConfirmation/);
@@ -1984,16 +1948,14 @@ test('v2 concrete data-action controls have delegated handlers', () => {
   assert.deepEqual(missing, []);
 });
 
-test('v2 is the Electron default with an explicit tested Classic fallback', () => {
+test('the desktop app always opens the v2 page; the classic UI is gone', () => {
   assert.equal(packageJson.scripts.start, 'electron .');
   assert.equal(packageJson.scripts['start:v2'], 'electron . --v2');
-  assert.equal(packageJson.scripts['start:classic'], 'electron . --classic');
+  assert.equal(packageJson.scripts['start:classic'], undefined);
   assert.equal(packageJson.scripts['test:e2e:v2'], 'node test/e2e/v2-flows.mjs');
   assert.equal(packageJson.scripts['test:electron:v2:packaged'], 'node test/e2e/electron-v2-smoke.mjs --packaged');
-  assert.match(electronMainJs, /process\.argv\.includes\('--classic'\)/);
-  assert.match(electronMainJs, /requestedDesktopUi === 'classic'/);
-  assert.match(electronMainJs, /requestedDesktopUi === 'v1'/);
-  assert.match(electronMainJs, /const desktopUiPath = classicUiRequested \? '\/' : '\/v2\/'/);
+  assert.doesNotMatch(electronMainJs, /--classic|requestedDesktopUi/);
+  assert.match(electronMainJs, /const desktopUiPath = '\/v2\/';/);
   assert.match(electronMainJs, /app\.requestSingleInstanceLock\(\)/);
   assert.match(electronMainJs, /app\.on\('second-instance'/);
   assert.match(electronMainJs, /BrowserWindow\.getAllWindows\(\)/);
@@ -2002,8 +1964,7 @@ test('v2 is the Electron default with an explicit tested Classic fallback', () =
   assert.match(v2BrowserE2eJs, /data-action=\"launch-rail-act\"/);
   assert.match(v2BrowserE2eJs, /dataset\.apiStatus === 'connected'/);
   assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\)/);
-  assert.match(v2ElectronSmokeJs, /await launchRouteSmoke\(\{ classic: true \}\)/);
-  assert.match(v2ElectronSmokeJs, /const expectedPath = classic \? '\/' : '\/v2\/'/);
+  assert.match(v2ElectronSmokeJs, /const expectedPath = '\/v2\/';/);
 });
 
 test('v2 Discovery combines a personal wallet graph with live evidence and no social mechanics', () => {
@@ -2033,8 +1994,10 @@ test('v2 Discovery combines a personal wallet graph with live evidence and no so
   assert.match(combined, /data-action="inspect-personal-token"/);
   assert.match(combined, /data-action="toggle-discovery-wallet"/);
   assert.match(combined, /inspectDiscoveryToken/);
-  assert.match(html, /discovery-utility-panel discovery-manual-tools/);
-  assert.match(html, /discovery-utility-panel discovery-saved-tools/);
+  // Inspect and Saved are tabs of Discovery, not folds under the token list.
+  assert.match(html, /data-discovery-pane="inspect"/);
+  assert.match(html, /data-discovery-pane="saved"/);
+  assert.doesNotMatch(html, /discovery-utility-panel discovery-(manual|saved)-tools/);
   assert.match(combined, /GeckoTerminal/);
   assert.match(combined, /7 days/);
   assert.match(combined, /<small>Volume<\/small>/);
@@ -2077,23 +2040,6 @@ test('v2 makes custody risk visible without replacing semantic UI colors', () =>
   assert.doesNotMatch(css, /data-custody-signal="(?:live|funded)"[^}]*--green/);
 });
 
-test('v2 keeps the old staged NFT surface out; NFTs run on the real executor', () => {
-  const combined = `${html}\n${css}\n${js}`;
-  const nfts = read('public/v2/nfts.js');
-
-  // The NFTs view is backed by nftRoutes.js (real Core transactions, a
-  // journal, and on-chain verification), not a staged manifest.
-  assert.match(html, /id="view-nfts"/);
-  assert.match(html, /nfts\.js\?v=\d+/);
-  assert.match(nfts, /\/api\/v2\/nfts/);
-  assert.match(nfts, /\/verify`/);
-  assert.doesNotMatch(combined, /avatarCollection/);
-  assert.doesNotMatch(combined, /avatar-collection/);
-  assert.doesNotMatch(combined, /v2-avatar-collection/);
-  assert.doesNotMatch(combined, /holder runtime/i);
-  assert.match(combined, /data-action="select-discovery"/);
-});
-
 test('v2 applies Trebuchet branding from the v1 launch site', () => {
   const combined = `${html}\n${css}\n${js}`;
 
@@ -2118,23 +2064,16 @@ test('v2 launch page shows the launch, not an agent panel or custody jargon', ()
   assert.doesNotMatch(combined, /App-managed wallets/);
   assert.match(html, /<h2>Launch wallets<\/h2>/);
   assert.match(html, /Launch wallet in use/);
-  assert.match(html, /id="walletRecoveryInventory"/);
   assert.match(js, /function recoveryWalletsNeedingAttention\(\)/);
-  assert.match(js, /Open in History/);
   assert.match(combined, /Solflare/);
   assert.match(js, /Use as return wallet/);
   assert.match(html, /id="tokenLogoFile"/);
   assert.match(html, /id="tokenLogoPreview"/);
   assert.match(html, /accept="image\/png,image\/jpeg,image\/gif"/);
   assert.match(combined, /wallet-detail-panel/);
-  assert.match(combined, /recoveryWizard/);
-  assert.match(combined, /recoveryWalletWorkspace/);
   assert.match(combined, /Recovery PIN/);
   assert.match(combined, /data-action="import-wallet"/);
-  assert.match(combined, /data-action="select-recovery-wallet"/);
-  assert.match(combined, /reveal-recovery-wallet/);
   assert.match(combined, /sweep-recovery-wallet/);
-  assert.match(combined, /data-action="discard-recovery-wallet"/);
   assert.match(combined, /setup-secret-pin/);
   assert.match(combined, /unlock-secret-pin/);
   assert.match(combined, /change-secret-pin/);
@@ -2143,38 +2082,15 @@ test('v2 launch page shows the launch, not an agent panel or custody jargon', ()
   assert.match(combined, /loadWalletQr/);
   assert.match(combined, /revealWalletSecret/);
   assert.match(combined, /discardSelectedWallet/);
-  assert.match(combined, /selectRecoveryWallet/);
   assert.match(combined, /sweepRecoveryWallet/);
-  assert.match(combined, /renderRecoverySweepResult/);
-  assert.match(combined, /renderSecretPinResetAudit/);
-  assert.match(combined, /Recovery PIN reset audit/);
-  assert.match(combined, /use-recovery-wallet-for-launch/);
-  assert.match(combined, /Use for launch/);
   assert.match(combined, /data-action="connect-solflare"/);
   assert.match(combined, /data-action="disconnect-solflare"/);
   assert.match(combined, /data-action="use-solflare-destination"/);
   assert.match(combined, /lastSecretPinReset/);
-  assert.match(combined, /recoverySweepNextSteps/);
-  assert.match(combined, /recoveryGuideModel/);
-  assert.match(combined, /renderRecoveryGuide/);
-  assert.match(combined, /Recovery guide/);
-  assert.match(combined, /recoveryWizardModel/);
-  assert.match(combined, /renderRecoveryWizard/);
-  assert.match(combined, /currentRecoveryWizardModel/);
-  assert.match(combined, /Recovery next action/);
-  assert.match(combined, /Open the Trebuchet desktop app to see recovery/);
-  assert.match(combined, /Unfinished launches and old wallets/);
-  assert.match(combined, /Unlock old launch wallets/);
-  assert.match(combined, /Resume only missing work/);
   assert.match(combined, /Manual recovery required/);
-  assert.match(combined, /Recovery details/);
-  assert.match(combined, /recovery-status-list/);
   assert.doesNotMatch(combined, /data-action="select-recovery-step"/);
   assert.doesNotMatch(combined, /recovery-wizard-prev/);
   assert.doesNotMatch(combined, /recovery-wizard-next/);
-  assert.match(combined, /Retry sweep/);
-  assert.match(combined, /No recovery action needed/);
-  assert.match(combined, /renderRecoveryWalletWorkspace/);
   assert.match(combined, /setupSecretPin/);
   assert.match(combined, /unlockSecretPin/);
   assert.match(combined, /changeSecretPin/);
@@ -2199,16 +2115,18 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(html, /id="liquidityChart"/);
   assert.match(html, /id="liquidityState"/);
   assert.match(html, /id="fundingMeter"/);
-  assert.match(html, /id="parityPanel"/);
   assert.match(html, /id="classicBridge"/);
   assert.match(html, /id="liveOpsPanel"/);
   assert.match(html, /id="activityLogDrawer"/);
   assert.match(html, /id="coinState"/);
   assert.doesNotMatch(html, /launch-workspace-tab|Six launch phases/);
   assert.match(html, /id="launchWorkspaceViewport"/);
-  for (const workspace of ['wallet', 'fund', 'mint', 'liquidity', 'finish']) {
+  for (const workspace of ['wallet', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`data-launch-workspace="${workspace}"`));
   }
+  // Funding has no row: the rail estimates it and links to its details.
+  assert.doesNotMatch(html, /data-coin-fact="fund"/);
+  assert.match(js, /class="rail-cost-open" type="button" data-launch-workspace="fund"/);
   assert.match(html, /id="poolEditorPanel"/);
   assert.match(html, /id="airdropCsvText"/);
   assert.match(html, /id="preallocationSupplyPercent"/);
@@ -2230,11 +2148,13 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(combined, /Estimate, send, then verify/);
   assert.match(combined, /I funded it · check balance/);
   assert.match(combined, /finishReturn\.kind === 'unverified' \? renderFundingWalletHint\(\{ compact: true \}\) : fundingPanel/);
-  assert.match(combined, /class="drawer phase-options"/);
+  // Wallet options are a plain row of buttons, not a drawer.
+  assert.match(combined, /class="launch-phase-actions phase-options-row"/);
+  assert.doesNotMatch(combined, /class="drawer phase-options"/);
   assert.doesNotMatch(js, /class="launch-guidance-list"/);
   assert.doesNotMatch(js, /Verify funding to continue/);
   assert.match(css, /\.funding-task\s*\{/);
-  assert.match(js, /Fixed by this coin\\'s mint/);
+  assert.match(js, /Fixed by this coin's mint/);
   assert.doesNotMatch(js, /Check prerequisites/);
   assert.doesNotMatch(js, /Classic execution payloads ready/);
   assert.match(combined, /Create &amp; lock liquidity/);
@@ -2246,7 +2166,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /Round slices to 100%/);
   assert.match(html, /<span>Starts with<\/span>[\s\S]*<span>Ends with<\/span>/);
   assert.match(combined, /Diagnostics/);
-  assert.match(combined, /System status/);
   assert.match(combined, /Custom Vanity CA grinder/);
   assert.match(css, /cockpit-board/);
   assert.match(css, /chart-deck/);
@@ -2265,7 +2184,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /launch-workspace-viewport[\s\S]*overflow: hidden auto/);
   assert.match(css, /\.coin-fact\.is-selected/);
   assert.doesNotMatch(css, /launch-workspace-tab/);
-  assert.match(css, /journal-resume-plan/);
   assert.match(css, /token-logo-preview/);
   assert.match(css, /asset-mark\.has-logo/);
   assert.match(css, /manual-prefund-panel/);
@@ -2306,12 +2224,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(css, /field-proof-steps/);
   assert.match(css, /field-proof-step/);
   assert.match(css, /criteria-strip/);
-  assert.match(css, /criteria-chip/);
   assert.match(css, /signature-panel:not\(.is-staged\)/);
   assert.match(css, /signature-panel\.is-live/);
   assert.match(css, /execution-ledger/);
-  assert.match(css, /history-audit-panel/);
-  assert.match(css, /history-audit-actions/);
   assert.match(js, /renderChartDeck/);
   assert.match(js, /chartEvidenceBadge/);
   assert.match(js, /setChartBadge/);
@@ -2328,48 +2243,11 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const walletSecretAvailable = state\.demoActive \|\| selectedWallet\?\.hasSecretKey === true/);
   assert.match(js, /const walletReady = Boolean\(selectedWalletPublicKey && selectedWallet && walletSecretAvailable && !walletSecretLocked && !selectedWallet\.decryptionFailed\)/);
   assert.match(js, /Unlock the Recovery PIN before Trebuchet can sign launch calls/);
-  assert.match(js, /const proofWalletEvidence = Boolean\(proof\?\.walletPublicKey && hasCompletedLiveProof\)/);
   assert.doesNotMatch(js, /proof\?\.walletPublicKey && \(hasCompletedLiveProof \|\| demoRunComplete\)/);
-  assert.match(js, /const walletRuntimeEvidence = Boolean\(/);
-  assert.match(js, /state\.apiStatus === 'connected'\s*&& selectedWalletPublicKey/);
-  assert.match(js, /selectedWallet\.hasSecretKey === true/);
-  assert.match(js, /Connect the desktop app to verify this launch wallet signing secret/);
-  assert.match(js, /Selected launch wallet is PIN locked/);
-  assert.match(js, /state\.apiStatus === 'connected'\s*&& candidate\?\.persisted === true/);
-  assert.match(js, /state\.apiStatus === 'connected' && state\.vanityAvailable/);
-  assert.match(js, /Connect the desktop app to verify the native grinder/);
-  assert.match(js, /const CLASSIC_TOKEN_NAME_MAX_BYTES = 32/);
-  assert.match(js, /const CLASSIC_TOKEN_SYMBOL_MAX_BYTES = 10/);
-  assert.match(js, /const CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES = 1000/);
   assert.match(js, /const CLASSIC_MAX_WHOLE_TOKEN_SUPPLY = 10_000_000_000n/);
-  assert.match(js, /function tokenConfigStatus\(config = currentLaunchConfig\(\)\)/);
-  assert.match(js, /const tokenConfig = tokenConfigStatus\(hasCompletedLiveProof \? proofConfigForFingerprint\(proof, config\) : config\)/);
-  assert.match(js, /const tokenConfigEvidence = Boolean\(/);
-  assert.match(js, /id: 'token-config-parity'/);
-  assert.match(js, /criteriaById\.get\('token-config-parity'\)/);
-  assert.match(js, /\['wallet', 'grinder', 'token', 'pool-model', 'funding', 'execution', 'recovery'\]/);
-  assert.match(js, /function renderClassicRetirementProofRail\(retirementGate = \{\}\)/);
-  assert.match(js, /Classic retirement proof path/);
-  assert.match(js, /'classic-comparison': 'Classic artifact'/);
-  assert.match(js, /renderClassicRetirementProofRail\(retirementGate\)/);
-  assert.match(js, /Token fields are valid; stage the launch plan through the desktop app before replacing Classic token creation/);
-  assert.match(js, /const chartRendererEvidence = Boolean\(typeof renderV2TokenomicsDonutSvg === 'function' && typeof liquidityDepthRows === 'function'\)/);
-  assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_ASSETS = Object\.freeze\(\['index\.html', 'styles\.css', 'api-client\.js', 'app\.js'\]\)/);
   assert.match(js, /const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object\.freeze\(\[/);
-  assert.match(js, /function validatedLocalViewportSmokeProof\(\)/);
-  assert.match(js, /proof\.passed !== true \|\| proof\.state !== 'valid'/);
-  assert.match(js, /proof\.artifactVersion !== 1 \|\| proof\.kind !== 'trebuchet-v2-viewport-smoke'/);
-  assert.match(js, /V2_VIEWPORT_SMOKE_REQUIRED_ASSETS\.every/);
-  assert.match(js, /V2_VIEWPORT_SMOKE_REQUIRED_CHECKS\.every/);
   assert.match(js, /fundingMeter/);
-  assert.match(js, /\['desktop', 'mobile'\]\.every/);
-  assert.match(js, /const viewportSmokeProof = validatedLocalViewportSmokeProof\(\)/);
-  assert.match(js, /const viewportSmokeApiConnected = state\.apiStatus === 'connected'/);
-  assert.match(js, /const viewportSmokeEvidence = viewportSmokeApiConnected && Boolean\(viewportSmokeProof\)/);
-  assert.match(js, /Connect the desktop app to verify viewport smoke proof against current Trebuchet assets/);
-  assert.match(js, /const viewportSmokeStatus = state\.viewportSmoke \|\| proof\?\.viewportSmoke \|\| proof\?\.reportParity\?\.viewportSmoke \|\| null/);
   assert.match(js, /state\.viewportSmoke = boot\.viewportSmoke \|\| null/);
-  assert.match(js, /Run `npm run test:v2:viewport` to generate desktop\/mobile viewport-smoke proof/);
   assert.match(apiClientJs, /\/api\/v2\/viewport-smoke-proof/);
   assert.match(apiClientJs, /normalizeViewportSmokeProof/);
   assert.match(apiClientJs, /viewportSmoke,/);
@@ -2379,7 +2257,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(viewportSmokeJs, /crypto\.createHash\('sha256'\)/);
   assert.match(viewportSmokeJs, /await fs\.rm\(proofPath, \{ force: true \}\)/);
   assert.match(viewportSmokeJs, /await fs\.writeFile\(proofPath/);
-  assert.match(js, /const topologyIssues = typeof customQuoteSafetySummary === 'function'/);
   assert.match(js, /function topologyAllocationIssues\(topology = \{\}\)/);
   assert.match(js, /Pool rows add to \$\{rowTotalPoolPercent\.toFixed\(2\)\}%/);
   assert.match(js, /Pools, preallocation, and airdrop reserve \$\{supplyUsed\.toFixed\(2\)\}% of supply/);
@@ -2403,17 +2280,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const operationSequenceEvidence = Boolean\(decodedOperationEvidence && sequence\.ready\)/);
   assert.match(js, /const matchesWallet = Boolean\(/);
   assert.match(js, /missingOperationIds: sequence\.missingOperationIds/);
-  assert.match(js, /function localApiLaunchPlanStaleReason\(planStatus = localApiLaunchPlanStatus\(\)\)/);
-  assert.match(js, /function localApiLaunchPlanIncompleteReason\(planStatus = localApiLaunchPlanStatus\(\)\)/);
-  assert.match(js, /const localApiLaunchPlan = localApiLaunchPlanStatus\(state\.launchPlan, config\)/);
-  assert.match(js, /const localApiLaunchPlanEvidence = localApiLaunchPlan\.ready/);
-  assert.match(js, /const chartModelEvidence = Boolean\(hasCompletedLiveProof \|\| localApiLaunchPlanEvidence\)/);
-  assert.match(js, /Chart renderers and viewport smoke are ready; stage the launch plan through the desktop app so charts are bound to the executable token\/pool model/);
-  assert.match(js, /Chart renderers are wired against the executable launch model/);
-  assert.match(js, /const poolConfigEvidence = Boolean\(\s*plannedPools\.length\s*&& poolBlockerCount === 0\s*&& \(hasCompletedLiveProof \|\| localApiLaunchPlanEvidence\)\s*\)/);
-  assert.match(js, /localApiLaunchPlanStaleReason\(localApiLaunchPlan\)/);
-  assert.match(js, /it is missing required operation/);
-  assert.match(js, /Stage the launch plan through the desktop app before replacing Classic pool configuration/);
   assert.match(js, /if \(localApiLaunchPlanStatus\(\)\.ready\) return \{ label: 'Model', className: 'warn' \}/);
   assert.doesNotMatch(js, /\|\| config\?\.poolTopology\s*\)/);
   assert.match(js, /function classicFundingEstimateFingerprint\(config = currentLaunchConfig\(\)\)/);
@@ -2423,15 +2289,12 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(js, /allocations: stableFundingFingerprintValue\(Array\.isArray\(topology\.allocations\)/);
   assert.match(js, /v2FundingFingerprint: classicFundingEstimateFingerprint\(config\)/);
   assert.match(js, /const fundingEstimateStatus = classicFundingEstimateStatus\(config\)/);
-  assert.match(js, /const fundingEstimateEvidence = fundingEstimateStatus\.matchesConfig/);
   assert.match(js, /const estimate = fundingEstimateStatus\.matchesConfig \? state\.classicFundingEstimate : null/);
   assert.match(js, /Funding estimate is stale for the current token, pools, market cap, or airdrop model/);
   assert.match(js, /function selectedWalletDetailedBalance\(\)/);
   assert.match(js, /const detailedBalance = selectedWalletDetailedBalance\(\)/);
   assert.doesNotMatch(js, /const walletSol = Number\(selectedWallet\?\.balanceSol\)/);
   assert.match(js, /walletPublicKey: selectedLaunchWalletPublicKey\(\)/);
-  assert.match(js, /const fundingBalanceEvidence = state\.apiStatus === 'connected' && funding\.hasWalletBalance === true && funding\.walletBalanceFresh === true/);
-  assert.match(js, /Selected Trebuchet launch-wallet balance is stale; wait for the desktop app refresh or click Check balance/);
   assert.match(js, /function quoteAcquireFingerprint\(config = currentLaunchConfig\(\), walletPublicKey = selectedLaunchWalletPublicKey\(\)\)/);
   assert.match(js, /function quoteAcquireResultMatchesRoute\(result, route\)/);
   assert.match(js, /function quoteAcquireSuccessEvidence\(routes, job\)/);
@@ -2440,34 +2303,13 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /const successEvidence = quoteAcquireSuccessEvidence\(routes, job\)/);
   assert.match(js, /&& successEvidence\s*&& Number\(progress\.completed/);
   assert.match(js, /return status\.ready \? \{ label: 'Done', className: '' \} : \{ label: 'Verify', className: 'warn' \}/);
-  assert.match(js, /const quoteAcquireEvidence = quoteStatus\.ready/);
-  assert.match(js, /Quote acquire job is stale for the selected wallet or current launch model/);
-  assert.match(js, /id: 'funding-and-quote'/);
-  assert.match(js, /criteriaById\.get\('funding-and-quote'\)/);
   assert.match(js, /const fundingEstimateReady = fundingEstimateStatus\.matchesConfig/);
   assert.match(js, /const fundingBalanceReady = state\.apiStatus === 'connected' && funding\.hasWalletBalance === true && funding\.walletBalanceFresh === true/);
   assert.match(js, /const quoteAcquireReady = quoteAcquireStatus\(config\)\.ready/);
   assert.doesNotMatch(js, /state: state\.classicFundingEstimate \? 'pass' : 'warn'/);
   assert.doesNotMatch(js, /phase\.id === 'funding'\) return state\.classicFundingEstimate \? 'pass' : 'warn'/);
   assert.match(js, /const proofJournalEvidence = Boolean\(proof\?\.journalId\)/);
-  assert.match(js, /const proofBackedPreterminalJournalEvidence = Boolean\(/);
-  assert.match(js, /proofJournalEvidence\s*&& matchingLocalJournal/);
-  assert.match(js, /&& !isTerminalJournal\(matchingLocalJournal\)/);
-  assert.match(js, /&& journalHasRecoveryPlanningEvidence\(matchingLocalJournal\)/);
-  assert.match(js, /Matching launch journal is terminal, but the proof is missing terminal final-sweep evidence/);
-  assert.match(js, /lacks pool-plan or checkpoint evidence needed to prove resume safety/);
-  assert.match(js, /function loadedRecoveryJournalEvidence\(\)/);
-  assert.match(js, /function journalHasRecoveryPlanningEvidence\(journal = \{\}\)/);
   assert.match(js, /journalUnsafePoolEvents\(journal, priorResults\)/);
-  assert.match(js, /const localRecoveryJournal = loadedRecoveryJournalEvidence\(\)/);
-  assert.match(js, /const localJournalEvidence = localRecoveryJournal\.count > 0/);
-  assert.match(js, /function recoveryResultHasResumeEvidence\(result = state\.lastRecoveryResult\)/);
-  assert.match(js, /function recoveryResultHasDurableCheckpointRow\(row = \{\}\)/);
-  assert.match(js, /row\.phase1Complete === true/);
-  assert.match(js, /recoveryResultHasOpenedPositionEvidence\(row\)/);
-  assert.match(js, /const recoveryResultJournalEvidence = recoveryResultHasResumeEvidence\(\)/);
-  assert.match(js, /Local launch history is loaded, but no active or failed journal exercises resume safety yet/);
-  assert.match(js, /Local API is connected, but no launch journal or proof has exercised resume safety yet/);
   assert.doesNotMatch(js, /state\.recovery\.journalCount > 0 \|\| state\.apiStatus === 'connected' \|\| proof\?\.journalId/);
   assert.match(js, /hasWalletBalance/);
   assert.match(js, /const quoteAcquireReady = quoteStatus\.ready/);
@@ -2477,7 +2319,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /quote acquire route\$\{quoteRoutes\.length === 1 \? '' : 's'\} still need successful completion/);
   assert.match(js, /const fundingSolReady = Number\(funding\.missingSol \|\| 0\) <= 0\.001/);
   assert.match(js, /if \(phase\.id === 'pools'\) return topologyAllocationIssues\(config\.poolTopology\)\.length \? 'danger' : 'pass'/);
-  assert.match(js, /Selected launch-wallet balance is stale; wait for the desktop app refresh or click Check balance/);
+  assert.match(js, /Launch wallet balance is out of date\./);
   assert.match(js, /Selected launch-wallet balance has not been verified yet/);
   assert.match(js, /Launch wallet is short \$\{funding\.missingSol\.toFixed\(3\)\} SOL/);
   assert.match(js, /liveRunProgressContext/);
@@ -2511,42 +2353,30 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /validateProofFile/);
   assert.match(js, /readFileAsText/);
   assert.match(js, /proofFromImportedPayload/);
-  assert.match(js, /restoreImportedProofComparison/);
   assert.match(js, /loadV2ProofFile/);
   assert.match(js, /requestV2ProofImport/);
   assert.match(js, /rawProof\.source === 'demo-run'/);
-  assert.match(js, /CLASSIC_REPORT_COMPARISON_STORAGE_KEY/);
-  assert.match(js, /CLASSIC_ARTIFACT_IMPORT_LIMIT/);
-  assert.match(js, /persistClassicReportComparison/);
-  assert.match(js, /restoreClassicReportComparison/);
-  assert.match(js, /normalizeClassicReportComparison/);
-  assert.match(js, /validateClassicArtifactFile/);
-  assert.match(js, /loadClassicArtifactFile/);
-  assert.match(js, /requestClassicArtifactImport/);
   assert.match(js, /downloadTextFile/);
   assert.match(js, /localStorage/);
   assert.match(js, /Interrupted before completion/);
   assert.match(js, /executionLedgerAttemptLabel/);
-  assert.match(js, /renderHistoryExecutionAudit/);
   assert.match(js, /Execution ledger/);
   assert.match(js, /Latest steps/);
   assert.match(js, /Nothing sent yet/);
   assert.match(js, /No launch steps sent yet/);
   assert.match(js, /Launch steps sent/);
   assert.match(js, /Observed SOL/);
-  assert.match(js, /clear-execution-audit/);
   assert.match(js, /Live launch progress/);
   assert.match(js, /In the wallet/);
   assert.match(js, /'Budget'/);
   assert.match(js, /Still needed/);
   assert.match(js, /Spent so far/);
   assert.match(js, /Pair tokens bought/);
-  assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(js, /vanityPatternEstimate/);
   assert.match(js, /vanityEstimateSummary/);
   assert.match(js, /VANITY_BASE58_ALPHABET/);
-  assert.match(js, /VANITY_PLANNING_RATE/);
+  assert.match(js, /function vanityPlanningRate\(\)/);
   assert.match(js, /Not allowed/);
   assert.match(js, /Expected/);
   assert.match(js, /95% by/);
@@ -2602,7 +2432,7 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.doesNotMatch(css, /\.launch-identity-phases/);
   assert.match(js, /function launchOperationIsActive\(\)/);
   assert.match(js, /function renderLiveLaunchMonitor\(\)/);
-  assert.match(js, /action === 'toggle-launch-details'/);
+  assert.doesNotMatch(js, /toggle-launch-details/);
   assert.match(css, /\.primary-button:not\(\.custody-action\)/);
   assert.match(js, /enhanceNumberSteppers/);
   assert.match(js, /stepNumberInput/);
@@ -2656,9 +2486,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /manualPrefundStatus/);
   assert.match(js, /refreshManualPrefundBalance/);
   assert.match(js, /startQuoteAcquire/);
-  assert.match(js, /Funding estimate is stale for this launch model; rerun it before acquiring quote tokens/);
+  assert.match(js, /Funding estimate is out of date\./);
   assert.match(js, /data-action="\$\{hasCurrentEstimate \|\| savedAction \? 'start-quote-acquire' : 'estimate-funding'\}"/);
-  assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Rerun funding estimate first' : 'Run funding estimate first'\)/);
+  assert.match(js, /notify\(fundingEstimateStatus\.stale \? 'Funding estimate is out of date' : 'No funding estimate yet'\)/);
   assert.match(js, /if \(!classicFundingEstimateStatus\(currentLaunchConfig\(\)\)\.matchesConfig \|\| !items\.length\) return ''/);
   assert.match(js, /pollQuoteAcquire/);
   assert.match(js, /quotePoolGuidanceItems/);
@@ -2672,17 +2502,9 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /renderFinalizationPanel/);
   assert.match(js, /finalizationNoticeRows/);
   assert.doesNotMatch(js.match(/function renderFinalizationPanel\(\) \{[\s\S]*?\n\}/)?.[0] || '', /Classic artifact|replacement criteria|fieldHandoffRows/);
-  assert.match(js, /Report publish failed:/);
-  assert.match(js, /Click Publish report to retry/);
+  assert.match(js, /Report not published: /);
+  assert.doesNotMatch(js, /Click Publish report to retry|rerun it before|wait for the live poll/);
   assert.match(js, /Download a fresh final launch record so the artifact carries the final sweep hash/);
-  assert.match(css, /recovery-sweep-result/);
-  assert.match(css, /recovery-sweep-grid/);
-  assert.match(css, /recovery-wizard-panel/);
-  assert.match(css, /recovery-wizard-steps/);
-  assert.match(css, /recovery-wizard-screen/);
-  assert.match(css, /recovery-wizard-actions/);
-  assert.match(css, /recovery-guide/);
-  assert.match(css, /recovery-guide-head/);
   assert.match(css, /report-parity-audit/);
   assert.match(css, /report-parity-list/);
   assert.match(css, /classic-compare-panel/);
@@ -2725,36 +2547,15 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /buildV2ReportParityAudit/);
   assert.match(js, /buildClassicRetirementGate/);
   assert.match(js, /buildV2FieldVerification/);
-  assert.match(js, /buildV2ReportFieldVerificationSection/);
-  assert.match(js, /buildV2ReplacementCriteriaAudit/);
-  assert.match(js, /renderReportParityAuditPanel/);
-  assert.match(js, /buildV2ReportParityAuditSection/);
-  assert.match(js, /compareClassicReportArtifact/);
-  assert.match(js, /artifactAuthorityFlag/);
-  assert.match(js, /authorityCount/);
-  assert.match(js, /classicComparisonStatusFromCounts/);
-  assert.match(js, /normalizeClassicReportArtifact/);
-  assert.match(js, /classicArtifactSourceKind/);
   assert.match(js, /normalizeComparisonPool/);
   assert.match(js, /comparisonPoolFingerprint/);
-  assert.match(js, /comparisonPoolParameterSummary/);
   assert.match(js, /comparisonPositionsFromPools/);
   assert.match(js, /comparisonPositionFingerprint/);
   assert.match(js, /classicComparisonPoolRows/);
-  assert.match(js, /comparisonMatchedValues/);
-  assert.match(js, /collectArtifactSignatures/);
   assert.match(js, /comparisonAirdropFingerprint/);
-  assert.match(js, /comparisonMatchedAirdropWallets/);
-  assert.match(js, /comparisonMatchedAirdropTxs/);
   assert.match(js, /comparisonAirdropNeedsFullRows/);
   assert.match(js, /classicComparisonProofFingerprint/);
   assert.match(js, /launchProofFingerprint/);
-  assert.match(js, /classicComparisonMatchesProof/);
-  assert.match(js, /classicComparisonRequiredEvidence/);
-  assert.match(js, /Classic comparison is too thin/);
-  assert.match(js, /structuredEvidence/);
-  assert.match(js, /Classic comparison is missing structured Classic report evidence/);
-  assert.match(js, /required Classic evidence rows are passing/);
   assert.match(js, /reportPublishMatchesProof/);
   assert.match(js, /terminalSweepEvidenceHashForProof/);
   assert.match(js, /reportArtifactMatchesTerminalSweep/);
@@ -2783,41 +2584,19 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /return \{ label: 'Proof ready', className: '' \}/);
   assert.doesNotMatch(js, /if \(reportArtifact \|\| report\?\.status === 'done'\) return \{ label: 'Proof ready'/);
   assert.match(js, /proofFingerprint/);
-  assert.match(js, /runClassicArtifactComparison/);
   assert.match(js, /reportParityAudit/);
   assert.match(js, /classicRetirementGate/);
   assert.match(js, /classicReportComparison/);
-  assert.match(js, /Classic report parity audit/);
-  assert.match(js, /Classic artifact compare/);
-  assert.match(js, /Live classic comparison/);
-  assert.match(js, /artifact-source/);
-  assert.match(js, /Trebuchet proof or launch record/);
-  assert.match(js, /Loaded artifact was generated by Trebuchet/);
-  assert.match(js, /Comparison is for another Trebuchet proof/);
-  assert.match(js, /Classic comparison belongs to another Trebuchet proof/);
   assert.match(js, /Report artifact belongs to another Trebuchet proof/);
-  assert.match(js, /'launch-wallet'/);
   assert.match(js, /Authority posture/);
-  assert.match(js, /Pool quote mints/);
-  assert.match(js, /Pool parameters/);
-  assert.match(js, /Pool create transactions/);
-  assert.match(js, /Position NFTs/);
   assert.match(js, /Fee Key NFTs/);
-  assert.match(js, /Position transactions/);
-  assert.match(js, /Airdrop delivery/);
   assert.match(js, /Airdrop recipients/);
-  assert.match(js, /Airdrop transactions/);
-  assert.match(js, /Classic retirement gate/);
-  assert.match(js, /Classic retirement ready/);
-  assert.match(js, /retirement checks passing/);
-  assert.match(js, /Replacement criteria/);
   assert.match(js, /replacementCriteria/);
   assert.match(js, /criteriaPassCount/);
   assert.match(js, /proofFingerprint: launchProofFingerprint\(proof, config\)/);
   assert.match(js, /function reportParityAuditMatchesProof/);
   assert.match(js, /audit = reportParityAuditMatchesProof\(audit, proof, config\)/);
   assert.match(js, /demoRunHasCompletedReadiness/);
-  assert.match(js, /terminal readiness proof/);
   assert.match(js, /completion\.terminalSweepEvidence === true/);
   assert.match(js, /demo-end-to-end/);
   assert.match(js, /wallet-lifecycle/);
@@ -2830,30 +2609,12 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /classic-artifact-comparison/);
   assert.match(js, /proof-audit/);
   assert.match(js, /npm run test:v2:viewport/);
-  assert.match(js, /replacementCriteriaById/);
-  assert.match(js, /parityFeatureFromCriterion/);
-  assert.match(js, /Replacement evidence is not available for this feature yet/);
   assert.doesNotMatch(js, /state: feature\.real \? 'pass' : feature\.preview \? 'warn' : 'danger'/);
   assert.doesNotMatch(js, /badge: feature\.real \? 'Real' : feature\.preview \? 'Bridge' : 'Gap'/);
-  assert.match(js, /renderReplacementCriteriaStrip/);
-  assert.match(js, /criteria-chip/);
-  assert.match(js, /aria-label="Replacement criteria"/);
-  assert.match(js, /criteriaById\.get\('wallet-lifecycle'\)/);
-  assert.match(js, /criteriaById\.get\('vanity-options'\)/);
-  assert.match(js, /criteriaById\.get\('pool-config-parity'\)/);
-  assert.match(js, /criteriaById\.get\('charts-and-viewport'\)/);
-  assert.match(js, /criteriaById\.get\('held-reserve-backing'\)/);
-  assert.match(js, /criteriaById\.get\('run-and-resume'\)/);
-  assert.match(js, /criteriaById\.get\('sweep-report-proof'\)/);
   assert.doesNotMatch(js, /const hasLocalRecovery = state\.apiStatus === 'connected'/);
   assert.doesNotMatch(js, /const available = state\.apiStatus === 'connected' && state\.vanityAvailable/);
-  assert.match(js, /function renderParityPanel\(\) \{\s*const proof = currentLaunchProof\(\);\s*const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\);\s*const reportAudit = buildV2ReportParityAudit\(proof, config\);\s*const retirementGate = buildClassicRetirementGate\(proof, reportAudit, config\);/);
-  assert.match(js, /liveProofPassed/);
-  assert.match(js, /Live proof/);
-  assert.match(js, /Demo only/);
   assert.match(js, /needs proof/);
   assert.match(js, /Test launch record proves wiring only/);
-  assert.match(js, /proof fields missing/);
   assert.match(js, /journals remain the source of truth/);
   assert.match(js, /renderFundingWalletHint/);
   assert.match(js, /detectFundingWallet/);
@@ -2862,7 +2623,6 @@ test('v2 launch page organizes the complete launch into six focused phases', () 
   assert.match(js, /getConnectedSolflareWallet/);
   assert.match(js, /applySolflareDestinationWallet/);
   assert.match(js, /runFullLaunch/);
-  assert.match(js, /renderParityPanel/);
 });
 
 test('v2 launch is one flow with no separate guided mode', () => {
@@ -2932,8 +2692,6 @@ test('v2 new pools use the 0.25% tier and pairs open above the SOL price', () =>
   assert.match(html, /id="targetMarketCapUsd"[^>]*value="25,000"/);
   assert.match(js, /targetMarketCapUsd: 25000,/);
   assert.match(js, /\$\('#targetMarketCapUsd'\)\) \$\('#targetMarketCapUsd'\)\.value = '25,000'/);
-  assert.match(read('public/index.html'), /id="targetMarketCap"[^>]*value="25,000"/);
-  assert.match(read('public/modules/token-config.js'), /ammConfigIndex: 1,/);
   assert.match(js, /const PAIR_START_PREMIUM_PCT = 25;/);
   assert.match(js, /ammConfigIndex: state\.solPoolConfigIndex,/);
   assert.match(js, /ammConfigIndex: state\.pairPoolConfigIndex,/);
@@ -2953,7 +2711,7 @@ test('v2 funding labels separate pool deposits, pair buys, setup, and buffer', (
 });
 
 test('coin page shows the launch as facts checked against the chain', () => {
-  assert.match(js, /function coinCreationHtml\(creation, coin\)/);
+  assert.match(js, /function coinNextStepAction\(creation, coin\)/);
   assert.match(js, /mismatch: \{ icon: 'fa-triangle-exclamation', label: 'Recorded, but the chain disagrees' \}/);
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question', label: 'Not recorded; not checked on-chain' \}/);
   assert.match(js, /function continueCoinStep\(mint\)/);
@@ -3235,7 +2993,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(combined, /Position slices/);
   assert.match(combined, /Ladder bands/);
   assert.match(combined, /Support SOL/);
-  assert.match(combined, /Airdrop wallets/);
+  assert.doesNotMatch(combined, /id="airdropWallets"/, 'the recipient count comes from the CSV, not a typed number');
   assert.match(combined, /Budget %/);
   assert.match(combined, /Auto-fit/);
   assert.match(combined, /Fit budget/);
@@ -3256,9 +3014,9 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /const plannedAirdropCount = Math\.max\(/);
   assert.match(js, /config\?\.poolTopology\?\.airdrop\?\.recipientCount/);
   assert.match(js, /plannedRecipientCount: plannedAirdropCount/);
-  assert.match(js, /retry before publishing the launch report/);
+  assert.match(js, /airdrop recipient\$\{airdropStatus\.failed === 1 \? '' : 's'\} not paid\./);
   assert.match(js, /run airdrop before publishing the launch report/);
-  assert.match(js, /airdropCompletionIssue\(airdropStatus\) \|\| 'Airdrop proof is incomplete; refresh or rerun airdrop before publishing the launch report\.'/);
+  assert.match(js, /airdropCompletionIssue\(airdropStatus\) \|\| 'Airdrop record incomplete\.'/);
   assert.match(js, /airdropIncomplete: true/);
   assert.match(js, /Existing launch report is not bound to the current proof/);
   assert.match(js, /Launch report publisher returned no permanent URI/);
@@ -3302,8 +3060,6 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /observedExecutionSpendSummary\(\)/);
   assert.match(js, /Observed launch spend/);
   assert.match(js, /renderV2ReportObservedSpend\(data\.observedSpend\)/);
-  assert.match(js, /comparisonPositionShapeSummary/);
-  assert.match(js, /Position liquidity shape/);
   assert.match(js, /quoteMint: pool\.quoteMint \|\| pool\.quoteAddress \|\| null/);
   assert.match(js, /createPoolTx: pool\.txIds\?\.createPool \|\| pool\.createPoolTx \|\| null/);
   assert.match(js, /positionNftMint/);
@@ -3321,7 +3077,6 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /recipientsPreviewLimit/);
   assert.match(js, /relatedJournals/);
   assert.match(combined, /Fee Key recipient/);
-  assert.match(combined, /Sweep destination/);
   assert.match(js, /currentClassicModel/);
   assert.match(js, /currentPreallocationPlan/);
   assert.match(js, /parseSliceShares/);
@@ -3375,12 +3130,9 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /resume-journal/);
   assert.match(js, /Manual recovery required/);
   assert.match(js, /Next run skips recorded pools/);
-  assert.match(js, /dismiss-journal/);
   assert.match(js, /open-activity-log/);
   assert.match(js, /filter-activity-log/);
   assert.match(js, /close-activity-log/);
-  assert.match(js, /resumeLaunchJournal/);
-  assert.match(js, /dismissLaunchJournal/);
   assert.match(js, /run-demo-launch/);
   assert.match(js, /runDemoLaunch/);
   assert.match(js, /execute-next-run/);
@@ -3391,17 +3143,14 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /airdropCompletionStatus/);
   assert.match(js, /retryRequired: evidence\.failed > 0/);
   assert.match(js, /missing: evidence\.missing \|\| \[\]/);
-  assert.match(js, /fullRunPendingAirdropCount\(proof\) \{\s*const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\);\s*return airdropCompletionStatus\(proof, config\.poolTopology\)\.pending;/);
-  const fullRunPendingBody = js.match(/function fullRunPendingAirdropCount\(proof\) \{([\s\S]*?)\n\}/)?.[1] || '';
-  assert.doesNotMatch(fullRunPendingBody, /planned - delivered - failed/);
   assert.match(js, /state\.fullRunStep = 'Retrying airdrop'/);
   assert.match(js, /runV2Airdrop\(\{ retry: true, skipConfirm: true, quiet: true, refreshReadiness: false \}\)/);
   assert.match(js, /Airdrop still has/);
-  assert.match(js, /Airdrop has \$\{airdropStatus\.failed\} failed recipient/);
+  assert.match(js, /\$\{airdropStatus\.failed\} airdrop recipient/);
   assert.match(js, /const airdropNeedsEvidenceRepair = Boolean\(/);
   assert.match(js, /&& \(airdropStatus\.pending > 0 \|\| airdropNeedsEvidenceRepair\)/);
   assert.match(js, /airdropNeedsEvidenceRepair \? 'Repair proof'/);
-  assert.match(js, /airdropCompletionIssue\(airdropStatus, 'publishing the report or sweeping'\)/);
+  assert.match(js, /const airdropIssue = airdropCompletionIssue\(airdropStatus\);/);
   assert.match(js, /const airdropIssue = airdropCompletionIssue\(airdropStatus\)/);
   assert.match(js, /airdropIssue\s*\|\| \(airdropComplete && airdropStatus\.configured/);
   assert.match(js, /fullRunCompletionAudit/);
@@ -3413,9 +3162,7 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /download-v2-dossier/);
   assert.match(js, /download-v2-proof/);
   assert.match(js, /copy-v2-proof-summary/);
-  assert.match(js, /load-classic-artifact/);
   assert.match(js, /compare-classic-artifact/);
-  assert.match(js, /clear-classic-artifact/);
   assert.match(js, /publishV2LaunchReport/);
   assert.match(js, /Refresh journal-backed launch record before publishing a report/);
   assert.match(js, /launchJournalMissing: true/);
@@ -3450,18 +3197,13 @@ test('v2 six-phase launch procedure preserves the complete v1 feature set withou
   assert.match(js, /Download launch record/);
   assert.match(js, /Saved launch record attached/);
   assert.match(js, /Launch record loaded/);
-  assert.match(js, /Load artifact/);
-  assert.match(js, /Classic artifact loaded/);
   assert.match(js, /function proofExportParityBundle/);
   assert.match(js, /const expectedFingerprint = launchProofFingerprint\(proof, proofConfig\)/);
   assert.match(js, /reportParityAudit: parityBundle\.reportParityAudit/);
   assert.match(js, /classicRetirementGate: parityBundle\.classicRetirementGate/);
   assert.match(js, /fieldVerification: parityBundle\.fieldVerification/);
-  assert.match(js, /classicReportComparison: classicReportComparisonForProofExport/);
   assert.match(js, /Launch record summary/);
-  assert.match(js, /complete demo token, LP, and sweep path/);
   assert.match(js, /startVanityGrind/);
-  assert.match(js, /vanityCandidateDetail/);
   assert.match(js, /vanityAvailabilityMeta/);
   assert.match(apiClientJs, /\/api\/estimate-lp-funding/);
   assert.match(apiClientJs, /\/api\/clmm-fee-tiers/);
@@ -3611,7 +3353,8 @@ test('v2 pool advanced panel wires feedback, names, and slider keyboard use', ()
   // The fee tier slider: keyboard goes through the range, labels are a mouse shortcut.
   assert.match(startup, /tabindex="-1"/);
   assert.match(startup, /class="choice-readout"/);
-  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 2);
+  // Custom pairs, the older pool form, and the flywheel pair each have one.
+  assert.equal([...editor.matchAll(/data-choice="slider" data-choice-readout/g)].length, 3);
   assert.match(funding, /Slices already add up to 100%/);
   assert.match(css, /\.supply-feedback\.is-warn/);
   assert.match(css, /\.choice-control\.has-many \.choice-ticks/);
@@ -3647,7 +3390,7 @@ test('v2 manual prefund evidence is bound to the selected wallet', () => {
 
   assert.equal(oldStatus.label, 'Recheck');
   assert.equal(oldStatus.className, 'warn');
-  assert.match(oldStatus.detail, /snapshot is stale/);
+  assert.match(oldStatus.detail, /^Out of date\.$/);
   assert.equal(oldSummary.className, 'warn');
 });
 
@@ -3968,24 +3711,21 @@ test('v2 launch dossier renders held reserve support audit evidence', () => {
 
 test('v2 launch report exports a normalized field verification packet', () => {
   const harness = loadV2FieldVerificationHarness();
-  const { buildV2FieldVerification, buildV2ReportFieldVerificationSection } = harness;
+  const { buildV2FieldVerification } = harness;
   const retirementGate = {
     source: 'trebuchet-v2-classic-retirement-gate',
     proofFingerprint: 'proof-fingerprint-111',
     state: 'danger',
     passCount: 1,
     itemCount: 3,
-    criteriaPassCount: 1,
-    criteriaItemCount: 2,
+    criteriaPassCount: 0,
+    criteriaItemCount: 0,
     requirements: [
       { id: 'live-proof', pass: false, detail: 'Run a real v2 launch through token, liquidity, and final sweep.' },
       { id: 'report-proof', pass: true, detail: 'Local dossier proof is attached.' },
-      { id: 'classic-comparison', pass: false, detail: 'Paste and compare a completed classic artifact against the completed v2 proof.' },
+      { id: 'audit', pass: false, detail: 'Proof audit is missing.' },
     ],
-    replacementCriteria: [
-      { id: 'wallet-lifecycle', label: 'Wallet generation and recovery', pass: true, evidence: 'Selected wallet has a signing secret.' },
-      { id: 'classic-artifact-comparison', label: 'Classic artifact comparison', pass: false, evidence: 'Compare a completed Classic artifact.' },
-    ],
+    replacementCriteria: [],
   };
   harness.generatedRetirementGate = retirementGate;
   const packet = buildV2FieldVerification({
@@ -3994,7 +3734,6 @@ test('v2 launch report exports a normalized field verification packet', () => {
     audit: { status: 'missing' },
     retirementGate,
   });
-  const htmlOut = buildV2ReportFieldVerificationSection(packet);
 
   assert.equal(packet.version, 1);
   assert.equal(packet.source, 'trebuchet-v2-field-verification');
@@ -4004,17 +3743,11 @@ test('v2 launch report exports a normalized field verification packet', () => {
   assert.equal(packet.passCount, 1);
   assert.equal(packet.itemCount, 3);
   assert.equal(packet.blockerCount, 2);
-  assert.equal(packet.criteriaBlockerCount, 1);
+  assert.equal(packet.criteriaBlockerCount, 0);
   assert.equal(packet.nextAction, 'run-non-demo-v2-launch');
   assert.match(packet.nextDetail, /Run a real v2 launch/);
-  assert.equal(packet.requirements.find((item) => item.id === 'classic-comparison').action, 'compare-classic-artifact');
-  assert.equal(packet.criteriaBlockers[0].action, 'compare-classic-artifact');
-  assert.match(htmlOut, /Field parity packet blocked/);
-  assert.match(htmlOut, /proof-fingerprint-111/);
-  assert.match(htmlOut, /run-non-demo-v2-launch/);
-  assert.match(htmlOut, /Replacement blockers/);
-  assert.match(htmlOut, /compare-classic-artifact/);
-  assert.match(htmlOut, /Classic artifact/);
+  assert.equal(packet.requirements.find((item) => item.id === 'audit').action, 'resolve-proof-audit');
+  assert.deepEqual(packet.requirements.map((item) => item.id), ['live-proof', 'report-proof', 'audit']);
   assert.match(js, /const expectedFingerprint = launchProofFingerprint\(proof, config\)/);
   assert.match(js, /classicRetirementGateMatchesProof\(retirementGate, proof, audit, config\)/);
   assert.match(js, /gateFingerprint === expectedFingerprint/);
@@ -4023,106 +3756,6 @@ test('v2 launch report exports a normalized field verification packet', () => {
   // The Classic retirement audit is a developer check; the public report
   // does not carry it.
   assert.doesNotMatch(js, /\$\{buildV2ReportParityAuditSection\(/);
-});
-
-test('v2 field verification routes replacement-criterion blockers to concrete actions', () => {
-  const harness = loadV2FieldVerificationHarness();
-  const { buildV2FieldVerification, buildV2ReportFieldVerificationSection } = harness;
-  const retirementGate = {
-    source: 'trebuchet-v2-classic-retirement-gate',
-    proofFingerprint: 'proof-fingerprint-111',
-    state: 'danger',
-    passCount: 2,
-    itemCount: 2,
-    criteriaPassCount: 1,
-    criteriaItemCount: 3,
-    requirements: [
-      { id: 'live-proof', pass: true, detail: 'Live v2 proof is attached.' },
-      { id: 'report-proof', pass: true, detail: 'Terminal report is attached.' },
-    ],
-    replacementCriteria: [
-      { id: 'wallet-lifecycle', label: 'Wallet generation and recovery', pass: true, evidence: 'Wallet is unlocked.' },
-      { id: 'funding-and-quote', label: 'Funding and quote readiness', pass: false, evidence: 'Classic funding estimate is stale.' },
-      { id: 'charts-and-viewport', label: 'Charts and viewport smoke', pass: false, evidence: 'Viewport proof is stale.' },
-    ],
-  };
-  harness.generatedRetirementGate = retirementGate;
-  const packet = buildV2FieldVerification({
-    proof: { token: { mint: 'Mint111' } },
-    config: { poolTopology: {} },
-    retirementGate,
-  });
-  const htmlOut = buildV2ReportFieldVerificationSection(packet);
-
-  assert.equal(packet.ready, false);
-  assert.equal(packet.passCount, 2);
-  assert.equal(packet.itemCount, 2);
-  assert.equal(packet.blockerCount, 0);
-  assert.equal(packet.criteriaBlockerCount, 2);
-  assert.equal(packet.nextAction, 'run-funding-and-quote-checks');
-  assert.match(packet.nextDetail, /Classic funding estimate is stale/);
-  assert.equal(packet.criteriaBlockers[0].action, 'run-funding-and-quote-checks');
-  assert.equal(packet.criteriaBlockers[1].action, 'run-viewport-smoke');
-  assert.match(htmlOut, /2 criterion blockers/);
-  assert.match(htmlOut, /run-funding-and-quote-checks/);
-  assert.match(htmlOut, /run-viewport-smoke/);
-  assert.match(js, /const V2_FIELD_VERIFICATION_CRITERIA = Object\.freeze/);
-  assert.match(js, /review-replacement-criterion/);
-});
-
-test('v2 field verification rejects stale pass-shaped retirement gates', () => {
-  const { buildV2FieldVerification } = loadV2FieldVerificationHarness();
-  const packet = buildV2FieldVerification({
-    proof: { token: { mint: 'Mint111' } },
-    config: { poolTopology: {} },
-    retirementGate: {
-      source: 'trebuchet-v2-classic-retirement-gate',
-      proofFingerprint: 'stale-proof-fingerprint',
-      state: 'pass',
-      requirements: [
-        { id: 'live-proof', pass: true, detail: 'Live v2 proof is attached.' },
-      ],
-      replacementCriteria: [
-        { id: 'classic-artifact-comparison', pass: true, evidence: 'Classic comparison passed.' },
-      ],
-    },
-  });
-
-  assert.equal(packet.proofFingerprint, 'proof-fingerprint-111');
-  assert.equal(packet.ready, false);
-  assert.equal(packet.state, 'blocked');
-  assert.equal(packet.blockerCount, 1);
-  assert.equal(packet.nextAction, 'run-non-demo-v2-launch');
-  assert.match(packet.nextDetail, /Run a real v2 launch/);
-
-  const forgedCurrentPacket = buildV2FieldVerification({
-    proof: { token: { mint: 'Mint111' } },
-    config: { poolTopology: {} },
-    retirementGate: {
-      source: 'trebuchet-v2-classic-retirement-gate',
-      proofFingerprint: 'proof-fingerprint-111',
-      state: 'pass',
-      passCount: 5,
-      itemCount: 5,
-      criteriaPassCount: 1,
-      criteriaItemCount: 1,
-      requirements: [
-        { id: 'live-proof', pass: true, detail: 'Forged live proof.' },
-        { id: 'report-proof', pass: true, detail: 'Forged report proof.' },
-        { id: 'classic-comparison', pass: true, detail: 'Forged Classic comparison.' },
-        { id: 'audit', pass: true, detail: 'Forged audit.' },
-        { id: 'replacement-criteria', pass: true, detail: 'Forged criteria.' },
-      ],
-      replacementCriteria: [
-        { id: 'classic-artifact-comparison', pass: true, evidence: 'Forged comparison.' },
-      ],
-    },
-  });
-  assert.equal(forgedCurrentPacket.ready, false);
-  assert.equal(forgedCurrentPacket.state, 'blocked');
-  assert.equal(forgedCurrentPacket.nextAction, 'run-non-demo-v2-launch');
-  assert.match(js, /function classicRetirementGateMatchesProof/);
-  assert.match(js, /function fieldVerificationMatchesProof/);
 });
 
 test('v2 launch runbook follows field verification blockers', () => {
@@ -4233,43 +3866,6 @@ test('v2 copied proof summary prioritizes the next launch operation before relea
   assert.match(js, /Field parity: \$\{fieldStatus\}/);
 });
 
-test('v2 copied proof summary counts replacement-criteria blockers', () => {
-  const harness = loadProofShareSummaryHarness();
-  harness.mockFieldVerification = {
-    ready: false,
-    passCount: 5,
-    itemCount: 5,
-    blockerCount: 0,
-    criteriaBlockerCount: 2,
-    nextAction: 'run-funding-and-quote-checks',
-    nextDetail: 'Classic funding estimate is stale for this launch model.',
-    blockers: [],
-    criteriaBlockers: [
-      {
-        label: 'Funding and quote readiness',
-        detail: 'Classic funding estimate is stale for this launch model.',
-      },
-      {
-        label: 'Charts and viewport smoke',
-        detail: 'Run the viewport smoke proof against current assets.',
-      },
-    ],
-  };
-  const summary = harness.buildProofShareSummary({
-    token: { mint: 'Mint111111111111111111111111111111111111111', symbol: 'MKT' },
-    liquidity: { poolCount: 1, results: [{ poolId: 'Pool111', mainPositions: [{}] }] },
-    transfer: { walletEmpty: true },
-  }, {
-    token: { symbol: 'MKT' },
-    poolTopology: {},
-  });
-
-  assert.match(summary, /Field parity: 5\/5 checks passing; 2 blockers \(2 criteria\)/);
-  assert.match(summary, /Missing replacement criteria: Funding and quote readiness: Classic funding estimate is stale/);
-  assert.match(summary, /Charts and viewport smoke: Run the viewport smoke proof/);
-  assert.match(summary, /Next action: run-funding-and-quote-checks - Classic funding estimate is stale/);
-});
-
 test('v2 launch dossier renders final sweep transfer transaction evidence', () => {
   const { buildV2ReportSweepTransferRows } = loadV2ReportSweepTransferHarness();
   const htmlOut = buildV2ReportSweepTransferRows({
@@ -4315,59 +3911,6 @@ test('v2 launch dossier renders final sweep transfer transaction evidence', () =
   assert.match(js, /Final sweep transfer evidence/);
   assert.match(js, /buildV2ReportSweepTransferRows\(transfer\)/);
   assert.match(js, /\.report-error-row/);
-});
-
-test('v2 proof import re-runs Classic comparison from artifact text', () => {
-  const restoreStart = js.indexOf('function restoreImportedProofComparison');
-  const restoreEnd = js.indexOf('async function loadV2ProofFile');
-  const loadStart = js.indexOf('async function loadV2ProofFile');
-  const loadEnd = js.indexOf('\nfunction requestV2ProofImport', loadStart);
-  assert.ok(restoreStart >= 0 && restoreEnd > restoreStart, 'restoreImportedProofComparison must be extractable');
-  assert.ok(loadStart >= 0 && loadEnd > loadStart, 'loadV2ProofFile must be extractable');
-  const restoreBody = js.slice(restoreStart, restoreEnd);
-  const loadBody = js.slice(loadStart, loadEnd);
-
-  assert.match(js, /function exportableLaunchConfigSnapshot/);
-  assert.match(js, /function buildV2ProofExportPayload/);
-  assert.match(js, /const exportLaunchConfig = exportableLaunchConfigSnapshot\(proofConfig\)/);
-  assert.match(js, /const proofForPayload = proof && typeof proof === 'object'/);
-  assert.match(js, /pruneLaunchProofEvidenceArtifactsForExport\(proof, proofConfig\)/);
-  assert.match(js, /const exportProof = proofForPayload && typeof proofForPayload === 'object'/);
-  assert.match(js, /proof: exportProof \|\| null,/);
-  assert.match(js, /launchConfig: exportLaunchConfig,/);
-  assert.match(js, /function downloadV2Proof\(\) \{[\s\S]*?const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\)/);
-  assert.match(js, /const payload = buildV2ProofExportPayload\(\{ proof: proofForExport, config, launchData \}\)/);
-  assert.match(js, /function downloadV2DossierHtml\(\) \{[\s\S]*?const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\)/);
-  assert.match(js, /launchConfig: exportableLaunchConfigSnapshot\(proofConfigForFingerprint\(proof, config\)\),/);
-  assert.match(js, /launchConfig: exportableLaunchConfigSnapshot\(config\),/);
-  assert.match(js, /function importedProofComparisonConfig/);
-  assert.match(js, /const proofLaunchConfig = proof\?\.launchConfig/);
-  assert.match(js, /payload\?\.launchConfig/);
-  assert.match(js, /launchData\.poolTopology/);
-  assert.match(js, /function importedExplicitLaunchConfig/);
-  assert.match(js, /function importedLaunchConfigSnapshotIsV2Export/);
-  assert.match(js, /const explicitLaunchConfig = importedExplicitLaunchConfig\(payload\)/);
-  assert.match(js, /if \(!importedLaunchConfigSnapshotIsV2Export\(explicitLaunchConfig\)\)/);
-  assert.match(js, /if \(!importedExplicitLaunchConfig\(payload\)\) return null/);
-  assert.doesNotMatch(js, /launchConfig: exportableLaunchConfigSnapshot\(currentLaunchConfig\(\)\)/);
-  assert.match(js, /state\.launchProof = mergeLaunchProofEvidence\(state\.launchProof, rawProof\)/);
-  assert.match(js, /classicReportComparison: classicReportComparisonForProofExport\(proofForPayload, proofConfig\),/);
-  assert.match(loadBody, /const mergedProof = rememberLaunchProof\(proof\) \|\| proof/);
-  assert.match(loadBody, /const mergedConfig = proofConfigForFingerprint\(mergedProof, currentLaunchConfig\(\)\)/);
-  assert.match(loadBody, /reportPublishIsProofCurrent\(mergedProof\?\.reportPublish, mergedProof, mergedConfig\)/);
-  assert.match(loadBody, /localDossierIsProofCurrent\(mergedProof\?\.localDossier, mergedProof, mergedConfig\)/);
-  assert.match(loadBody, /restoreImportedProofComparison\(payload, mergedProof\)/);
-  assert.doesNotMatch(loadBody, /if \(proof\.reportPublish\) state\.lastReportPublish = proof\.reportPublish/);
-  assert.doesNotMatch(loadBody, /if \(localDossierHasEvidence\(proof\.localDossier\)\) state\.lastLocalDossier = proof\.localDossier/);
-  assert.match(js, /classicArtifactCompared: false/);
-  assert.match(js, /comparison: null/);
-  assert.match(js, /importedComparisonRequiresArtifact: true/);
-  assert.match(restoreBody, /comparisonWrapper\?\.input/);
-  assert.match(restoreBody, /comparisonFrom\(comparisonWrapper\?\.result\)/);
-  assert.match(restoreBody, /Imported proof comparison needs the original Classic artifact text/);
-  assert.match(restoreBody, /compareClassicReportArtifact\(importedInput, proof, importedProofComparisonConfig\(payload\)\)/);
-  assert.match(restoreBody, /classicComparisonIsRetirementGrade\(result, proof, importedProofComparisonConfig\(payload\)\)/);
-  assert.doesNotMatch(restoreBody, /result:\s*importedComparison/);
 });
 
 test('v2 proof import does not resurrect artifacts pruned during merge', async () => {
@@ -4416,9 +3959,6 @@ test('v2 proof import does not resurrect artifacts pruned during merge', async (
         && config?.proofId === 'merged'
         && dossier.filename === 'merged.html'
     ),
-    restoreImportedProofComparison: (_payload, proof) => {
-      sandbox.restoredProof = proof;
-    },
     renderAll: () => {},
     notify: (message) => {
       sandbox.message = message;
@@ -4432,263 +3972,7 @@ test('v2 proof import does not resurrect artifacts pruned during merge', async (
   await sandbox.loadV2ProofFile({ name: 'proof.json' });
   assert.equal(sandbox.state.lastReportPublish, null);
   assert.equal(sandbox.state.lastLocalDossier, null);
-  assert.equal(sandbox.restoredProof, mergedProof);
   assert.equal(sandbox.message, 'Launch record loaded');
-});
-
-test('v2 Classic comparison action uses proof-bound launch config', () => {
-  const start = js.indexOf('function runClassicArtifactComparison');
-  const end = js.indexOf('\nfunction clearClassicArtifactComparison', start);
-  assert.ok(start >= 0 && end > start, 'runClassicArtifactComparison should be extractable');
-  const source = js.slice(start, end);
-  assert.match(source, /const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\)/);
-
-  const sandbox = {
-    state: {
-      classicReportComparison: {
-        input: '{"source":"classic"}',
-      },
-    },
-    document: {
-      querySelector: () => ({ value: '' }),
-    },
-    proof: {
-      launchConfig: {
-        token: { symbol: 'PROOF' },
-        poolTopology: {
-          pools: [{ id: 'proof-pool', quoteToken: 'SOL', supplyPercent: 100 }],
-        },
-      },
-      reportParity: {},
-    },
-    capturedConfig: null,
-    currentLaunchProof: () => sandbox.proof,
-    currentLaunchConfig: () => ({
-      token: { symbol: 'TYPED' },
-      poolTopology: {
-        pools: [{ id: 'typed-pool', quoteToken: 'SOL', supplyPercent: 1 }],
-      },
-    }),
-    proofConfigForFingerprint: (proof, config) => proof?.launchConfig || config || { poolTopology: {} },
-    compareClassicReportArtifact: (_input, _proof, config) => {
-      sandbox.capturedConfig = config;
-      return {
-        status: 'pass',
-        artifactSource: 'classic',
-        proofFingerprint: 'proof-bound',
-        structuredEvidence: true,
-        passCount: 1,
-        fieldCount: 1,
-        rows: [{ id: 'mint', label: 'Token mint', state: 'pass' }],
-        comparedAt: '2026-06-30T00:00:00.000Z',
-      };
-    },
-    classicComparisonMatchesProof: (result) => result?.proofFingerprint === 'proof-bound',
-    classicComparisonRequiredEvidence: (result) => ({
-      pass: Boolean(result?.structuredEvidence && result?.rows?.some((row) => row.id === 'mint' && row.state === 'pass')),
-    }),
-    classicComparisonIsRetirementGrade: (result, proof, config) => Boolean(
-      sandbox.classicComparisonMatchesProof(result, proof, config)
-      && result?.status === 'pass'
-      && result?.artifactSource !== 'trebuchet-v2'
-      && sandbox.classicComparisonRequiredEvidence(result, proof, config).pass
-    ),
-    persistClassicReportComparison: () => {},
-    rememberLaunchProof: (proof) => {
-      sandbox.proof = proof;
-      return proof;
-    },
-    renderAll: () => {},
-    notify: () => {},
-  };
-  sandbox.globalThis = sandbox;
-  vm.runInNewContext(`${source}\nglobalThis.runClassicArtifactComparison = runClassicArtifactComparison;`, sandbox, {
-    filename: 'public/v2/app.js classic comparison action harness',
-  });
-
-  sandbox.runClassicArtifactComparison();
-  assert.equal(sandbox.capturedConfig.token.symbol, 'PROOF');
-  assert.equal(sandbox.capturedConfig.poolTopology.pools[0].id, 'proof-pool');
-  assert.equal(sandbox.proof.reportParity.classicArtifactCompared, true);
-});
-
-test('v2 Classic comparison panel checks staleness against proof-bound launch config', () => {
-  const start = js.indexOf('function renderClassicArtifactComparisonPanel');
-  const end = js.indexOf('\nfunction finalizationNoticeRows', start);
-  assert.ok(start >= 0 && end > start, 'renderClassicArtifactComparisonPanel should be extractable');
-  const source = js.slice(start, end);
-  assert.match(source, /const config = proofConfigForFingerprint\(proof, currentLaunchConfig\(\)\)/);
-  assert.match(source, /const selectedResult = currentClassicComparisonForProof\(proof, config\)/);
-  assert.match(source, /classicComparisonMatchesProof\(result, proof, config\)/);
-  assert.match(source, /Using the proof-saved Classic comparison/);
-  assert.match(css, /\.classic-compare-note/);
-
-  const sandbox = {
-    state: {
-      classicReportComparison: {
-        input: '{"source":"classic"}',
-        result: {
-          status: 'pass',
-          passCount: 1,
-          fieldCount: 1,
-          proofFingerprint: 'proof-bound',
-          rows: [],
-        },
-      },
-    },
-    proof: {
-      launchConfig: {
-        token: { symbol: 'PROOF' },
-        poolTopology: {
-          pools: [{ id: 'proof-pool', quoteToken: 'SOL' }],
-        },
-      },
-    },
-    capturedConfig: null,
-    currentLaunchProof: () => sandbox.proof,
-    currentLaunchConfig: () => ({
-      token: { symbol: 'TYPED' },
-      poolTopology: {
-        pools: [{ id: 'typed-pool', quoteToken: 'SOL' }],
-      },
-    }),
-    proofConfigForFingerprint: (proof, config) => proof?.launchConfig || config || { poolTopology: {} },
-    classicComparisonMatchesProof: (result, _proof, config) => {
-      sandbox.capturedConfig = config;
-      return result?.proofFingerprint === 'proof-bound';
-    },
-    currentClassicComparisonForProof: (proof, config) => {
-      const inputResult = sandbox.state.classicReportComparison.result || null;
-      const proofResult = proof?.reportParity?.comparison || null;
-      if (inputResult && sandbox.classicComparisonMatchesProof(inputResult, proof, config)) return inputResult;
-      if (proofResult && sandbox.classicComparisonMatchesProof(proofResult, proof, config)) return proofResult;
-      return inputResult || proofResult || null;
-    },
-    reportParityClass: () => '',
-    escapeHtml: (value) => String(value ?? ''),
-  };
-  sandbox.globalThis = sandbox;
-  vm.runInNewContext(`${source}\nglobalThis.renderClassicArtifactComparisonPanel = renderClassicArtifactComparisonPanel;`, sandbox, {
-    filename: 'public/v2/app.js classic comparison panel harness',
-  });
-
-  const htmlOut = sandbox.renderClassicArtifactComparisonPanel();
-  assert.equal(sandbox.capturedConfig.token.symbol, 'PROOF');
-  assert.equal(sandbox.capturedConfig.poolTopology.pools[0].id, 'proof-pool');
-  assert.match(htmlOut, /fields match/);
-  assert.doesNotMatch(htmlOut, /stale/);
-
-  sandbox.state.classicReportComparison.result = {
-    status: 'pass',
-    passCount: 1,
-    fieldCount: 1,
-    proofFingerprint: 'stale-proof',
-    rows: [],
-  };
-  sandbox.state.classicReportComparison.error = 'Old import failed';
-  sandbox.proof.reportParity = {
-    comparison: {
-      status: 'pass',
-      passCount: 7,
-      fieldCount: 7,
-      proofFingerprint: 'proof-bound',
-      rows: [{ id: 'mint', label: 'Token mint', state: 'pass', detail: 'Mint matched.' }],
-    },
-  };
-  const fallbackHtml = sandbox.renderClassicArtifactComparisonPanel();
-  assert.match(fallbackHtml, /7\/7 fields match/);
-  assert.match(fallbackHtml, /risk-badge[^>]*>proof</);
-  assert.match(fallbackHtml, /proof-saved Classic comparison/);
-  assert.doesNotMatch(fallbackHtml, /Comparison is for another Trebuchet proof/);
-  assert.doesNotMatch(fallbackHtml, /Old import failed/);
-});
-
-test('v2 imported proof comparison uses the exported launch config snapshot', () => {
-  const exportStart = js.indexOf('function exportableLaunchConfigSnapshot');
-  const exportEnd = js.indexOf('\nfunction downloadV2Proof', exportStart);
-  const importStart = js.indexOf('function importedExplicitLaunchConfig');
-  const importEnd = js.indexOf('\nfunction restoreImportedProofComparison', importStart);
-  assert.ok(exportStart >= 0 && exportEnd > exportStart, 'exportableLaunchConfigSnapshot must be extractable');
-  assert.ok(importStart >= 0 && importEnd > importStart, 'importedProofComparisonConfig must be extractable');
-  const sandbox = {
-    Number,
-    currentLaunchConfig: () => ({
-      token: { name: 'Typed', symbol: 'TYPED', supply: '1' },
-      launchSol: 1,
-      mode: 'guarded',
-      poolTopology: { sweepDestination: 'TypedDest11111111111111111111111111111111111' },
-    }),
-  };
-  vm.runInNewContext(
-    [
-      js.slice(exportStart, exportEnd),
-      js.slice(importStart, importEnd),
-      'globalThis.exportableLaunchConfigSnapshot = exportableLaunchConfigSnapshot;',
-      'globalThis.importedExplicitLaunchConfig = importedExplicitLaunchConfig;',
-      'globalThis.importedProofComparisonConfig = importedProofComparisonConfig;',
-    ].join('\n'),
-    sandbox,
-    { filename: 'public/v2/app.js imported proof config harness' },
-  );
-
-  const exported = sandbox.exportableLaunchConfigSnapshot({
-    token: {
-      name: 'Exported',
-      symbol: 'EXP',
-      supply: '1000000000',
-      logo: { name: 'logo.png', type: 'image/png', size: 1024, dataUrl: 'data:image/png;base64,secretish' },
-    },
-    launchSol: 4.2,
-    mode: 'operator',
-    poolTopology: { sweepDestination: 'ExportedDest111111111111111111111111111111111' },
-    funding: { targetMarketCapUsd: 25000 },
-  });
-  assert.equal(exported.schema, 'trebuchet-v2-launch-config');
-  assert.equal(exported.source, 'trebuchet-v2');
-  assert.equal(exported.token.logo.dataUrl, undefined);
-  assert.equal(exported.poolTopology.sweepDestination, 'ExportedDest111111111111111111111111111111111');
-
-  const imported = sandbox.importedProofComparisonConfig({
-    launchConfig: exported,
-    launchData: {
-      name: 'Report Name',
-      symbol: 'RPT',
-      totalSupply: '999',
-      decimals: 9,
-      destinationWallet: 'ReportDest1111111111111111111111111111111111',
-    },
-  });
-  assert.equal(imported.token.name, 'Report Name');
-  assert.equal(imported.token.symbol, 'RPT');
-  assert.equal(imported.token.supply, '999');
-  assert.equal(imported.poolTopology.sweepDestination, 'ExportedDest111111111111111111111111111111111');
-
-  const fallback = sandbox.importedProofComparisonConfig({
-    launchData: {
-      poolTopology: {},
-      destinationWallet: 'ReportDest1111111111111111111111111111111111',
-    },
-  });
-  assert.equal(fallback.poolTopology.sweepDestination, 'ReportDest1111111111111111111111111111111111');
-  assert.equal(sandbox.importedExplicitLaunchConfig({
-    launchData: {
-      poolTopology: {},
-      destinationWallet: 'ReportDest1111111111111111111111111111111111',
-    },
-  }), null);
-
-  const proofBound = sandbox.importedProofComparisonConfig({
-    launchConfig: {
-      poolTopology: { sweepDestination: 'StaleEnvelopeDest111111111111111111111111111' },
-    },
-    proof: {
-      launchConfig: {
-        poolTopology: { sweepDestination: 'ProofBoundDest11111111111111111111111111111' },
-      },
-    },
-  });
-  assert.equal(proofBound.poolTopology.sweepDestination, 'ProofBoundDest11111111111111111111111111111');
-  assert.doesNotMatch(js, /importedLaunchConfigSnapshotHasV2Provenance\(importedExplicitLaunchConfig\(payload\)\)/);
 });
 
 test('v2 proof import only restores fingerprint-matched local dossier evidence', () => {
@@ -5028,7 +4312,7 @@ test('v2 proof import only restores fingerprint-matched local dossier evidence',
   assert.equal(fullPayload.classicRetirementGate.state, 'danger');
   assert.equal(fullPayload.launchData.classicRetirementGate.proofFingerprint, fullFingerprint);
   assert.equal(fullPayload.launchData.classicRetirementGate.state, 'danger');
-  assert.equal(fullPayload.classicReportComparison, null);
+  assert.equal(fullPayload.classicReportComparison, undefined, 'no Classic comparison is exported');
   assert.equal(fullPayload.launchData.classicReportComparison, undefined);
   assert.equal(fullPayload.launchData.proof, undefined);
   const forgedPassAuditPayload = sandbox.buildV2ProofExportPayload({
@@ -5153,216 +4437,8 @@ test('v2 proof import only restores fingerprint-matched local dossier evidence',
   assert.match(js, /generatedEvidenceTextMatches\(item, expectedItems\[index\], \['label', 'detail'\]\)/);
   assert.match(js, /generatedEvidenceTextMatches\(row, expectedRows\[index\], \['label', 'detail', 'evidence'\]\)/);
   assert.match(js, /generatedEvidenceTextMatches\(row, expectedRows\[index\], \['label', 'action', 'detail'\]\)/);
-  sandbox.normalizeClassicReportComparison = (comparison = {}) => ({
-    input: String(comparison.input || ''),
-    result: comparison.result || null,
-    comparedAt: comparison.comparedAt || comparison.result?.comparedAt || null,
-    error: comparison.error || null,
-  });
-  sandbox.state.classicReportComparison = {
-    input: '{"source":"classic","mint":"stale"}',
-    result: {
-      status: 'pass',
-      proofFingerprint: 'stale-proof-fingerprint',
-      artifactSource: 'classic',
-      fieldCount: 1,
-      passCount: 1,
-      rows: [{ id: 'mint', label: 'Token mint', state: 'pass' }],
-    },
-  };
-  const staleComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: largeProof,
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(staleComparisonPayload.classicReportComparison, null);
-  const exportRequiredRows = sandbox.classicComparisonRequiredRows(largeProof, importedConfig).map((row) => ({
-    ...row,
-    state: 'pass',
-  }));
-  sandbox.state.classicReportComparison = {
-    input: '{"schema":"trebuchet-v2-proof"}',
-    result: {
-      status: 'pass',
-      proofFingerprint: fullFingerprint,
-      artifactSource: 'trebuchet-v2',
-      structuredEvidence: true,
-      fieldCount: exportRequiredRows.length,
-      passCount: exportRequiredRows.length,
-      rows: exportRequiredRows,
-    },
-  };
-  const selfArtifactComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: largeProof,
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(selfArtifactComparisonPayload.classicReportComparison, null);
-  sandbox.state.classicReportComparison = {
-    input: '{"source":"classic","mint":"thin"}',
-    result: {
-      status: 'pass',
-      proofFingerprint: fullFingerprint,
-      artifactSource: 'classic',
-      structuredEvidence: true,
-      fieldCount: 1,
-      passCount: 1,
-      rows: [{ id: 'mint', label: 'Token mint', state: 'pass' }],
-    },
-  };
-  const thinComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: largeProof,
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(thinComparisonPayload.classicReportComparison, null);
-  sandbox.state.classicReportComparison = {
-    input: '{"source":"classic","mint":"current"}',
-    comparedAt: '2026-06-30T00:00:00.000Z',
-    result: {
-      status: 'pass',
-      proofFingerprint: fullFingerprint,
-      artifactSource: 'classic',
-      structuredEvidence: true,
-      fieldCount: exportRequiredRows.length,
-      passCount: exportRequiredRows.length,
-      comparedAt: '2026-06-30T00:00:00.000Z',
-      rows: exportRequiredRows,
-    },
-  };
-  const matchingComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: largeProof,
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(matchingComparisonPayload.classicReportComparison.input, '{"source":"classic","mint":"current"}');
-  assert.equal(matchingComparisonPayload.classicReportComparison.result.proofFingerprint, fullFingerprint);
-  assert.equal(matchingComparisonPayload.launchData.classicReportComparison, undefined);
-  const matchingLaunchDataComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: largeProof,
-    config: importedConfig,
-    launchData: {
-      ...largeLaunchData,
-      classicReportComparison: {
-        status: 'pass',
-        proofFingerprint: fullFingerprint,
-        artifactSource: 'classic',
-        structuredEvidence: true,
-        fieldCount: exportRequiredRows.length,
-        passCount: exportRequiredRows.length,
-        rows: exportRequiredRows,
-      },
-      proof: {
-        ...largeProof,
-        reportParity: {
-          classicArtifactCompared: true,
-          comparison: {
-            status: 'pass',
-            proofFingerprint: 'stale-proof-fingerprint',
-            artifactSource: 'classic',
-          },
-        },
-      },
-    },
-  });
-  assert.equal(matchingLaunchDataComparisonPayload.launchData.classicReportComparison.proofFingerprint, fullFingerprint);
-  assert.equal(matchingLaunchDataComparisonPayload.launchData.proof, undefined);
-  const staleProofComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: {
-      ...largeProof,
-      reportParity: {
-        viewportSmoke: { passed: true },
-        classicArtifactCompared: true,
-        comparedAt: '2026-06-30T00:00:00.000Z',
-        comparison: {
-          status: 'pass',
-          proofFingerprint: 'stale-proof-fingerprint',
-          artifactSource: 'classic',
-        },
-        classicComparison: {
-          status: 'pass',
-          proofFingerprint: 'stale-proof-fingerprint',
-          artifactSource: 'classic',
-        },
-      },
-    },
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(staleProofComparisonPayload.proof.reportParity.viewportSmoke.passed, true);
-  assert.equal(staleProofComparisonPayload.proof.reportParity.comparison, undefined);
-  assert.equal(staleProofComparisonPayload.proof.reportParity.classicComparison, undefined);
-  assert.equal(staleProofComparisonPayload.proof.reportParity.classicArtifactCompared, false);
-  const selfProofComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: {
-      ...largeProof,
-      reportParity: {
-        viewportSmoke: { passed: true },
-        classicArtifactCompared: true,
-        comparison: {
-          status: 'pass',
-          proofFingerprint: fullFingerprint,
-          artifactSource: 'trebuchet-v2',
-          structuredEvidence: true,
-          fieldCount: exportRequiredRows.length,
-          passCount: exportRequiredRows.length,
-          rows: exportRequiredRows,
-        },
-      },
-    },
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(selfProofComparisonPayload.proof.reportParity.comparison, undefined);
-  assert.equal(selfProofComparisonPayload.proof.reportParity.classicArtifactCompared, false);
-  const thinProofComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: {
-      ...largeProof,
-      reportParity: {
-        viewportSmoke: { passed: true },
-        classicArtifactCompared: true,
-        comparison: {
-          status: 'pass',
-          proofFingerprint: fullFingerprint,
-          artifactSource: 'classic',
-          structuredEvidence: true,
-          fieldCount: 1,
-          passCount: 1,
-          rows: [{ id: 'mint', label: 'Token mint', state: 'pass' }],
-        },
-      },
-    },
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(thinProofComparisonPayload.proof.reportParity.comparison, undefined);
-  assert.equal(thinProofComparisonPayload.proof.reportParity.classicArtifactCompared, false);
-  const matchingProofComparisonPayload = sandbox.buildV2ProofExportPayload({
-    proof: {
-      ...largeProof,
-      reportParity: {
-        viewportSmoke: { passed: true },
-        classicArtifactCompared: true,
-        comparison: {
-          status: 'pass',
-          proofFingerprint: fullFingerprint,
-          artifactSource: 'classic',
-          structuredEvidence: true,
-          fieldCount: exportRequiredRows.length,
-          passCount: exportRequiredRows.length,
-          rows: exportRequiredRows,
-        },
-      },
-    },
-    config: importedConfig,
-    launchData: largeLaunchData,
-  });
-  assert.equal(matchingProofComparisonPayload.proof.reportParity.comparison.proofFingerprint, fullFingerprint);
-  assert.equal(matchingProofComparisonPayload.proof.reportParity.classicArtifactCompared, true);
   assert.match(js, /function proofExportParityBundle/);
-  assert.match(js, /function classicReportComparisonForProofExport/);
   assert.match(js, /function pruneLaunchProofEvidenceArtifactsForExport/);
-  assert.match(js, /classicComparisonIsRetirementGrade\(normalized\.result, proof, config\)/);
   assert.match(js, /classicRetirementGateMatchesProof\(dataGate, proof, audit, proofConfig\)/);
   assert.match(js, /dataGate\?\.proofFingerprint === expectedFingerprint/);
   assert.match(js, /fieldVerificationMatchesProof\(dataFieldVerification, proof, proofConfig, audit, retirementGate\)/);
@@ -5599,11 +4675,9 @@ test('v2 proof merge drops stale report artifacts after terminal sweep evidence 
     ...baseProof,
     liquidity: { complete: true },
   });
-  assert.equal(retainedExistingComparison.reportParity?.comparison?.proofFingerprint, 'proof-bound');
-  assert.ok(
-    sandbox.comparisonConfigCalls.some((call) => call.config === call.proof.launchConfig),
-    'proof merge should validate preserved Classic comparison evidence against the merged proof config',
-  );
+  // A saved Classic comparison is not carried forward: Classic comparisons are no longer used.
+  assert.equal(retainedExistingComparison.reportParity?.comparison, undefined);
+  assert.equal(retainedExistingComparison.reportParity?.classicArtifactCompared, undefined);
 
   const newIdentityIncoming = sandbox.mergeLaunchProofEvidence(baseProof, {
     ...terminalProof,
@@ -5647,8 +4721,8 @@ test('v2 proof merge drops stale report artifacts after terminal sweep evidence 
       },
     },
   });
-  assert.equal(legacyAliasIncoming.reportParity?.comparison?.status, 'pass');
-  assert.equal(legacyAliasIncoming.reportParity?.classicComparison?.status, 'pass');
+  assert.equal(legacyAliasIncoming.reportParity?.comparison, undefined);
+  assert.equal(legacyAliasIncoming.reportParity?.classicComparison, undefined);
 
   const mixedAliasIncoming = sandbox.mergeLaunchProofEvidence(null, {
     ...terminalProof,
@@ -5664,14 +4738,12 @@ test('v2 proof merge drops stale report artifacts after terminal sweep evidence 
       },
     },
   });
-  assert.equal(mixedAliasIncoming.reportParity?.comparison?.proofFingerprint, 'proof-bound');
+  assert.equal(mixedAliasIncoming.reportParity?.comparison, undefined);
   assert.equal(mixedAliasIncoming.reportParity?.classicComparison, undefined);
 
   assert.match(js, /reportPublishFinalizationIssue\(existing\.reportPublish, merged, mergedConfig\)/);
   assert.match(js, /localDossierFinalizationIssue\(existing\.localDossier, merged, mergedConfig\)/);
-  assert.match(js, /function reportParityClassicComparison/);
   assert.match(js, /function pruneLaunchProofEvidenceArtifacts/);
-  assert.match(js, /classicComparisonMatchesProof\(comparison, merged, mergedConfig\)/);
   assert.match(js, /return pruneLaunchProofEvidenceArtifacts\(incoming, incomingConfig\)/);
   assert.match(js, /return pruneLaunchProofEvidenceArtifacts\(merged, mergedConfig\)/);
   assert.match(js, /delete merged\.reportPublish/);
@@ -6316,7 +5388,7 @@ test('v2 proof config snapshots fill sweep destination until proof-bound report 
 
 test('v2 manual run-next preserves classic finalization before sweep', () => {
   const helperStart = js.indexOf('function executeNextTransferFinalizationIssue');
-  const helperEnd = js.indexOf('\nfunction fullRunPendingAirdropCount', helperStart);
+  const helperEnd = js.indexOf('\nfunction fullRunCompletionAudit', helperStart);
   const helper = js.slice(helperStart, helperEnd);
   const runNextStart = js.indexOf('async function executeNextRunOperation()');
   const runNextEnd = js.indexOf('\nfunction executeNextTransferFinalizationIssue', runNextStart);
@@ -6692,8 +5764,6 @@ test('v2 launch mechanism stages one Trebuchet-managed local wallet run', () => 
   assert.doesNotMatch(js, /Next checkpoint|'Next step'|Run every step|Step 6 as reviewable/);
   assert.match(combined, /Execution ledger/);
   assert.match(combined, /Latest steps/);
-  assert.match(combined, /historyExecutionAudit/);
-  assert.match(combined, /Retries/);
   assert.match(combined, /attempt/);
   assert.match(combined, /variable/);
   assert.match(combined, /Review run plan first/);
@@ -6725,21 +5795,12 @@ test('v2 Phase 4 exposes the missing arm step before Create token', () => {
   assert.match(bridgeSource, /executeNextTransferFinalizationIssue\(readiness, config\)/);
   assert.match(bridgeSource, /is-primary-action/);
   assert.match(bridgeSource, /data-action="review-and-arm-run"/);
-  assert.match(bridgeSource, /Check what will be sent and the most it can spend/);
+  assert.doesNotMatch(bridgeSource, /Check what will be sent and the most it can spend/);
   assert.match(bridgeSource, /data-action="execute-next-run"[\s\S]*?runLabel/);
   assert.doesNotMatch(bridgeSource, /\|\| readiness\?\.nextEndpoint\s*\|\|/);
   assert.match(reviewSource, /stageTransactions\(\{ openApproval: true, announce: false \}\)/);
   assert.match(js, /action === 'review-and-arm-run'[\s\S]*?reviewAndArmRun\(\)/);
   assert.match(js, /Approved\. Next: \$\{nextOperation\}\./);
-});
-
-test('v2 hides release-comparison warnings until the operational launch is complete', () => {
-  assert.match(js, /if \(!finalSweepComplete\) \{/);
-  assert.match(js, /Non-blocking audit hidden/);
-  assert.match(js, /Return to final sweep/);
-  assert.match(js, /Optional release proof audit/);
-  assert.match(css, /\.execution-readiness\.is-primary-action/);
-  assert.match(css, /\.launch-audit-deferred/);
 });
 
 test('v2 terminal recovery collapses into the completed proof panel', () => {
@@ -6751,7 +5812,8 @@ test('v2 terminal recovery collapses into the completed proof panel', () => {
   assert.match(bridgeSource, /state\.restoredLaunchJournalId && !finalSweepComplete/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('has-recovery-notice'/);
   assert.match(bridgeSource, /classicBridge\.classList\.toggle\('is-terminal-launch', finalSweepComplete\)/);
-  assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<details class="drawer launch-recovery-details"/);
+  // Recovery is its own page of Recovery, not a fold.
+  assert.match(bridgeSource, /!finalSweepComplete && !completedJournal \? `<div data-finish-part="recover">/);
   assert.match(css, /#classicBridge\.is-terminal-launch \.classic-workspace-verify\s*\{[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\)/);
   assert.match(css, /\.recovered-plan-notice\s*\{[\s\S]*?max-height: 44px/);
   assert.doesNotMatch(css, /body\[data-experience-mode="advanced"\]\[data-active-view="launch"\][\s\S]{0,180}?height: auto/);
@@ -6849,37 +5911,14 @@ test('v2 locked launch wallet opens the Recovery PIN gate directly', () => {
   assert.match(js, /walletButton\.setAttribute\('aria-label', walletButtonLabel\)/);
 });
 
-test('v2 primary views share framed terminal workspaces and tabbed History panes', () => {
-  for (const pane of ['recovery', 'wallets', 'audit', 'journal']) {
-    assert.match(html, new RegExp(`data-history-pane="${pane}"`));
-    assert.match(html, new RegExp(`data-history-pane-panel="${pane}"`));
-  }
-  assert.match(html, /id="historyPaneTabs" role="tablist"/);
-  assert.match(js, /activeHistoryPane: 'recovery'/);
-  assert.match(js, /function renderHistoryPanes/);
-  assert.match(js, /action === 'select-history-pane'/);
-  assert.match(js, /panel\.hidden = !selected/);
-  assert.match(js, /button\.tabIndex = selected \? 0 : -1/);
-  assert.match(js, /activeTab = event\.target\.closest\?\.\('\[role="tab"\]'\)/);
-  assert.match(html, /id="historyTabRecovery"[\s\S]*?aria-controls="historyPanelRecovery"/);
-  assert.match(html, /id="historyPanelRecovery"[\s\S]*?aria-labelledby="historyTabRecovery"/);
-  assert.doesNotMatch(html, /<small>01<\/small><strong>Recovery<\/strong><span>Safe resume<\/span>/);
-  assert.match(css, /\.history-pane-tabs\s*\{[\s\S]*?display: flex;/);
-  assert.match(css, /\.history-pane-stage\s*\{[\s\S]*?overflow: hidden;/);
-  assert.match(css, /#view-history \.surface-main\s*\{[\s\S]*?grid-template-rows: auto auto minmax\(0, 1fr\)/);
-  assert.match(css, /#view-wallet \.surface,[\s\S]*?#view-settings \.surface[\s\S]*?border: 1px solid var\(--line-strong\)/);
-  assert.match(css, /#view-settings \.release-panel \.secret-pin-actions\s*\{[\s\S]*?grid-column: 1 \/ -1/);
-  assert.match(css, /body:not\(\[data-active-view="launch"\]\) \.view\.is-active,[\s\S]*?overflow: hidden/);
-});
-
 test('v2 prototype keeps assets local and JavaScript unobtrusive', () => {
   assert.match(html, /vendor\/fontawesome\/css\/all\.min\.css/);
-  assert.match(html, /styles\.css\?v=119/);
+  assert.match(html, /styles\.css\?v=175/);
   assert.match(html, /runtime-state\.js\?v=2/);
-  assert.match(html, /api-client\.js\?v=42/);
+  assert.match(html, /api-client\.js\?v=47/);
   assert.match(html, /gif-optimizer\.js\?v=3/);
-  assert.match(html, /app\.js\?v=210/);
-  assert.doesNotMatch(html, /app\.js\?v=210" type="module"/);
+  assert.match(html, /app\.js\?v=275/);
+  assert.doesNotMatch(html, /app\.js\?v=275" type="module"/);
   assert.ok(html.indexOf('runtime-state.js') < html.indexOf('api-client.js'), 'Runtime state must load before API client');
   assert.ok(html.indexOf('api-client.js') < html.indexOf('app.js'), 'API client must load before app.js');
   assert.ok(html.indexOf('gif-optimizer.js') < html.indexOf('app.js'), 'GIF optimizer must load before app.js');
@@ -6979,7 +6018,6 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /function proofJournalEvidenceState\(proof = currentLaunchProof\(\)\)/);
   assert.match(js, /function transferHasWalletEmptyFinalSweepEvidence\(transfer = null\)/);
   assert.match(js, /const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\)/);
-  assert.match(js, /const proofFinalSweepEvidence = transferHasWalletEmptyFinalSweepEvidence\(proof\?\.transfer\)/);
   assert.match(js, /function journalTransferHasTerminalSweepEvidence\(transfer = null\)/);
   assert.match(js, /journalTransferHasTerminalSweepEvidence\(journalTransfer\)/);
   assert.match(js, /return transferHasWalletEmptyFinalSweepEvidence\(transfer\)/);
@@ -7016,7 +6054,6 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /not loaded from the local launch-journal store/);
   assert.match(js, /Loaded launch journal does not match proof/);
   assert.match(js, /Local launch journal does not match proof/);
-  assert.match(js, /local launch journal is missing proof backing/);
   assert.match(js, /Launch journal is not terminal/);
   assert.match(js, /Completed proof is missing its frozen launch-config snapshot/);
   assert.match(js, /Completed proof has an incomplete frozen launch-config snapshot/);
@@ -7055,8 +6092,8 @@ test('v2 retirement gate requires terminal final sweep evidence', () => {
   assert.match(js, /function airdropCompletionStatus\(proof = currentLaunchProof\(\), topology = currentClassicModel\(\)\)/);
   assert.match(js, /const evidence = comparisonAirdropDeliveryEvidenceState\(\{/);
   assert.match(js, /complete: evidence\.complete/);
-  assert.match(js, /function airdropCompletionIssue\(status = \{\}, actionLabel = 'final sweep'\)/);
-  assert.match(js, /Airdrop proof is incomplete \(\$\{missing\}\); refresh or rerun airdrop before \$\{actionLabel\}/);
+  assert.match(js, /function airdropCompletionIssue\(status = \{\}\)/);
+  assert.match(js, /Airdrop record incomplete: \$\{missing\}\./);
   assert.match(js, /function liveAirdropComplete\(topology, proof\) \{\s*const status = airdropCompletionStatus\(proof, topology\);\s*return status\.complete;\s*\}/);
   assert.doesNotMatch(js, /liveDone >= liveTotal && liveFailed === 0/);
   assert.match(js, /function proofHasReportablePoolIdentity\(proof = \{\}, config = currentLaunchConfig\(\)\)/);
@@ -7192,1875 +6229,6 @@ test('v2 local terminal journal proof binds pool records, not only pool ids', ()
   assert.equal(harness.proofHasTerminalLaunchJournal(proof), true);
 });
 
-test('v2 retirement gate only passes completed live proof compared to Classic', () => {
-  const gateStart = js.indexOf('function buildClassicRetirementGate');
-  const gateEnd = js.indexOf('\nfunction loadedRecoveryJournalEvidence', gateStart);
-  assert.ok(gateStart >= 0 && gateEnd > gateStart, 'classic retirement gate should be extractable');
-  const gateBody = js.slice(gateStart, gateEnd);
-  assert.match(gateBody, /const report = currentReportPublish\(proof, config\)/);
-  assert.doesNotMatch(gateBody, /currentReportPublish\(proof, config, \{ allowTransient: true \}\)/);
-
-  const harness = loadClassicRetirementGateHarness();
-  const audit = { status: 'pass', passCount: 12, itemCount: 12, missingCount: 0, warnCount: 0, proofFingerprint: 'proof-bound' };
-  const classicEvidenceRows = [
-    'mint',
-    'launch-wallet',
-    'pools',
-    'authority-posture',
-    'positionCount',
-    'lockedPositionCount',
-    'feeKeyCount',
-    'destination',
-  ].map((id) => ({ id, label: id, state: 'pass' }));
-  const classicComparison = {
-    status: 'pass',
-    artifactSource: 'classic',
-    structuredEvidence: true,
-    passCount: classicEvidenceRows.length,
-    fieldCount: classicEvidenceRows.length,
-    proofFingerprint: 'proof-bound',
-    rows: classicEvidenceRows,
-  };
-  const proof = {
-    journalId: 'journal-gate-proof-1',
-    status: 'completed',
-    stage: 'transfer_completed',
-    walletPublicKey: 'WalletGate111111111111111111111111111111111',
-    launchConfig: {
-      schema: 'trebuchet-v2-launch-config',
-      source: 'trebuchet-v2',
-      token: { name: 'Gate', symbol: 'GATE', supply: '1000', decimals: 9 },
-      poolTopology: {
-        sweepDestination: 'DestGate111111111111111111111111111111111',
-        totalPoolPercent: 100,
-        pools: [{ id: 'pool-1', quoteToken: 'SOL', supplyPercent: 100, plannedPositionCount: 1 }],
-        airdrop: { enabled: false, supplyPercent: 0 },
-      },
-    },
-    token: {
-      mint: 'MintGate11111111111111111111111111111111111',
-      name: 'Gate',
-      symbol: 'GATE',
-      totalSupply: '1000',
-      decimals: 9,
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-      metadataUpdateAuthorityRevoked: true,
-      metadataImmutable: true,
-    },
-    liquidity: {
-      poolCount: 1,
-      positionCount: 1,
-      lockedPositionCount: 1,
-      feeKeyCount: 1,
-      results: [{
-        poolId: 'PoolGate111111111111111111111111111111111',
-        txIds: { createPool: 'CreatePoolTxGate11111111111111111111111111' },
-        positionCount: 1,
-        mainPositions: [{
-          sliceIndex: 0,
-          sharePercent: 100,
-          positionNftMint: 'PositionGate111111111111111111111111111111',
-          locked: true,
-          recipient: 'FeeRecipientGate11111111111111111111111111',
-          transferredTo: 'FeeRecipientGate11111111111111111111111111',
-          feeKeyNftMint: 'FeeKeyGate1111111111111111111111111111111',
-          txIds: {
-            open: 'OpenTxGate111111111111111111111111111111111',
-            lock: 'LockTxGate111111111111111111111111111111111',
-            transfer: 'FeeTransferTxGate11111111111111111111111111',
-          },
-        }],
-      }],
-    },
-    transfer: {
-      walletEmpty: true,
-      destinationWallet: 'DestGate111111111111111111111111111111111',
-    },
-    reportPublish: { htmlUri: 'ar://proof-bound-report', proofFingerprint: 'proof-bound' },
-    reportParity: {
-      viewportSmoke: { passed: true },
-    },
-  };
-  proof.reportPublish.sweepEvidenceHash = harness.comparisonTransferEvidenceHash(proof.transfer);
-  const airdropProof = {
-    ...proof,
-    airdrop: {
-      plannedRecipientCount: 1,
-      deliveredCount: 1,
-      failedCount: 0,
-      recipients: [{ wallet: 'AirdropWalletGate11111111111111111111111111', tokens: 25 }],
-      transferred: [{
-        wallet: 'AirdropWalletGate11111111111111111111111111',
-        tokens: 25,
-        txId: 'AirdropTxGate111111111111111111111111111111',
-      }],
-      failed: [],
-    },
-  };
-  const matchingJournalLpResult = {
-    ...proof.liquidity.results[0],
-    allocationIndex: 0,
-    phase1Complete: true,
-  };
-  const matchingJournalToken = {
-    mint: proof.token.mint,
-    mintAuthorityRenounced: true,
-    freezeAuthorityDisabled: true,
-    metadataUpdateAuthorityRevoked: true,
-    metadataImmutable: true,
-  };
-  // Derived from the shared contract: a hand-listed fixture silently stops
-  // representing a passing proof the moment a new required check is added.
-  const replacementViewportChecks = Object.fromEntries(
-    V2_VIEWPORT_SMOKE_REQUIRED_CHECKS.map((check) => [check, true]),
-  );
-  const validViewportSmoke = {
-    artifactVersion: 1,
-    kind: 'trebuchet-v2-viewport-smoke',
-    passed: true,
-    state: 'valid',
-    generatedAt: '2026-06-30T00:00:00.000Z',
-    viewports: [
-      { name: 'desktop', passed: true, checks: replacementViewportChecks },
-      { name: 'mobile', passed: true, checks: replacementViewportChecks },
-    ],
-    assetHashes: {
-      'index.html': 'a'.repeat(64),
-      'styles.css': 'b'.repeat(64),
-      'api-client.js': 'c'.repeat(64),
-      'app.js': 'd'.repeat(64),
-    },
-  };
-
-  harness.state.classicReportComparison = { result: classicComparison };
-  harness.state.viewportSmoke = validViewportSmoke;
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const liveGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(liveGate.state, 'pass');
-  assert.equal(liveGate.requirements.find((item) => item.id === 'live-proof').pass, true);
-  assert.equal(liveGate.requirements.find((item) => item.id === 'classic-comparison').pass, true);
-  assert.equal(liveGate.requirements.find((item) => item.id === 'replacement-criteria').pass, true);
-  assert.equal(liveGate.replacementCriteria.find((item) => item.id === 'held-reserve-backing')?.pass, true);
-
-  const transientReportGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: { ...proof.reportPublish, transientOnly: true },
-  }, audit);
-  assert.equal(transientReportGate.state, 'danger');
-  assert.equal(transientReportGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(transientReportGate.requirements.find((item) => item.id === 'report-proof').detail, /Publish or attach a proof-bound/);
-  assert.equal(transientReportGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(transientReportGate.replacementCriteria.find((item) => item.id === 'sweep-report-proof').evidence, /Publish or download/);
-
-  harness.state.currentConfig = {
-    poolTopology: {
-      pools: [{ id: 'typed-only-pool', quoteToken: 'SOL', plannedPositionCount: 1 }],
-      airdrop: { enabled: false, supplyPercent: 0 },
-    },
-  };
-  const partialTwoPoolProof = {
-    ...proof,
-    launchConfig: {
-      ...proof.launchConfig,
-      poolTopology: {
-        ...proof.launchConfig.poolTopology,
-        pools: [
-          { id: 'pool-1', quoteToken: 'SOL', supplyPercent: 50, plannedPositionCount: 1 },
-          { id: 'pool-2', quoteToken: 'seige', supplyPercent: 50, plannedPositionCount: 1 },
-        ],
-      },
-    },
-  };
-  const staleTypedConfigGate = harness.buildClassicRetirementGate(partialTwoPoolProof, audit);
-  assert.equal(staleTypedConfigGate.state, 'danger');
-  assert.equal(staleTypedConfigGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(staleTypedConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /Pool identity proof is 1\/2/);
-  harness.state.currentConfig = null;
-
-  const missingPoolIdentityProof = {
-    ...proof,
-    liquidity: {
-      ...proof.liquidity,
-      poolIds: [],
-      results: proof.liquidity.results.map((pool) => {
-        const { poolId: _poolId, ...rest } = pool;
-        return rest;
-      }),
-    },
-  };
-  harness.state.recovery.journals[0].lp.results = missingPoolIdentityProof.liquidity.results.map((pool) => ({
-    ...pool,
-    allocationIndex: 0,
-    phase1Complete: true,
-  }));
-  const missingPoolIdentityGate = harness.buildClassicRetirementGate(missingPoolIdentityProof, audit);
-  assert.equal(missingPoolIdentityGate.state, 'danger');
-  assert.equal(missingPoolIdentityGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingPoolIdentityGate.requirements.find((item) => item.id === 'live-proof').detail, /Pool identity proof is 0\/1/);
-  harness.state.recovery.journals[0].lp.results = [matchingJournalLpResult];
-
-  const missingPoolTxProof = {
-    ...proof,
-    liquidity: {
-      ...proof.liquidity,
-      results: proof.liquidity.results.map((pool) => {
-        const { txIds: _txIds, createPoolTx: _createPoolTx, ...rest } = pool;
-        return rest;
-      }),
-    },
-  };
-  harness.state.recovery.journals[0].lp.results = missingPoolTxProof.liquidity.results.map((pool) => ({
-    ...pool,
-    allocationIndex: 0,
-    phase1Complete: true,
-  }));
-  const missingPoolTxGate = harness.buildClassicRetirementGate(missingPoolTxProof, audit);
-  assert.equal(missingPoolTxGate.state, 'danger');
-  assert.equal(missingPoolTxGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingPoolTxGate.requirements.find((item) => item.id === 'live-proof').detail, /Pool-create transaction proof is 0\/1/);
-  harness.state.recovery.journals[0].lp.results = [matchingJournalLpResult];
-
-  const missingPositionTxProof = {
-    ...proof,
-    liquidity: {
-      ...proof.liquidity,
-      results: proof.liquidity.results.map((pool) => ({
-        ...pool,
-        mainPositions: pool.mainPositions.map((position) => ({
-          ...position,
-          txIds: {
-            ...position.txIds,
-            open: '',
-          },
-        })),
-      })),
-    },
-  };
-  harness.state.recovery.journals[0].lp.results = missingPositionTxProof.liquidity.results.map((pool) => ({
-    ...pool,
-    allocationIndex: 0,
-    phase1Complete: true,
-  }));
-  const missingPositionTxGate = harness.buildClassicRetirementGate(missingPositionTxProof, audit);
-  assert.equal(missingPositionTxGate.state, 'danger');
-  assert.equal(missingPositionTxGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingPositionTxGate.requirements.find((item) => item.id === 'live-proof').detail, /Position-open transaction proof is 0\/1/);
-  harness.state.recovery.journals[0].lp.results = [matchingJournalLpResult];
-
-  const missingLockTxProof = {
-    ...proof,
-    liquidity: {
-      ...proof.liquidity,
-      results: proof.liquidity.results.map((pool) => ({
-        ...pool,
-        mainPositions: pool.mainPositions.map((position) => ({
-          ...position,
-          txIds: {
-            ...position.txIds,
-            lock: '',
-          },
-        })),
-      })),
-    },
-  };
-  harness.state.recovery.journals[0].lp.results = missingLockTxProof.liquidity.results.map((pool) => ({
-    ...pool,
-    allocationIndex: 0,
-    phase1Complete: true,
-  }));
-  const missingLockTxGate = harness.buildClassicRetirementGate(missingLockTxProof, audit);
-  assert.equal(missingLockTxGate.state, 'danger');
-  assert.equal(missingLockTxGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingLockTxGate.requirements.find((item) => item.id === 'live-proof').detail, /Burn & Earn lock transaction proof is 0\/1/);
-  harness.state.recovery.journals[0].lp.results = [matchingJournalLpResult];
-
-  harness.state.classicReportComparison = {};
-  const legacyAliasGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportParity: {
-      ...proof.reportParity,
-      classicComparison,
-    },
-  }, audit);
-  assert.equal(legacyAliasGate.requirements.find((item) => item.id === 'classic-comparison').pass, true);
-  assert.match(js, /reportParityClassicComparison\(proof\?\.reportParity\)/);
-  harness.state.classicReportComparison = { result: classicComparison };
-
-  const heldReserveProof = {
-    ...proof,
-    launchConfig: {
-      ...proof.launchConfig,
-      poolTopology: {
-        ...proof.launchConfig.poolTopology,
-        totalPoolPercent: 90,
-        reservePercent: 5,
-        pools: [{ ...proof.launchConfig.poolTopology.pools[0], supplyPercent: 90 }],
-        preallocation: { enabled: true, supplyPercent: 5, source: 'team-reserve' },
-        airdrop: { enabled: false, supplyPercent: 0 },
-      },
-    },
-    reportPublish: { ...proof.reportPublish },
-  };
-  const heldReserveMissingAuditGate = harness.buildClassicRetirementGate(heldReserveProof, audit);
-  assert.equal(heldReserveMissingAuditGate.state, 'danger');
-  assert.equal(heldReserveMissingAuditGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(
-    heldReserveMissingAuditGate.replacementCriteria.find((item) => item.id === 'held-reserve-backing').evidence,
-    /missing the held-reserve audit/,
-  );
-
-  const heldReserveStaleDossierAuditProof = {
-    ...heldReserveProof,
-    localDossier: {
-      status: 'downloaded',
-      kind: 'local-dossier-html',
-      filename: 'trebuchet-stale-held-reserve.html',
-      mint: heldReserveProof.token.mint,
-      downloadedAt: '2026-06-30T00:00:00.000Z',
-      dataVersion: 14,
-      proofFingerprint: 'proof-bound',
-      sweepEvidenceHash: 'wrong-sweep-hash',
-      heldReserveAudit: {
-        state: 'pass',
-        detail: 'Stale local dossier claims held reserve is backed.',
-        heldReservePercent: 5,
-        supportSol: 12.5,
-        requiredSupportSol: 12.5,
-        coverage: 1,
-      },
-    },
-  };
-  const heldReserveStaleDossierAuditGate = harness.buildClassicRetirementGate(heldReserveStaleDossierAuditProof, audit);
-  assert.equal(heldReserveStaleDossierAuditGate.state, 'danger');
-  assert.equal(heldReserveStaleDossierAuditGate.replacementCriteria.find((item) => item.id === 'held-reserve-backing')?.pass, false);
-  assert.match(
-    heldReserveStaleDossierAuditGate.replacementCriteria.find((item) => item.id === 'held-reserve-backing').evidence,
-    /missing the held-reserve audit/,
-  );
-
-  const heldReserveBackedProof = {
-    ...heldReserveProof,
-    reportPublish: {
-      ...heldReserveProof.reportPublish,
-      dataVersion: 14,
-      heldReserveAudit: {
-        state: 'pass',
-        detail: 'Held reserve is backed by equal-value support liquidity.',
-        heldReservePercent: 5,
-        explicitPreallocationPercent: 5,
-        airdropReservePercent: 0,
-        unallocatedReservePercent: 5,
-        supportSol: 12.5,
-        requiredSupportSol: 12.5,
-        coverage: 1,
-      },
-    },
-  };
-  const heldReserveBackedGate = harness.buildClassicRetirementGate(heldReserveBackedProof, audit);
-  assert.equal(heldReserveBackedGate.state, 'pass');
-  assert.equal(heldReserveBackedGate.replacementCriteria.find((item) => item.id === 'held-reserve-backing')?.pass, true);
-
-  const sweptAssetOnlyProof = {
-    ...proof,
-    transfer: {
-      destinationWallet: proof.transfer.destinationWallet,
-      tokenSweep: {
-        transferred: [{ mint: proof.token.mint, txId: 'ThinSweepTxGate111111111111111111111111111' }],
-        errors: [],
-      },
-    },
-  };
-  const sweptAssetOnlyProofGate = harness.buildClassicRetirementGate(sweptAssetOnlyProof, audit);
-  assert.equal(sweptAssetOnlyProofGate.state, 'danger');
-  assert.equal(sweptAssetOnlyProofGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(sweptAssetOnlyProofGate.requirements.find((item) => item.id === 'live-proof').detail, /Final sweep record is not terminal/);
-  assert.match(sweptAssetOnlyProofGate.requirements.find((item) => item.id === 'live-proof').detail, /wallet-empty, error-free/);
-  assert.equal(sweptAssetOnlyProofGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(sweptAssetOnlyProofGate.replacementCriteria.find((item) => item.id === 'sweep-report-proof').evidence, /terminal final-sweep evidence is still required/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: { mint: proof.token.mint },
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const weakAuthorityJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(weakAuthorityJournalGate.state, 'danger');
-  assert.equal(weakAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(weakAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing proof backing/);
-  assert.match(weakAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /journal token authority/);
-  assert.equal(weakAuthorityJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: {
-        ...matchingJournalToken,
-        freezeAuthorityDisabled: false,
-      },
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const mismatchedAuthorityJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(mismatchedAuthorityJournalGate.state, 'danger');
-  assert.equal(mismatchedAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedAuthorityJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /token authority/);
-  assert.equal(mismatchedAuthorityJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: {
-        results: [{
-          ...matchingJournalLpResult,
-          mainPositions: [],
-          ladderPositions: [],
-          supportPositions: [],
-          bootstrap: null,
-        }],
-      },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const weakPositionJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(weakPositionJournalGate.state, 'danger');
-  assert.equal(weakPositionJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(weakPositionJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing proof backing/);
-  assert.match(weakPositionJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /journal position records/);
-  assert.match(weakPositionJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /journal lock proof/);
-  assert.equal(weakPositionJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: {
-        results: [{
-          ...matchingJournalLpResult,
-          mainPositions: [{
-            ...matchingJournalLpResult.mainPositions[0],
-            transferredTo: 'WrongFeeRecipientGate111111111111111111111',
-          }],
-        }],
-      },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const mismatchedPositionJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(mismatchedPositionJournalGate.state, 'danger');
-  assert.equal(mismatchedPositionJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedPositionJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedPositionJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /position records/);
-  assert.equal(mismatchedPositionJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      airdrop: {
-        transferred: airdropProof.airdrop.transferred,
-        failed: [],
-      },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const airdropBackedGate = harness.buildClassicRetirementGate(airdropProof, audit);
-  assert.equal(airdropBackedGate.state, 'pass');
-  assert.equal(airdropBackedGate.requirements.find((item) => item.id === 'live-proof').pass, true);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      airdrop: {
-        transferred: [{
-          wallet: 'OtherAirdropWalletGate111111111111111111111',
-          tokens: 25,
-          txId: 'AirdropTxGate111111111111111111111111111111',
-        }],
-        failed: [],
-      },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const mismatchedAirdropJournalGate = harness.buildClassicRetirementGate(airdropProof, audit);
-  assert.equal(mismatchedAirdropJournalGate.state, 'danger');
-  assert.equal(mismatchedAirdropJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedAirdropJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedAirdropJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /airdrop recipients/);
-  assert.equal(mismatchedAirdropJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      airdrop: {
-        transferred: [{ wallet: airdropProof.airdrop.transferred[0].wallet, tokens: 25 }],
-        failed: [],
-      },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const weakAirdropTxJournalGate = harness.buildClassicRetirementGate(airdropProof, audit);
-  assert.equal(weakAirdropTxJournalGate.state, 'danger');
-  assert.equal(weakAirdropTxJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(weakAirdropTxJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing proof backing/);
-  assert.match(weakAirdropTxJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /journal airdrop transactions/);
-  assert.equal(weakAirdropTxJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  harness.state.recovery = { journalCount: 0, journals: [] };
-  const missingLocalJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(missingLocalJournalGate.state, 'danger');
-  assert.equal(missingLocalJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingLocalJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /not loaded from the local launch-journal store/);
-  assert.equal(missingLocalJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(missingLocalJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /matching launch journal is not loaded locally/);
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [{ poolId: 'WrongPoolGate11111111111111111111111111111', allocationIndex: 0, phase1Complete: true }] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-  const mismatchedPoolJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(mismatchedPoolJournalGate.state, 'danger');
-  assert.equal(mismatchedPoolJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedPoolJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedPoolJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /pool ids/);
-  assert.equal(mismatchedPoolJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(mismatchedPoolJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /does not match it: pool ids/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: 'OtherDestGate111111111111111111111111111111',
-        walletEmpty: true,
-      },
-    }],
-  };
-  const mismatchedSweepJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(mismatchedSweepJournalGate.state, 'danger');
-  assert.equal(mismatchedSweepJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /sweep destination/);
-  assert.equal(mismatchedSweepJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(mismatchedSweepJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /does not match it: sweep destination/);
-
-  const proofWithSweepRow = {
-    ...proof,
-    transfer: {
-      ...proof.transfer,
-      tokenSweep: {
-        transferred: [{
-          mint: proof.token.mint,
-          amount: '1',
-          decimals: 9,
-          txId: 'ProofSweepTxGate1111111111111111111111111111',
-        }],
-        errors: [],
-      },
-    },
-  };
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        ...proof.transfer,
-        tokenSweep: {
-          transferred: [{
-            mint: proof.token.mint,
-            amount: '1',
-            decimals: 9,
-            txId: 'JournalSweepTxGate11111111111111111111111111',
-          }],
-          errors: [],
-        },
-      },
-    }],
-  };
-  const mismatchedSweepEvidenceGate = harness.buildClassicRetirementGate(proofWithSweepRow, audit);
-  assert.equal(mismatchedSweepEvidenceGate.state, 'danger');
-  assert.equal(mismatchedSweepEvidenceGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedSweepEvidenceGate.requirements.find((item) => item.id === 'live-proof').detail, /does not match proof/);
-  assert.match(mismatchedSweepEvidenceGate.requirements.find((item) => item.id === 'live-proof').detail, /sweep evidence hash/);
-  assert.equal(mismatchedSweepEvidenceGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(mismatchedSweepEvidenceGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /does not match it: sweep evidence hash/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        tokenSweep: { transferred: [{ mint: proof.token.mint, txId: 'WeakSweepTx11111111111111111111111111111111' }], errors: [] },
-      },
-    }],
-  };
-  const weakSweepJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(weakSweepJournalGate.state, 'danger');
-  assert.equal(weakSweepJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(weakSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing proof backing/);
-  assert.match(weakSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /terminal journal sweep/);
-  assert.equal(weakSweepJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(weakSweepJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /missing proof backing: terminal journal sweep/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-        tokenSweep: {
-          transferred: [],
-          errors: [{ mint: proof.token.mint, error: 'RPC timeout during sweep' }],
-        },
-      },
-    }],
-  };
-  const erroredSweepJournalGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(erroredSweepJournalGate.state, 'danger');
-  assert.equal(erroredSweepJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(erroredSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing proof backing/);
-  assert.match(erroredSweepJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /terminal journal sweep/);
-  assert.equal(erroredSweepJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(erroredSweepJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /missing proof backing: terminal journal sweep/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: proof.journalId,
-      walletPublicKey: proof.walletPublicKey,
-      status: 'completed',
-      stage: 'transfer_completed',
-      token: matchingJournalToken,
-      lp: { results: [matchingJournalLpResult] },
-      transfer: {
-        destinationWallet: proof.transfer.destinationWallet,
-        walletEmpty: true,
-      },
-    }],
-  };
-
-  const uriLessReportGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: { status: 'done', proofFingerprint: 'proof-bound' },
-  }, audit);
-  assert.equal(uriLessReportGate.state, 'danger');
-  assert.equal(uriLessReportGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(uriLessReportGate.requirements.find((item) => item.id === 'report-proof').detail, /Publish or attach a proof-bound/);
-  assert.equal(uriLessReportGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(uriLessReportGate.requirements.find((item) => item.id === 'replacement-criteria').detail, /Sweep and report proof/);
-
-  const staleReportGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: { htmlUri: 'ar://stale-report', proofFingerprint: 'stale-proof' },
-  }, audit);
-  assert.equal(staleReportGate.state, 'danger');
-  assert.equal(staleReportGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(staleReportGate.requirements.find((item) => item.id === 'report-proof').detail, /belongs to another Trebuchet proof/);
-
-  const missingConfigGate = harness.buildClassicRetirementGate({
-    ...proof,
-    launchConfig: null,
-  }, audit);
-  assert.equal(missingConfigGate.state, 'danger');
-  assert.equal(missingConfigGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /frozen launch-config snapshot/);
-
-  const incompleteConfigGate = harness.buildClassicRetirementGate({
-    ...proof,
-    launchConfig: { token: {}, poolTopology: {} },
-  }, audit);
-  assert.equal(incompleteConfigGate.state, 'danger');
-  assert.equal(incompleteConfigGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(incompleteConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /incomplete frozen launch-config snapshot/);
-  assert.match(incompleteConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /Trebuchet snapshot marker/);
-  assert.match(incompleteConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /token identity/);
-  assert.match(incompleteConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /planned pools/);
-
-  const unmarkedConfigGate = harness.buildClassicRetirementGate({
-    ...proof,
-    launchConfig: {
-      token: { name: 'Gate', symbol: 'GATE', supply: '1000', decimals: 9 },
-      poolTopology: {
-        sweepDestination: 'DestGate111111111111111111111111111111111',
-        pools: [{ quoteToken: 'SOL', supplyPercent: 100, ammConfigIndex: 8 }],
-      },
-    },
-  }, audit);
-  assert.equal(unmarkedConfigGate.state, 'danger');
-  assert.equal(unmarkedConfigGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(unmarkedConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /Trebuchet snapshot marker/);
-
-  const mismatchedConfigGate = harness.buildClassicRetirementGate({
-    ...proof,
-    token: {
-      ...proof.token,
-      name: 'Actual Gate',
-      symbol: 'AGT',
-      totalSupply: '1000',
-      decimals: 9,
-    },
-    poolPlan: {
-      allocations: [{ quoteToken: 'SOL', supplyPercent: 90, ammConfigIndex: 8 }],
-    },
-    launchConfig: {
-      schema: 'trebuchet-v2-launch-config',
-      source: 'trebuchet-v2',
-      token: { name: 'Stale Gate', symbol: 'OLD', supply: '42', decimals: 6 },
-      poolTopology: {
-        sweepDestination: 'DestGate111111111111111111111111111111111',
-        pools: [{ quoteToken: 'USDC', supplyPercent: 10, ammConfigIndex: 5 }],
-      },
-    },
-  }, audit);
-  assert.equal(mismatchedConfigGate.state, 'danger');
-  assert.equal(mismatchedConfigGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(mismatchedConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /mismatched frozen launch-config snapshot/);
-  assert.match(mismatchedConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /token name/);
-  assert.match(mismatchedConfigGate.requirements.find((item) => item.id === 'live-proof').detail, /planned pool 1/);
-
-  const localDossierGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: null,
-    localDossier: {
-      status: 'downloaded',
-      kind: 'local-dossier-html',
-      filename: 'trebuchet-proof.html',
-      mint: proof.token.mint,
-      downloadedAt: '2026-06-30T00:00:00.000Z',
-      dataVersion: 13,
-      proofFingerprint: 'proof-bound',
-      sweepEvidenceHash: harness.comparisonTransferEvidenceHash(proof.transfer),
-    },
-  }, audit);
-  assert.equal(localDossierGate.state, 'pass');
-  assert.equal(localDossierGate.requirements.find((item) => item.id === 'report-proof').pass, true);
-
-  const preFinalSweepReportGate = harness.buildClassicRetirementGate({
-    ...proof,
-    transfer: null,
-    reportPublish: { htmlUri: 'ar://pre-final-sweep-report', proofFingerprint: 'proof-bound' },
-  }, audit);
-  assert.equal(preFinalSweepReportGate.state, 'danger');
-  assert.equal(preFinalSweepReportGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(preFinalSweepReportGate.requirements.find((item) => item.id === 'report-proof').detail, /terminal sweep evidence hash/);
-  assert.equal(preFinalSweepReportGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(preFinalSweepReportGate.replacementCriteria.find((item) => item.id === 'sweep-report-proof').evidence, /terminal final-sweep evidence is still required/);
-
-  const preSweepReportGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: { htmlUri: 'ar://pre-sweep-report', proofFingerprint: 'proof-bound' },
-  }, audit);
-  assert.equal(preSweepReportGate.state, 'danger');
-  assert.equal(preSweepReportGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(preSweepReportGate.requirements.find((item) => item.id === 'report-proof').detail, /terminal sweep evidence hash/);
-  assert.equal(preSweepReportGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(preSweepReportGate.replacementCriteria.find((item) => item.id === 'sweep-report-proof').evidence, /missing the terminal sweep evidence hash/);
-
-  const preSweepDossierGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportPublish: null,
-    localDossier: {
-      status: 'downloaded',
-      kind: 'local-dossier-html',
-      filename: 'trebuchet-pre-sweep-proof.html',
-      mint: proof.token.mint,
-      downloadedAt: '2026-06-30T00:00:00.000Z',
-      dataVersion: 13,
-      proofFingerprint: 'proof-bound',
-    },
-  }, audit);
-  assert.equal(preSweepDossierGate.state, 'danger');
-  assert.equal(preSweepDossierGate.requirements.find((item) => item.id === 'report-proof').pass, false);
-  assert.match(preSweepDossierGate.requirements.find((item) => item.id === 'report-proof').detail, /terminal sweep evidence hash/);
-
-  const missingJournalGate = harness.buildClassicRetirementGate({
-    ...proof,
-    journalId: null,
-  }, audit);
-  assert.equal(missingJournalGate.state, 'danger');
-  assert.equal(missingJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /missing its launch journal id/);
-  assert.equal(missingJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  const missingJournalCriterion = missingJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume');
-  assert.equal(missingJournalCriterion.pass, false);
-  assert.match(missingJournalCriterion.evidence, /missing its launch journal id/);
-
-  const nonTerminalJournalGate = harness.buildClassicRetirementGate({
-    ...proof,
-    status: 'active',
-    stage: 'transfer_partial',
-  }, audit);
-  assert.equal(nonTerminalJournalGate.state, 'danger');
-  assert.equal(nonTerminalJournalGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(nonTerminalJournalGate.requirements.find((item) => item.id === 'live-proof').detail, /not terminal/);
-  assert.equal(nonTerminalJournalGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(nonTerminalJournalGate.replacementCriteria.find((item) => item.id === 'run-and-resume').evidence, /has not reached transfer_completed/);
-
-  const missingWalletGate = harness.buildClassicRetirementGate({
-    ...proof,
-    walletPublicKey: null,
-  }, audit);
-  assert.equal(missingWalletGate.state, 'danger');
-  assert.equal(missingWalletGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingWalletGate.requirements.find((item) => item.id === 'live-proof').detail, /missing its launch wallet/);
-  assert.equal(missingWalletGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-
-  const missingAuthorityGate = harness.buildClassicRetirementGate({
-    ...proof,
-    token: {
-      ...proof.token,
-      metadataImmutable: false,
-    },
-  }, audit);
-  assert.equal(missingAuthorityGate.state, 'danger');
-  assert.equal(missingAuthorityGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(missingAuthorityGate.requirements.find((item) => item.id === 'live-proof').detail, /Token authority proof is 3\/4/);
-
-  const stalePassAuditGate = harness.buildClassicRetirementGate({
-    ...proof,
-    token: {
-      ...proof.token,
-      metadataImmutable: false,
-    },
-  }, {
-    status: 'pass',
-    passCount: 12,
-    itemCount: 12,
-    missingCount: 0,
-    warnCount: 0,
-    proofFingerprint: 'proof-bound',
-  });
-  assert.equal(stalePassAuditGate.state, 'danger');
-  assert.equal(stalePassAuditGate.requirements.find((item) => item.id === 'audit').pass, false);
-  assert.match(stalePassAuditGate.requirements.find((item) => item.id === 'audit').detail, /Proof audit is warn/);
-
-  harness.state.classicReportComparison = {
-    result: {
-      ...classicComparison,
-      proofFingerprint: null,
-    },
-  };
-  const unboundComparisonGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(unboundComparisonGate.state, 'danger');
-  assert.equal(unboundComparisonGate.requirements.find((item) => item.id === 'classic-comparison').pass, false);
-  assert.match(unboundComparisonGate.requirements.find((item) => item.id === 'classic-comparison').detail, /belongs to another Trebuchet proof/);
-
-  const proofComparisonFallbackGate = harness.buildClassicRetirementGate({
-    ...proof,
-    reportParity: {
-      ...(proof.reportParity || {}),
-      comparison: classicComparison,
-    },
-  }, audit);
-  assert.equal(proofComparisonFallbackGate.requirements.find((item) => item.id === 'classic-comparison').pass, true);
-  assert.match(
-    proofComparisonFallbackGate.requirements.find((item) => item.id === 'classic-comparison').detail,
-    /Classic artifact comparison passed/,
-  );
-  assert.match(js, /function currentClassicComparisonForProof/);
-  assert.match(js, /if \(normalizedComparison && classicComparisonMatchesProof\(normalizedComparison, proof, config\)\)/);
-  assert.match(js, /if \(proofComparison && classicComparisonMatchesProof\(proofComparison, proof, config\)\)/);
-  assert.match(js, /const classicComparison = currentClassicComparisonForProof\(proof, config\)/);
-  assert.match(js, /const comparison = currentClassicComparisonForProof\(proof, config\)/);
-  harness.state.classicReportComparison = { result: classicComparison };
-
-  harness.state.classicReportComparison = {
-    result: {
-      ...classicComparison,
-      passCount: 1,
-      fieldCount: 1,
-      rows: [{ id: 'mint', label: 'Token mint', state: 'pass' }],
-    },
-  };
-  const thinComparisonGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(thinComparisonGate.state, 'danger');
-  assert.equal(thinComparisonGate.requirements.find((item) => item.id === 'classic-comparison').pass, false);
-  assert.match(thinComparisonGate.requirements.find((item) => item.id === 'classic-comparison').detail, /missing required passing rows/);
-  assert.equal(thinComparisonGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(thinComparisonGate.replacementCriteria.find((item) => item.id === 'classic-artifact-comparison').evidence, /missing required passing rows/);
-  harness.state.classicReportComparison = { result: classicComparison };
-
-  harness.state.viewportSmoke = null;
-  const missingSmokeGate = harness.buildClassicRetirementGate({ ...proof, reportParity: {} }, audit);
-  assert.equal(missingSmokeGate.state, 'danger');
-  assert.equal(missingSmokeGate.requirements.find((item) => item.id === 'replacement-criteria').pass, false);
-  assert.match(missingSmokeGate.requirements.find((item) => item.id === 'replacement-criteria').detail, /Charts and viewport smoke/);
-  harness.state.viewportSmoke = validViewportSmoke;
-
-  harness.state.managedWallets = [{ publicKey: proof.walletPublicKey, hasSecretKey: false }];
-  harness.state.selectedWalletPublicKey = proof.walletPublicKey;
-  let walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /missing a usable signing secret/);
-
-  harness.state.managedWallets = [{ publicKey: proof.walletPublicKey, hasSecretKey: true, secretPinLocked: true }];
-  walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /PIN locked/);
-
-  harness.state.managedWallets = [{ publicKey: proof.walletPublicKey, hasSecretKey: true }];
-  walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, true);
-  assert.match(walletCriterion.evidence, /available local signing secret/);
-
-  harness.state.apiStatus = 'static';
-  walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /Connect the desktop app to verify this launch wallet signing secret/);
-
-  harness.state.managedWallets = [];
-  harness.state.selectedWalletPublicKey = '';
-  walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { walletPublicKey: proof.walletPublicKey, source: 'demo-run' },
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: true,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, false);
-  assert.match(walletCriterion.evidence, /Generate, import, or load a launch wallet/);
-
-  walletCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { walletPublicKey: proof.walletPublicKey },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'wallet-lifecycle');
-  assert.equal(walletCriterion.pass, true);
-  assert.match(walletCriterion.evidence, /attached to completed proof/);
-
-  harness.state.apiStatus = 'static';
-
-  harness.state.vanityAvailable = false;
-  harness.state.vanityCandidates = [{ publicKey: 'StaticVanity1111111111111111111111111111111', persisted: false, hasSecretKey: true }];
-  harness.state.selectedVanityPublicKey = 'StaticVanity1111111111111111111111111111111';
-  let vanityCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'vanity-options');
-  assert.equal(vanityCriterion.pass, false);
-  assert.match(vanityCriterion.evidence, /preview-only or missing its saved secret/);
-
-  harness.state.vanityCandidates = [{ publicKey: 'StaticPersistedVanity1111111111111111111111111', persisted: true, hasSecretKey: true }];
-  harness.state.selectedVanityPublicKey = 'StaticPersistedVanity1111111111111111111111111';
-  vanityCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'vanity-options');
-  assert.equal(vanityCriterion.pass, false);
-  assert.match(vanityCriterion.evidence, /preview-only or missing its saved secret/);
-
-  harness.state.vanityCandidates = [];
-  harness.state.selectedVanityPublicKey = '';
-  vanityCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'vanity-options');
-  assert.equal(vanityCriterion.pass, false);
-  assert.match(vanityCriterion.evidence, /Connect the desktop app/);
-
-  harness.state.apiStatus = 'connected';
-  harness.state.vanityCandidates = [{ publicKey: 'PersistedVanity111111111111111111111111111', persisted: true, hasSecretKey: true }];
-  harness.state.selectedVanityPublicKey = 'PersistedVanity111111111111111111111111111';
-  vanityCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'vanity-options');
-  assert.equal(vanityCriterion.pass, true);
-  assert.match(vanityCriterion.evidence, /Selected persisted Vanity CA/);
-
-  harness.state.vanityCandidates = [];
-  harness.state.selectedVanityPublicKey = '';
-  harness.state.vanityAvailable = true;
-  vanityCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'vanity-options');
-  assert.equal(vanityCriterion.pass, true);
-  assert.match(vanityCriterion.evidence, /Native grinder is available/);
-
-  harness.state.managedWallets = [{ publicKey: proof.walletPublicKey, hasSecretKey: true }];
-  harness.state.selectedWalletPublicKey = proof.walletPublicKey;
-
-  const tokenReadyConfig = {
-    token: {
-      name: 'Token Parity',
-      symbol: 'TPAR',
-      supply: '1000',
-      description: 'Classic-compatible token metadata.',
-      logo: { type: 'image/png', sizeBytes: 2048, width: 128, height: 128 },
-    },
-    poolTopology: {
-      totalPoolPercent: 100,
-      pools: [{ id: 'sol-pool', quoteToken: 'SOL', supplyPercent: 100, plannedPositionCount: 1 }],
-      airdrop: { enabled: false, supplyPercent: 0 },
-    },
-  };
-  const completePlanOperations = [
-    'v2-wallet-and-ca',
-    'v2-funding-check',
-    'v2-mint-metadata',
-    'v2-revoke-authorities',
-    'v2-create-liquidity-pools',
-    'v2-lock-liquidity',
-    'v2-report-sweep',
-  ].map((id) => ({
-    id,
-    kind: 'local-wallet-operation',
-    source: 'v2-launch-plan',
-    signer: 'trebuchet-managed-launch-wallet',
-    simulation: { decoded: true },
-  }));
-  harness.state.tokenLogoError = null;
-  harness.state.currentConfig = {
-    ...tokenReadyConfig,
-    token: { ...tokenReadyConfig.token, symbol: 'TOO_LONG_SYMBOL' },
-  };
-  let tokenCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'token-config-parity');
-  assert.equal(tokenCriterion.pass, false);
-  assert.match(tokenCriterion.evidence, /Token symbol must be 10 UTF-8 bytes or fewer/);
-
-  harness.state.currentConfig = tokenReadyConfig;
-  harness.state.launchPlan = null;
-  tokenCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'token-config-parity');
-  assert.equal(tokenCriterion.pass, false);
-  assert.match(tokenCriterion.evidence, /stage the launch plan through the desktop app/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(tokenReadyConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-    operations: [{
-      id: 'v2-mint-metadata',
-      kind: 'local-wallet-operation',
-      source: 'v2-launch-plan',
-      signer: 'trebuchet-managed-launch-wallet',
-      simulation: { decoded: true },
-    }],
-  };
-  tokenCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'token-config-parity');
-  assert.equal(tokenCriterion.pass, false);
-  assert.match(tokenCriterion.evidence, /missing required operation v2-wallet-and-ca/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(tokenReadyConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-    operations: completePlanOperations,
-  };
-  tokenCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'token-config-parity');
-  assert.equal(tokenCriterion.pass, true);
-  assert.match(tokenCriterion.evidence, /Token Token Parity \/ TPAR \/ 1000 is staged/);
-  assert.match(tokenCriterion.evidence, /validated logo handoff/);
-  harness.state.currentConfig = {
-    ...tokenReadyConfig,
-    token: { ...tokenReadyConfig.token, symbol: 'TOO_LONG_SYMBOL' },
-  };
-  const explicitConfigGate = harness.buildClassicRetirementGate({}, audit, tokenReadyConfig);
-  const explicitTokenCriterion = explicitConfigGate.replacementCriteria.find((item) => item.id === 'token-config-parity');
-  assert.equal(explicitTokenCriterion.pass, true);
-  assert.match(explicitTokenCriterion.evidence, /Token Token Parity \/ TPAR \/ 1000 is staged/);
-  assert.match(js, /function buildClassicRetirementGate\(proof = currentLaunchProof\(\), audit = null, config = currentLaunchConfig\(\)\)/);
-  assert.match(js, /config = proofConfigForFingerprint\(proof, config\)/);
-  harness.state.launchPlan = null;
-  harness.state.currentConfig = null;
-
-  harness.state.viewportSmoke = null;
-  let chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: null },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /generate desktop\/mobile viewport-smoke proof/);
-
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: { viewportSmoke: { passed: true } } },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /generate desktop\/mobile viewport-smoke proof/);
-
-  const viewportChecks = {
-    launchVisible: true,
-    horizontalOverflow: true,
-    tokenomicsChart: true,
-    liquidityChart: true,
-    fundingMeter: true,
-    parityPanel: true,
-    firstViewportFit: true,
-  };
-  harness.state.viewportSmoke = {
-    artifactVersion: 1,
-    kind: 'trebuchet-v2-viewport-smoke',
-    passed: true,
-    state: 'valid',
-    generatedAt: '2026-06-30T00:00:00.000Z',
-    viewports: [
-      { name: 'desktop', passed: true, checks: viewportChecks },
-      { name: 'mobile', passed: true, checks: viewportChecks },
-    ],
-    assetHashes: {
-      'index.html': 'a'.repeat(64),
-      'styles.css': 'b'.repeat(64),
-      'api-client.js': 'c'.repeat(64),
-      'app.js': 'd'.repeat(64),
-    },
-  };
-  harness.state.apiStatus = 'static';
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: { viewportSmoke: { passed: true } } },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /Connect the desktop app to verify viewport smoke proof/);
-
-  harness.state.apiStatus = 'connected';
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: { viewportSmoke: { passed: true } } },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, true);
-  assert.match(chartCriterion.evidence, /Viewport smoke passed/);
-
-  harness.state.viewportSmoke = {
-    ...harness.state.viewportSmoke,
-    viewports: [
-      { name: 'desktop', passed: true, checks: replacementViewportChecks },
-      { name: 'mobile', passed: true, checks: { ...replacementViewportChecks, fundingMeter: false } },
-    ],
-  };
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: { viewportSmoke: { passed: true } } },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(js, /V2_VIEWPORT_SMOKE_REQUIRED_CHECKS\.every\(\(check\) => checks\[check\] === true\)/);
-  harness.state.viewportSmoke.viewports[1].checks.fundingMeter = true;
-
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /stage the launch plan through the desktop app/);
-
-  harness.state.currentConfig = tokenReadyConfig;
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(tokenReadyConfig),
-    v2LaunchWalletFingerprint: 'OtherWallet111111111111111111111111111111',
-    operations: completePlanOperations,
-  };
-  tokenCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'token-config-parity');
-  assert.equal(tokenCriterion.pass, false);
-  assert.match(tokenCriterion.evidence, /stale for the selected launch wallet/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(tokenReadyConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-    operations: completePlanOperations,
-  };
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, true);
-  assert.match(chartCriterion.evidence, /executable launch model/);
-  harness.state.launchPlan = null;
-  harness.state.currentConfig = null;
-
-  harness.state.viewportSmoke = {
-    ...harness.state.viewportSmoke,
-    viewports: [{ name: 'desktop', passed: true }],
-  };
-  chartCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { ...proof, reportParity: { viewportSmoke: { passed: true } } },
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'charts-and-viewport');
-  assert.equal(chartCriterion.pass, false);
-  assert.match(chartCriterion.evidence, /generate desktop\/mobile viewport-smoke proof/);
-  harness.state.viewportSmoke = null;
-
-  const blockedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(blockedPoolCriterion.pass, false);
-  assert.match(blockedPoolCriterion.evidence, /No planned pool rows/);
-
-  harness.state.currentConfig = {
-    poolTopology: {
-      totalPoolPercent: 100,
-      pools: [{ id: 'sol-pool', quoteToken: 'SOL', supplyPercent: 100, plannedPositionCount: 1 }],
-      airdrop: { enabled: false, supplyPercent: 0 },
-    },
-  };
-  harness.state.launchPlan = null;
-  let stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /Stage the launch plan through the desktop app/);
-
-  harness.state.launchPlan = { source: 'local-api' };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /stale for the current token\/pool model or selected launch wallet/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    operations: completePlanOperations,
-  };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /stale for the current token\/pool model or selected launch wallet/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(harness.state.currentConfig),
-    walletPublicKey: proof.walletPublicKey,
-    operations: completePlanOperations,
-  };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /stale for the selected launch wallet/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(harness.state.currentConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-  };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /local-wallet operation rows are not fully decoded/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(harness.state.currentConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-    operations: [{
-      id: 'v2-create-liquidity-pools',
-      kind: 'local-wallet-operation',
-      source: 'v2-launch-plan',
-      signer: 'trebuchet-managed-launch-wallet',
-      simulation: { decoded: true },
-    }],
-  };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, false);
-  assert.match(stagedPoolCriterion.evidence, /missing required operation v2-wallet-and-ca/);
-
-  harness.state.launchPlan = {
-    source: 'local-api',
-    v2LaunchConfigFingerprint: harness.launchPlanConfigFingerprint(harness.state.currentConfig),
-    v2LaunchWalletFingerprint: proof.walletPublicKey,
-    operations: completePlanOperations,
-  };
-  stagedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(stagedPoolCriterion.pass, true);
-  assert.match(stagedPoolCriterion.evidence, /planned pool/);
-  harness.state.launchPlan = null;
-  harness.state.currentConfig = null;
-
-  const poolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof,
-    audit,
-    hasCompletedLiveProof: true,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(poolCriterion.pass, true);
-  assert.match(poolCriterion.evidence, /planned pool/);
-
-  harness.state.currentConfig = {
-    poolTopology: {
-      totalPoolPercent: 100,
-      pools: [{ id: 'bad-pool', quoteToken: 'SOL', supplyPercent: 100, plannedPositionCount: 1 }],
-      airdrop: { enabled: false, supplyPercent: 0 },
-      blockers: [{ state: 'danger', title: 'Duplicate route' }],
-    },
-  };
-  const poolBlockerCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(poolBlockerCriterion.pass, false);
-  assert.match(poolBlockerCriterion.evidence, /1 blocking pool\/topology issue/);
-
-  harness.state.currentConfig = {
-    poolTopology: {
-      totalPoolPercent: 80,
-      pools: [{ id: 'sol-pool', quoteToken: 'SOL', supplyPercent: 80, plannedPositionCount: 1 }],
-      airdrop: { enabled: true, supplyPercent: 30 },
-    },
-  };
-  const overallocatedPoolCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(overallocatedPoolCriterion.pass, false);
-  assert.match(overallocatedPoolCriterion.evidence, /1 blocking pool\/topology issue/);
-
-  harness.state.currentConfig = {
-    poolTopology: {
-      totalPoolPercent: 80,
-      pools: [
-        { id: 'sol-pool', quoteToken: 'SOL', supplyPercent: 60, plannedPositionCount: 1 },
-        { id: 'usdc-pool', quoteToken: 'USDC', supplyPercent: 30, plannedPositionCount: 1 },
-      ],
-      airdrop: { enabled: false, supplyPercent: 0 },
-    },
-  };
-  const mismatchedAllocationCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'pool-config-parity');
-  assert.equal(mismatchedAllocationCriterion.pass, false);
-  assert.match(mismatchedAllocationCriterion.evidence, /1 blocking pool\/topology issue/);
-  harness.state.currentConfig = null;
-
-  harness.state.classicFundingEstimate = null;
-  harness.state.fundingSnapshot = { missingSol: 0, hasWalletBalance: true, walletBalanceFresh: true };
-  let fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /Run the Classic funding estimate/);
-
-  harness.state.classicFundingEstimate = { totalSol: 2 };
-  harness.state.fundingSnapshot = { missingSol: 0, hasWalletBalance: true, walletBalanceFresh: true };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /funding estimate is stale/i);
-
-  harness.state.classicFundingEstimate = harness.stampClassicFundingEstimate(
-    { totalSol: 2 },
-    harness.state.currentConfig || { poolTopology: {} },
-  );
-  harness.state.fundingSnapshot = { missingSol: 0, hasWalletBalance: false, walletBalanceFresh: false };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /Verify the selected Trebuchet launch-wallet balance/);
-
-  harness.state.fundingSnapshot = {
-    missingSol: 0,
-    hasWalletBalance: true,
-    walletBalanceFresh: false,
-    walletBalanceStale: true,
-  };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /launch-wallet balance is stale/);
-
-  harness.state.fundingSnapshot = { missingSol: 0.5, hasWalletBalance: true, walletBalanceFresh: true };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /short 0\.500 SOL/);
-
-  harness.state.fundingSnapshot = { missingSol: 0, hasWalletBalance: true, walletBalanceFresh: true };
-  harness.state.quoteRoutes = [{ quoteMint: 'Quote111' }];
-  harness.state.quoteProgress = { total: 1, completed: 0, failed: 0 };
-  harness.state.quoteAcquire = { job: { status: 'running' } };
-  harness.state.quoteAcquireStale = false;
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /quote acquire route/);
-
-  harness.state.quoteProgress = { total: 1, completed: 1, failed: 0 };
-  harness.state.quoteAcquire = { job: { status: 'done' } };
-  harness.state.quoteAcquireStale = true;
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /Quote acquire job is stale/);
-
-  harness.state.quoteRoutes = [];
-  harness.state.quoteProgress = { total: 0, completed: 0, failed: 0 };
-  harness.state.quoteAcquire = { job: null };
-  harness.state.quoteAcquireStale = false;
-  harness.state.manualItems = [{ mint: 'Manual111' }];
-  harness.state.manualSummary = { className: 'warn', label: '1 verify' };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /Manual quote prefund is 1 verify/);
-
-  harness.state.manualItems = [];
-  harness.state.manualSummary = { className: '', label: 'None' };
-  harness.state.currentConfig = {
-    token: { supply: '999', decimals: 9 },
-    poolTopology: {
-      allocations: [],
-      targetMarketCapUsd: 42,
-      report: { publish: true },
-      airdrop: { enabled: false, recipientCount: 0, supplyPercent: 0, executionCostSol: 0 },
-    },
-  };
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, false);
-  assert.match(fundingCriterion.evidence, /funding estimate is stale/i);
-  harness.state.currentConfig = null;
-  harness.state.classicFundingEstimate = harness.stampClassicFundingEstimate(
-    { totalSol: 2 },
-    harness.state.currentConfig || { poolTopology: {} },
-  );
-  fundingCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'funding-and-quote');
-  assert.equal(fundingCriterion.pass, true);
-  assert.match(fundingCriterion.evidence, /wallet SOL, quote acquire, and manual prefund checks are ready/);
-
-  harness.state.classicFundingEstimate = null;
-  harness.state.fundingSnapshot = { missingSol: 0, hasWalletBalance: false, walletBalanceFresh: false };
-  harness.state.quoteRoutes = [];
-  harness.state.quoteProgress = { total: 0, completed: 0, failed: 0 };
-  harness.state.quoteAcquire = { job: null };
-  harness.state.manualItems = [];
-  harness.state.manualSummary = { className: '', label: 'None' };
-  harness.state.recovery = { journalCount: 0 };
-  let resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /no launch journal or proof/);
-
-  harness.state.recovery = { journalCount: 1, journals: [{ id: 'done-journal', status: 'completed', stage: 'transfer_completed' }] };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /no active or failed journal/);
-
-  harness.state.recovery = { journalCount: 1, journals: [{ id: 'failed-journal', status: 'failed', stage: 'main_positions_failed', token: { mint: 'Mint111' } }] };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /no active or failed journal/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: 'failed-journal',
-      status: 'failed',
-      stage: 'main_positions_failed',
-      token: { mint: 'Mint111' },
-      poolPlan: {
-        tokenMint: 'Mint111',
-        allocations: [{ quoteToken: 'SOL', supplyPercent: 100 }],
-      },
-    }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, true);
-  assert.match(resumeCriterion.evidence, /1 active or failed launch journal with pool-plan or checkpoint evidence loaded/);
-
-  harness.state.recovery = { journalCount: 0, journals: [] };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { journalId: 'journal-proof-1' },
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /matching local journal is not loaded/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{ id: 'journal-proof-1', status: 'failed', stage: 'main_positions_failed', token: { mint: 'Mint111' } }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { journalId: 'journal-proof-1' },
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /lacks pool-plan or checkpoint evidence/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{
-      id: 'journal-proof-1',
-      status: 'failed',
-      stage: 'main_positions_failed',
-      token: { mint: 'Mint111' },
-      poolPlan: {
-        tokenMint: 'Mint111',
-        allocations: [{ quoteToken: 'SOL', supplyPercent: 100 }],
-      },
-    }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { journalId: 'journal-proof-1' },
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, true);
-  assert.match(resumeCriterion.evidence, /loaded for the launch record/);
-
-  harness.state.recovery = {
-    journalCount: 1,
-    journals: [{ id: 'journal-proof-1', status: 'completed', stage: 'transfer_completed', token: { mint: 'Mint111' } }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: { journalId: 'journal-proof-1' },
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /terminal final-sweep evidence/);
-
-  harness.state.recovery = { journalCount: 0, journals: [] };
-  harness.state.lastRecoveryResult = { journalId: 'loose-journal-id' };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /no launch journal or proof/);
-
-  harness.state.lastRecoveryResult = { success: true, results: [{ poolId: 'PoolRecovered111111111111111111111111111' }] };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, false);
-  assert.match(resumeCriterion.evidence, /no launch journal or proof/);
-
-  harness.state.lastRecoveryResult = {
-    success: true,
-    results: [{ poolId: 'PoolRecovered111111111111111111111111111', phase1Complete: true }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, true);
-  assert.match(resumeCriterion.evidence, /successful journal resume\/recovery result/);
-
-  harness.state.lastRecoveryResult = {
-    success: true,
-    results: [{
-      poolId: 'PoolRecovered222222222222222222222222222',
-      mainPositions: [{ nftMint: 'PositionRecovered2222222222222222222222222' }],
-    }],
-  };
-  resumeCriterion = harness.buildV2ReplacementCriteriaAudit({
-    proof: null,
-    audit,
-    hasCompletedLiveProof: false,
-    demoRunComplete: false,
-  }).find((item) => item.id === 'run-and-resume');
-  assert.equal(resumeCriterion.pass, true);
-  assert.match(resumeCriterion.evidence, /successful journal resume\/recovery result/);
-  harness.state.lastRecoveryResult = null;
-
-  const demoGate = harness.buildClassicRetirementGate({ ...proof, source: 'demo-run' }, audit);
-  assert.equal(demoGate.state, 'danger');
-  assert.equal(demoGate.requirements.find((item) => item.id === 'live-proof').pass, false);
-  assert.match(demoGate.requirements.find((item) => item.id === 'live-proof').detail, /Test launch record proves wiring only/);
-
-  harness.state.classicReportComparison = {
-    result: { ...classicComparison, artifactSource: 'trebuchet-v2' },
-  };
-  const selfArtifactGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(selfArtifactGate.state, 'danger');
-  assert.equal(selfArtifactGate.requirements.find((item) => item.id === 'classic-comparison').pass, false);
-  assert.match(selfArtifactGate.requirements.find((item) => item.id === 'classic-comparison').detail, /generated by Trebuchet/);
-
-  harness.state.classicReportComparison = {
-    result: { ...classicComparison, matchesProof: false },
-  };
-  const staleGate = harness.buildClassicRetirementGate(proof, audit);
-  assert.equal(staleGate.state, 'danger');
-  assert.equal(staleGate.requirements.find((item) => item.id === 'classic-comparison').pass, false);
-  assert.match(staleGate.requirements.find((item) => item.id === 'classic-comparison').detail, /belongs to another Trebuchet proof/);
-});
-
 test('v2 demo completion requires airdrop and Fee Key recipient evidence', () => {
   const harness = loadClassicRetirementGateHarness();
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -9148,492 +6316,6 @@ test('v2 demo completion requires airdrop and Fee Key recipient evidence', () =>
   const missingFeeKeyTransfer = clone(completedDemoRun);
   missingFeeKeyTransfer.liquidity.results[0].mainPositions[0].txIds.transfer = '';
   assert.equal(harness.demoRunHasCompletedReadiness(missingFeeKeyTransfer), false);
-});
-
-test('v2 classic artifact comparison matches authority fields by name', () => {
-  const { compareClassicReportArtifact, classicComparisonProofFingerprint } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'Wallet1111111111111111111111111111111111111',
-    token: {
-      mint: 'Mint111111111111111111111111111111111111111',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: ['Pool111111111111111111111111111111111111111'],
-      lockedPositionCount: 1,
-      feeKeyCount: 1,
-      results: [{
-        poolId: 'Pool111111111111111111111111111111111111111',
-        mainPositions: [{ locked: true, feeKeyNftMint: 'Fee1111111111111111111111111111111111111111' }],
-      }],
-    },
-    transfer: {
-      destinationWallet: 'Dest111111111111111111111111111111111111111',
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const config = { poolTopology: { sweepDestination: proof.transfer.destinationWallet } };
-  const mismatchedArtifact = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: false,
-          freezeAuthorityDisabled: true,
-          metadataUpdateAuthorityRevoked: true,
-        },
-      },
-      liquidity: {
-        positionCount: 1,
-        lockedPositionCount: 1,
-        feeKeyCount: 1,
-        poolIds: proof.liquidity.poolIds,
-      },
-      pools: [{ poolId: proof.liquidity.poolIds[0] }],
-    },
-  };
-
-  const result = compareClassicReportArtifact(JSON.stringify(mismatchedArtifact), proof, config);
-  const authorityRow = result.rows.find((row) => row.id === 'authority-posture');
-  const fingerprint = classicComparisonProofFingerprint({
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    poolIds: proof.liquidity.poolIds,
-    positionCount: 1,
-    lockedPositionCount: 1,
-    feeKeyCount: 1,
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: proof.airdrop,
-  });
-
-  assert.equal(result.status, 'mismatch');
-  assert.equal(authorityRow.state, 'mismatch');
-  assert.match(authorityRow.detail, /Mismatched: Mint authority/);
-  assert.match(fingerprint, /"authorities"/);
-  assert.match(fingerprint, /"mintAuthorityRenounced":true/);
-});
-
-test('v2 classic artifact comparison verifies per-position proof records', () => {
-  const { compareClassicReportArtifact, classicComparisonProofFingerprint, classicComparisonRequiredEvidence } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'Wallet2222222222222222222222222222222222222',
-    token: {
-      mint: 'Mint222222222222222222222222222222222222222',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: ['Pool222222222222222222222222222222222222222'],
-      lockedPositionCount: 1,
-      feeKeyCount: 1,
-      results: [{
-        poolId: 'Pool222222222222222222222222222222222222222',
-        mainPositions: [{
-          locked: true,
-          recipient: 'FeeRecipient222222222222222222222222222222',
-          transferredTo: 'FeeRecipient222222222222222222222222222222',
-          tickLower: -443640,
-          tickUpper: 443640,
-          nftMint: 'Pos2222222222222222222222222222222222222222',
-          feeKeyNftMint: 'Fee2222222222222222222222222222222222222222',
-          txIds: {
-            open: 'OpenTx2222222222222222222222222222222222222',
-            lock: 'LockTx2222222222222222222222222222222222222',
-            transfer: 'TransferTx222222222222222222222222222222222',
-          },
-        }],
-      }],
-    },
-    transfer: {
-      destinationWallet: 'Dest222222222222222222222222222222222222222',
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const matchingArtifact = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-      liquidity: {
-        positionCount: 1,
-        lockedPositionCount: 1,
-        feeKeyCount: 1,
-        poolIds: proof.liquidity.poolIds,
-      },
-      pools: [{
-        poolId: proof.liquidity.poolIds[0],
-        positions: [{
-          type: 'main',
-          locked: true,
-          recipient: 'FeeRecipient222222222222222222222222222222',
-          transferredTo: 'FeeRecipient222222222222222222222222222222',
-          tickLower: -443640,
-          tickUpper: 443640,
-          positionNftMint: 'Pos2222222222222222222222222222222222222222',
-          feeKeyNftMint: 'Fee2222222222222222222222222222222222222222',
-          openTx: 'OpenTx2222222222222222222222222222222222222',
-          lockTx: 'LockTx2222222222222222222222222222222222222',
-          transferTx: 'TransferTx222222222222222222222222222222222',
-        }],
-      }],
-    },
-  };
-  const missingFeeKeyArtifact = structuredClone(matchingArtifact);
-  missingFeeKeyArtifact.launch.pools[0].positions[0].feeKeyNftMint = null;
-  const mismatchedRecipientArtifact = structuredClone(matchingArtifact);
-  mismatchedRecipientArtifact.launch.pools[0].positions[0].transferredTo = 'WrongRecipient22222222222222222222222222222';
-  const extraPositionArtifact = structuredClone(matchingArtifact);
-  extraPositionArtifact.launch.liquidity.positionCount = 2;
-  extraPositionArtifact.launch.liquidity.lockedPositionCount = 2;
-  extraPositionArtifact.launch.liquidity.feeKeyCount = 2;
-  extraPositionArtifact.launch.pools[0].positions.push({
-    type: 'ladder',
-    locked: true,
-    tickLower: 443640,
-    tickUpper: 887280,
-    positionNftMint: 'ExtraPos22222222222222222222222222222222222222',
-    feeKeyNftMint: 'ExtraFee22222222222222222222222222222222222222',
-    openTx: 'ExtraOpenTx22222222222222222222222222222222222',
-    lockTx: 'ExtraLockTx22222222222222222222222222222222222',
-  });
-
-  const passResult = compareClassicReportArtifact(JSON.stringify(matchingArtifact), proof, { poolTopology: {} });
-  const failResult = compareClassicReportArtifact(JSON.stringify(missingFeeKeyArtifact), proof, { poolTopology: {} });
-  const recipientResult = compareClassicReportArtifact(JSON.stringify(mismatchedRecipientArtifact), proof, { poolTopology: {} });
-  const extraResult = compareClassicReportArtifact(JSON.stringify(extraPositionArtifact), proof, { poolTopology: {} });
-  const requiredEvidence = classicComparisonRequiredEvidence(passResult, proof, { poolTopology: {} });
-  const thinRequiredEvidence = classicComparisonRequiredEvidence({
-    ...passResult,
-    passCount: 1,
-    fieldCount: 1,
-    rows: passResult.rows.filter((row) => row.id === 'mint'),
-  }, proof, { poolTopology: {} });
-  const feeKeyRow = failResult.rows.find((row) => row.id === 'fee-key-nfts');
-  const recipientRow = recipientResult.rows.find((row) => row.id === 'fee-key-recipients');
-  const extraCountRow = extraResult.rows.find((row) => row.id === 'positionCount');
-  const extraPositionRow = extraResult.rows.find((row) => row.id === 'position-nfts');
-
-  assert.equal(passResult.status, 'pass');
-  assert.equal(requiredEvidence.pass, true);
-  assert.equal(thinRequiredEvidence.pass, false);
-  assert.match(thinRequiredEvidence.detail, /Classic comparison is missing required passing row/);
-  assert.equal(passResult.rows.find((row) => row.id === 'position-nfts').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'fee-key-nfts').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'fee-key-recipients').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'position-transactions').state, 'pass');
-  assert.equal(failResult.status, 'missing');
-  assert.equal(feeKeyRow.state, 'missing');
-  assert.match(feeKeyRow.detail, /0\/1 current Fee Key NFT mints/);
-  assert.equal(recipientResult.status, 'mismatch');
-  assert.equal(recipientRow.state, 'mismatch');
-  assert.match(recipientRow.detail, /sets must match exactly/);
-  assert.equal(extraResult.status, 'mismatch');
-  assert.equal(extraCountRow.state, 'mismatch');
-  assert.equal(extraPositionRow.state, 'mismatch');
-  assert.match(extraPositionRow.detail, /sets must match exactly/);
-  assert.match(classicComparisonProofFingerprint(passResult.rows ? {
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    poolIds: proof.liquidity.poolIds,
-    positionCount: 1,
-    lockedPositionCount: 1,
-    feeKeyCount: 1,
-    positions: [{
-      type: 'main',
-      positionNftMint: 'Pos2222222222222222222222222222222222222222',
-      feeKeyNftMint: 'Fee2222222222222222222222222222222222222222',
-      locked: true,
-      tickLower: -443640,
-      tickUpper: 443640,
-    }],
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: proof.airdrop,
-  } : {}), /"positions"/);
-});
-
-test('v2 classic artifact comparison verifies position liquidity shape fields', () => {
-  const { compareClassicReportArtifact, classicComparisonProofFingerprint } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'WalletShape222222222222222222222222222222222',
-    token: {
-      mint: 'MintShape22222222222222222222222222222222222',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: ['PoolShape22222222222222222222222222222222222'],
-      results: [{
-        poolId: 'PoolShape22222222222222222222222222222222222',
-        quoteAddress: 'QuoteShape2222222222222222222222222222222222',
-        ladderPositions: [{
-          bandIndex: 0,
-          supplyPercent: 4.5,
-          lowerMultiplier: 1.1,
-          upperMultiplier: 1.8,
-          nftMint: 'LadderShapePos222222222222222222222222222222',
-          feeKeyNftMint: 'LadderShapeFee222222222222222222222222222222',
-          locked: true,
-        }],
-        supportPositions: [{
-          supportIndex: 0,
-          depthPct: 12,
-          nftMint: 'SupportShapePos22222222222222222222222222222',
-          feeKeyNftMint: 'SupportShapeFee22222222222222222222222222222',
-          locked: true,
-        }],
-      }],
-    },
-    transfer: {
-      destinationWallet: 'DestShape2222222222222222222222222222222222',
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const matchingArtifact = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-      liquidity: {
-        positionCount: 2,
-        lockedPositionCount: 2,
-        feeKeyCount: 2,
-        poolIds: proof.liquidity.poolIds,
-      },
-      pools: [{
-        poolId: proof.liquidity.poolIds[0],
-        quoteMint: 'QuoteShape2222222222222222222222222222222222',
-        positions: [{
-          type: 'ladder',
-          bandIndex: 0,
-          supplyPercent: 4.5,
-          lowerMultiplier: 1.1,
-          upperMultiplier: 1.8,
-          positionNftMint: 'LadderShapePos222222222222222222222222222222',
-          feeKeyNftMint: 'LadderShapeFee222222222222222222222222222222',
-          locked: true,
-        }, {
-          type: 'support',
-          supportIndex: 0,
-          depthPct: 12,
-          positionNftMint: 'SupportShapePos22222222222222222222222222222',
-          feeKeyNftMint: 'SupportShapeFee22222222222222222222222222222',
-          locked: true,
-        }],
-      }],
-    },
-  };
-  const mismatchedArtifact = structuredClone(matchingArtifact);
-  mismatchedArtifact.launch.pools[0].positions[0].upperMultiplier = 2.4;
-  mismatchedArtifact.launch.pools[0].positions[1].depthPct = 18;
-
-  const passResult = compareClassicReportArtifact(JSON.stringify(matchingArtifact), proof, { poolTopology: {} });
-  const mismatchResult = compareClassicReportArtifact(JSON.stringify(mismatchedArtifact), proof, { poolTopology: {} });
-  const passRow = passResult.rows.find((row) => row.id === 'position-liquidity-shape');
-  const mismatchRow = mismatchResult.rows.find((row) => row.id === 'position-liquidity-shape');
-  const fingerprint = classicComparisonProofFingerprint({
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    poolIds: proof.liquidity.poolIds,
-    pools: [],
-    positionCount: 2,
-    lockedPositionCount: 2,
-    feeKeyCount: 2,
-    positions: [{
-      poolId: proof.liquidity.poolIds[0],
-      type: 'ladder',
-      bandIndex: 0,
-      supplyPercent: 4.5,
-      lowerMultiplier: 1.1,
-      upperMultiplier: 1.8,
-    }, {
-      poolId: proof.liquidity.poolIds[0],
-      type: 'support',
-      supportIndex: 0,
-      depthPct: 12,
-    }],
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: proof.airdrop,
-  });
-
-  assert.equal(passResult.status, 'pass');
-  assert.equal(passRow.state, 'pass');
-  assert.equal(passRow.expected, '4/4');
-  assert.equal(mismatchResult.status, 'mismatch');
-  assert.equal(mismatchRow.state, 'mismatch');
-  assert.match(mismatchRow.detail, /upper multiplier/);
-  assert.match(mismatchRow.detail, /support depth/);
-  assert.match(fingerprint, /"upperMultiplier":1\.8/);
-  assert.match(fingerprint, /"depthPct":12/);
-});
-
-test('v2 classic artifact comparison extracts structured pool and position proof from Classic HTML', () => {
-  const { compareClassicReportArtifact } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'HtmlWallet111111111111111111111111111111111',
-    token: {
-      mint: 'HtmlMint1111111111111111111111111111111111',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-      metadataUpdateAuthorityRevoked: true,
-      metadataImmutable: true,
-    },
-    liquidity: {
-      poolIds: ['HtmlPool1111111111111111111111111111111111'],
-      lockedPositionCount: 1,
-      feeKeyCount: 1,
-      results: [{
-        poolId: 'HtmlPool1111111111111111111111111111111111',
-        quoteAddress: 'HtmlQuote111111111111111111111111111111111',
-        txIds: {
-          createPool: 'HtmlCreatePoolTx111111111111111111111111111111',
-        },
-        mainPositions: [{
-          locked: true,
-          recipient: 'HtmlRecipient11111111111111111111111111111',
-          transferredTo: 'HtmlRecipient11111111111111111111111111111',
-          nftMint: 'HtmlPosition11111111111111111111111111111111',
-          feeKeyNftMint: 'HtmlFeeKey1111111111111111111111111111111',
-          txIds: {
-            open: 'HtmlOpenTx111111111111111111111111111111111',
-            lock: 'HtmlLockTx111111111111111111111111111111111',
-            transfer: 'HtmlTransferTx1111111111111111111111111111',
-          },
-        }],
-      }],
-    },
-    transfer: {
-      destinationWallet: 'HtmlDest1111111111111111111111111111111111',
-      walletEmpty: true,
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const pool = proof.liquidity.results[0];
-  const position = pool.mainPositions[0];
-  const classicHtml = `
-    <html><body>
-      <h1>Classic launch report</h1>
-      <p>
-        Mint authority renounced.
-        Freeze authority disabled.
-        Metadata update authority revoked.
-        Metadata immutability immutable.
-      </p>
-      <div class="addr-row"><span class="addr-label">Token mint</span><code class="addr-value">${proof.token.mint}</code></div>
-      <div class="addr-row"><span class="addr-label">Launch wallet</span><code class="addr-value">${proof.walletPublicKey}</code></div>
-      <div class="addr-row"><span class="addr-label">Planned sweep destination</span><code class="addr-value">${proof.transfer.destinationWallet}</code></div>
-      <div class="addr-row"><span class="addr-label">Pool ID</span><code class="addr-value">${pool.poolId}</code></div>
-      <div class="addr-row"><span class="addr-label">Quote token mint</span><code class="addr-value">${pool.quoteAddress}</code></div>
-      <div class="addr-row"><span class="addr-label">Create-pool TX</span><code class="addr-value">${pool.txIds.createPool}</code></div>
-      <div class="addr-row"><span class="addr-label">Position NFT</span><code class="addr-value">${position.nftMint}</code></div>
-      <div class="addr-row"><span class="addr-label">Fee Key NFT</span><code class="addr-value">${position.feeKeyNftMint}</code></div>
-      <div class="addr-row"><span class="addr-label">Open TX</span><code class="addr-value">${position.txIds.open}</code></div>
-      <div class="addr-row"><span class="addr-label">Lock TX</span><code class="addr-value">${position.txIds.lock}</code></div>
-      <div class="addr-row"><span class="addr-label">Fee Key recipient</span><code class="addr-value">${position.recipient}</code></div>
-      <div class="addr-row"><span class="addr-label">Fee Key delivered to</span><code class="addr-value">${position.transferredTo}</code></div>
-      <div class="addr-row"><span class="addr-label">Fee Key transfer TX</span><code class="addr-value">${position.txIds.transfer}</code></div>
-    </body></html>
-  `;
-
-  const result = compareClassicReportArtifact(classicHtml, proof, {
-    poolTopology: { sweepDestination: proof.transfer.destinationWallet },
-  });
-  const mismatchedDestination = 'HtmlWrongDest11111111111111111111111111111';
-  const mismatchResult = compareClassicReportArtifact(
-    classicHtml.replace(proof.transfer.destinationWallet, mismatchedDestination),
-    proof,
-    { poolTopology: { sweepDestination: proof.transfer.destinationWallet } },
-  );
-  const extraPoolResult = compareClassicReportArtifact(
-    classicHtml.replace(
-      '</body></html>',
-      '<div class="addr-row"><span class="addr-label">Pool ID</span><code class="addr-value">HtmlExtraPool11111111111111111111111111111</code></div></body></html>',
-    ),
-    proof,
-    { poolTopology: { sweepDestination: proof.transfer.destinationWallet } },
-  );
-  const deliveredMismatchResult = compareClassicReportArtifact(
-    classicHtml.replace(
-      `<span class="addr-label">Fee Key delivered to</span><code class="addr-value">${position.transferredTo}</code>`,
-      '<span class="addr-label">Fee Key delivered to</span><code class="addr-value">HtmlWrongRecipient111111111111111111111111111</code>',
-    ),
-    proof,
-    { poolTopology: { sweepDestination: proof.transfer.destinationWallet } },
-  );
-  const rowState = (id) => result.rows.find((row) => row.id === id)?.state;
-  const destinationRow = mismatchResult.rows.find((row) => row.id === 'destination');
-  const extraPoolRow = extraPoolResult.rows.find((row) => row.id === 'pools');
-  const deliveredMismatchRow = deliveredMismatchResult.rows.find((row) => row.id === 'fee-key-recipients');
-
-  assert.equal(result.status, 'pass');
-  assert.equal(rowState('mint'), 'pass');
-  assert.equal(rowState('launch-wallet'), 'pass');
-  assert.equal(rowState('pools'), 'pass');
-  assert.equal(rowState('pool-quote-mints'), 'pass');
-  assert.equal(rowState('pool-create-transactions'), 'pass');
-  assert.equal(rowState('positionCount'), 'pass');
-  assert.equal(rowState('lockedPositionCount'), 'pass');
-  assert.equal(rowState('feeKeyCount'), 'pass');
-  assert.equal(rowState('position-nfts'), 'pass');
-  assert.equal(rowState('fee-key-nfts'), 'pass');
-  assert.equal(rowState('fee-key-recipients'), 'pass');
-  assert.equal(rowState('position-transactions'), 'pass');
-  assert.equal(rowState('authority-posture'), 'pass');
-  assert.equal(rowState('destination'), 'pass');
-  assert.equal(mismatchResult.status, 'mismatch');
-  assert.equal(destinationRow.state, 'mismatch');
-  assert.equal(destinationRow.actual, mismatchedDestination);
-  assert.equal(extraPoolResult.status, 'mismatch');
-  assert.equal(extraPoolRow.state, 'mismatch');
-  assert.match(extraPoolRow.detail, /counts must match exactly/);
-  assert.equal(deliveredMismatchResult.status, 'mismatch');
-  assert.equal(deliveredMismatchRow.state, 'mismatch');
-  assert.match(deliveredMismatchRow.detail, /sets must match exactly/);
 });
 
 test('v2 proof fingerprints bind Fee Key recipient delivery evidence', () => {
@@ -9755,817 +6437,6 @@ test('v2 proof fingerprints bind explicit liquidity count mismatches', () => {
     'lock count',
     'fee key count',
   ]);
-});
-
-test('v2 classic artifact comparison verifies pool topology facts', () => {
-  const {
-    compareClassicReportArtifact,
-    classicComparisonProofFingerprint,
-    classicComparisonRequiredEvidence,
-  } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'Wallet3333333333333333333333333333333333333',
-    token: {
-      mint: 'Mint333333333333333333333333333333333333333',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: ['Pool333333333333333333333333333333333333333'],
-      results: [{
-        poolId: 'Pool333333333333333333333333333333333333333',
-        quoteSymbol: 'BONK',
-        quoteAddress: 'Quote33333333333333333333333333333333333333',
-        supplyPercent: 42.5,
-        tickSpacing: 60,
-        initialPrice: '0.00042',
-        launchedSide: 'base',
-        txIds: {
-          createPool: 'CreatePoolTx333333333333333333333333333333333',
-        },
-      }],
-    },
-    transfer: {
-      destinationWallet: 'Dest333333333333333333333333333333333333333',
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const matchingArtifact = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-      liquidity: {
-        poolIds: proof.liquidity.poolIds,
-      },
-      pools: [{
-        poolId: proof.liquidity.poolIds[0],
-        quote: 'BONK',
-        quoteMint: 'Quote33333333333333333333333333333333333333',
-        supplyPercent: 42.5,
-        tickSpacing: 60,
-        initialPrice: '0.00042',
-        launchedSide: 'base',
-        createPoolTx: 'CreatePoolTx333333333333333333333333333333333',
-      }],
-    },
-  };
-  const mismatchedArtifact = structuredClone(matchingArtifact);
-  mismatchedArtifact.launch.pools[0].tickSpacing = 120;
-  const structuredWrongPoolWithTextArtifact = structuredClone(matchingArtifact);
-  structuredWrongPoolWithTextArtifact.launch.liquidity.poolIds = ['WrongPool33333333333333333333333333333333333'];
-  structuredWrongPoolWithTextArtifact.launch.pools[0].poolId = 'WrongPool33333333333333333333333333333333333';
-  structuredWrongPoolWithTextArtifact.launch.notes = `Diagnostic text mentions ${proof.liquidity.poolIds[0]} but the structured pool row is wrong.`;
-  const extraPoolArtifact = structuredClone(matchingArtifact);
-  extraPoolArtifact.launch.liquidity.poolIds = [
-    ...proof.liquidity.poolIds,
-    'ExtraPool33333333333333333333333333333333333333',
-  ];
-  extraPoolArtifact.launch.pools.push({
-    poolId: 'ExtraPool33333333333333333333333333333333',
-    quote: 'USDC',
-    quoteMint: 'ExtraQuote333333333333333333333333333333333333',
-    supplyPercent: 1,
-    tickSpacing: 60,
-    initialPrice: '1',
-    launchedSide: 'base',
-    createPoolTx: 'ExtraCreatePoolTx3333333333333333333333333333',
-  });
-  const htmlProof = structuredClone(proof);
-  delete htmlProof.liquidity.results[0].initialPrice;
-  delete htmlProof.liquidity.results[0].launchedSide;
-  const classicPoolHtml = `
-    <html><body>
-      <div class="addr-row"><span class="addr-label">Token mint</span><code class="addr-value">${htmlProof.token.mint}</code></div>
-      <div class="addr-row"><span class="addr-label">Launch wallet</span><code class="addr-value">${htmlProof.walletPublicKey}</code></div>
-      <div class="addr-row"><span class="addr-label">Destination wallet</span><code class="addr-value">${htmlProof.transfer.destinationWallet}</code></div>
-      <p>Mint authority renounced. Freeze authority disabled.</p>
-      <section class="pool-section">
-        <div class="pool-section-header">
-          <div class="enum-badge">POOL · 01</div>
-          <h2 class="pool-title">BONK pool</h2>
-          <div class="pool-meta">42.50% of token supply &nbsp;·&nbsp; Fee tier 0.25% / spacing 60</div>
-        </div>
-        <div class="pool-addresses">
-          <div class="addr-row"><span class="addr-label">Pool ID</span><code class="addr-value">${proof.liquidity.poolIds[0]}</code></div>
-          <div class="addr-row"><span class="addr-label">Quote token mint</span><code class="addr-value">Quote33333333333333333333333333333333333333</code></div>
-          <div class="addr-row"><span class="addr-label">Create-pool TX</span><code class="addr-value">CreatePoolTx333333333333333333333333333333333</code></div>
-        </div>
-      </section>
-    </body></html>
-  `;
-
-  const passResult = compareClassicReportArtifact(JSON.stringify(matchingArtifact), proof, { poolTopology: {} });
-  const mismatchResult = compareClassicReportArtifact(JSON.stringify(mismatchedArtifact), proof, { poolTopology: {} });
-  const structuredWrongPoolWithTextResult = compareClassicReportArtifact(JSON.stringify(structuredWrongPoolWithTextArtifact), proof, { poolTopology: {} });
-  const extraPoolResult = compareClassicReportArtifact(JSON.stringify(extraPoolArtifact), proof, { poolTopology: {} });
-  const htmlPoolResult = compareClassicReportArtifact(classicPoolHtml, htmlProof, { poolTopology: {} });
-  const sparseProof = {
-    ...proof,
-    liquidity: {
-      poolIds: proof.liquidity.poolIds,
-      results: [{ poolId: proof.liquidity.poolIds[0] }],
-    },
-  };
-  const sparseConfig = {
-    poolTopology: {
-      sweepDestination: proof.transfer.destinationWallet,
-      pools: [{
-        quoteToken: 'BONK',
-        quoteSymbol: 'BONK',
-        quoteMint: 'Quote33333333333333333333333333333333333333',
-        supplyPercent: 42.5,
-        distribution: [{ sharePercent: 100 }],
-      }],
-      airdrop: { enabled: false, recipientCount: 0, supplyPercent: 0 },
-    },
-  };
-  const sparseMissingPlanArtifact = structuredClone(matchingArtifact);
-  delete sparseMissingPlanArtifact.launch.pools[0].supplyPercent;
-  const sparsePassResult = compareClassicReportArtifact(JSON.stringify(matchingArtifact), sparseProof, sparseConfig);
-  const sparseMissingPlanResult = compareClassicReportArtifact(JSON.stringify(sparseMissingPlanArtifact), sparseProof, sparseConfig);
-  const poolParameterRow = mismatchResult.rows.find((row) => row.id === 'pool-parameters');
-  const structuredWrongPoolRow = structuredWrongPoolWithTextResult.rows.find((row) => row.id === 'pools');
-  const extraPoolRow = extraPoolResult.rows.find((row) => row.id === 'pools');
-  const htmlPoolParameterRow = htmlPoolResult.rows.find((row) => row.id === 'pool-parameters');
-  const sparsePoolParameterRow = sparsePassResult.rows.find((row) => row.id === 'pool-parameters');
-  const sparseMissingPoolParameterRow = sparseMissingPlanResult.rows.find((row) => row.id === 'pool-parameters');
-  const sparseEvidence = classicComparisonRequiredEvidence(sparsePassResult, sparseProof, sparseConfig);
-  const sparseMissingEvidence = classicComparisonRequiredEvidence(sparseMissingPlanResult, sparseProof, sparseConfig);
-  const fingerprint = classicComparisonProofFingerprint({
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    poolIds: proof.liquidity.poolIds,
-    pools: [{
-      poolId: proof.liquidity.poolIds[0],
-      quoteMint: 'Quote33333333333333333333333333333333333333',
-      supplyPercent: 42.5,
-      tickSpacing: 60,
-      initialPrice: '0.00042',
-      launchedSide: 'base',
-      createPoolTx: 'CreatePoolTx333333333333333333333333333333333',
-    }],
-    positionCount: 0,
-    lockedPositionCount: 0,
-    feeKeyCount: 0,
-    positions: [],
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: proof.airdrop,
-  });
-
-  assert.equal(passResult.status, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'pool-quote-mints').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'pool-parameters').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'pool-create-transactions').state, 'pass');
-  assert.equal(mismatchResult.status, 'mismatch');
-  assert.equal(poolParameterRow.state, 'mismatch');
-  assert.match(poolParameterRow.detail, /Mismatched: Pool333333333333333333333333333333333333333 tick spacing/);
-  assert.notEqual(structuredWrongPoolWithTextResult.status, 'pass');
-  assert.equal(structuredWrongPoolRow.state, 'missing');
-  assert.match(structuredWrongPoolRow.detail, /0\/1 current Trebuchet pool IDs matched/);
-  assert.equal(extraPoolResult.status, 'mismatch');
-  assert.equal(extraPoolRow.state, 'mismatch');
-  assert.match(extraPoolRow.detail, /counts must match exactly/);
-  assert.equal(htmlPoolResult.status, 'pass');
-  assert.equal(htmlPoolParameterRow.state, 'pass');
-  assert.match(htmlPoolParameterRow.detail, /2\/2 pool parameters match/);
-  assert.equal(sparsePassResult.status, 'pass');
-  assert.equal(sparsePoolParameterRow.state, 'pass');
-  assert.equal(sparseEvidence.pass, true);
-  assert.notEqual(sparseMissingPlanResult.status, 'pass');
-  assert.equal(sparseMissingPoolParameterRow.state, 'missing');
-  assert.equal(sparseMissingEvidence.pass, false);
-  assert.match(sparseMissingEvidence.detail, /Pool parameters/);
-  assert.match(fingerprint, /"pools"/);
-  assert.match(fingerprint, /"tickSpacing":60/);
-});
-
-test('v2 classic artifact comparison verifies airdrop recipient and transaction evidence', () => {
-  const {
-    compareClassicReportArtifact,
-    classicComparisonProofFingerprint,
-    comparisonAirdropDeliveryEvidenceState,
-  } = loadClassicComparisonHarness();
-  const recipientOne = '5'.repeat(32);
-  const recipientTwo = '6'.repeat(32);
-  const recipientThree = 'A'.repeat(32);
-  const txOne = '3'.repeat(88);
-  const txTwo = '4'.repeat(88);
-  const txThree = 'B'.repeat(88);
-  const proof = {
-    walletPublicKey: '9'.repeat(32),
-    token: {
-      mint: '8'.repeat(32),
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: [],
-      results: [],
-    },
-    transfer: {
-      destinationWallet: '7'.repeat(32),
-    },
-    airdrop: {
-      plannedRecipientCount: 2,
-      deliveredCount: 2,
-      failedCount: 0,
-      recipients: [
-        { wallet: recipientOne, tokens: 100 },
-        { wallet: recipientTwo, tokens: 50 },
-      ],
-      transferred: [
-        { wallet: recipientOne, tokens: 100, txId: txOne },
-        { wallet: recipientTwo, tokens: 50, txId: txTwo },
-      ],
-      failed: [],
-    },
-  };
-  const matchingHtml = `
-    <html><body>
-      <p>${proof.token.mint} ${proof.walletPublicKey} ${proof.transfer.destinationWallet}</p>
-      <p>Mint authority renounced. Freeze authority disabled.</p>
-      <table>
-        <tr><td>${recipientOne}</td><td>100</td><td><a href="https://solscan.io/tx/${txOne}">${txOne.slice(0, 8)}...</a></td></tr>
-        <tr><td>${recipientTwo}</td><td>50</td><td><a href="https://solscan.io/tx/${txTwo}">${txTwo.slice(0, 8)}...</a></td></tr>
-      </table>
-    </body></html>
-  `;
-  const missingTxHtml = matchingHtml.replace(txTwo, txTwo.slice(0, 8));
-  const classicAirdropHtml = `
-    <html><body>
-      <div class="addr-row"><span class="addr-label">Token mint</span><code class="addr-value">${proof.token.mint}</code></div>
-      <div class="addr-row"><span class="addr-label">Launch wallet</span><code class="addr-value">${proof.walletPublicKey}</code></div>
-      <div class="addr-row"><span class="addr-label">Destination wallet</span><code class="addr-value">${proof.transfer.destinationWallet}</code></div>
-      <p>Mint authority renounced. Freeze authority disabled.</p>
-      <hr class="section-rule">
-      <div class="enum-badge">[ 04 ] &nbsp; Airdrop</div>
-      <h2 class="section-title">Airdrop distribution</h2>
-      <h3 class="subsection">
-        Delivered &middot;
-        <span style="color: #2c8a52;">2 recipients</span> &middot;
-        150 tokens
-      </h3>
-      <table>
-        <thead>
-          <tr><th>Recipient</th><th>Tokens</th><th>Transaction</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><code>${recipientOne}</code><a href="https://solscan.io/account/${recipientOne}">view</a></td>
-            <td>100</td>
-            <td><a href="https://solscan.io/tx/${txOne}">${txOne.slice(0, 8)}...↗</a></td>
-          </tr>
-          <tr>
-            <td><code>${recipientTwo}</code><a href="https://solscan.io/account/${recipientTwo}">view</a></td>
-            <td>50</td>
-            <td><a href="https://solscan.io/tx/${txTwo}">${txTwo.slice(0, 8)}...↗</a></td>
-          </tr>
-        </tbody>
-      </table>
-    </body></html>
-  `;
-  const extraClassicAirdropHtml = classicAirdropHtml
-    .replace('2 recipients', '3 recipients')
-    .replace('</tbody>', `
-          <tr>
-            <td><code>${recipientThree}</code><a href="https://solscan.io/account/${recipientThree}">view</a></td>
-            <td>25</td>
-            <td><a href="https://solscan.io/tx/${txThree}">${txThree.slice(0, 8)}...↗</a></td>
-          </tr>
-        </tbody>`);
-  const matchingJson = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-      airdrop: proof.airdrop,
-    },
-  };
-  const extraAirdropJson = structuredClone(matchingJson);
-  extraAirdropJson.launch.airdrop = {
-    ...proof.airdrop,
-    plannedRecipientCount: 3,
-    deliveredCount: 3,
-    transferred: [
-      ...proof.airdrop.transferred,
-      { wallet: recipientThree, tokens: 25, txId: txThree },
-    ],
-  };
-  const rawClassicLaunchData = {
-    dataVersion: 4,
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    transfer: {
-      status: 'planned-before-sweep',
-      destinationWallet: proof.transfer.destinationWallet,
-    },
-    token: {
-      mint: proof.token.mint,
-      authorities: {
-        mintAuthorityRenounced: true,
-        freezeAuthorityDisabled: true,
-      },
-    },
-    airdrop: proof.airdrop,
-  };
-
-  const passResult = compareClassicReportArtifact(matchingHtml, proof, { poolTopology: {} });
-  const jsonPassResult = compareClassicReportArtifact(JSON.stringify(matchingJson), proof, { poolTopology: {} });
-  const extraAirdropResult = compareClassicReportArtifact(JSON.stringify(extraAirdropJson), proof, { poolTopology: {} });
-  const rawJsonPassResult = compareClassicReportArtifact(JSON.stringify(rawClassicLaunchData), proof, {
-    poolTopology: { sweepDestination: proof.transfer.destinationWallet },
-  });
-  const missingTxResult = compareClassicReportArtifact(missingTxHtml, proof, { poolTopology: {} });
-  const classicHtmlPassResult = compareClassicReportArtifact(classicAirdropHtml, proof, { poolTopology: {} });
-  const classicHtmlExtraResult = compareClassicReportArtifact(extraClassicAirdropHtml, proof, { poolTopology: {} });
-  const fingerprint = classicComparisonProofFingerprint({
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    destinationWallet: proof.transfer.destinationWallet,
-    poolIds: [],
-    pools: [],
-    positionCount: 0,
-    lockedPositionCount: 0,
-    feeKeyCount: 0,
-    positions: [],
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: proof.airdrop,
-  });
-  const fingerprintData = JSON.parse(fingerprint);
-  const compactProof = {
-    ...proof,
-    airdrop: {
-      plannedRecipientCount: 2,
-      deliveredCount: 2,
-      failedCount: 0,
-      recipients: [],
-      recipientsHash: fingerprintData.airdrop.recipientsHash,
-      recipientsSample: proof.airdrop.recipients.slice(0, 1),
-      recipientsTruncatedCount: 1,
-      transferred: [],
-      transferredHash: fingerprintData.airdrop.transferredHash,
-      transferredSample: proof.airdrop.transferred.slice(0, 1),
-      transferredTruncatedCount: 1,
-      failed: [],
-      failedHash: fingerprintData.airdrop.failedHash,
-      compactRows: true,
-    },
-  };
-  const compactFingerprint = classicComparisonProofFingerprint({
-    mint: compactProof.token.mint,
-    launchWallet: compactProof.walletPublicKey,
-    destinationWallet: compactProof.transfer.destinationWallet,
-    poolIds: [],
-    pools: [],
-    positionCount: 0,
-    lockedPositionCount: 0,
-    feeKeyCount: 0,
-    positions: [],
-    authorities: {
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    airdrop: compactProof.airdrop,
-  });
-  const compactProofResult = compareClassicReportArtifact(JSON.stringify(matchingJson), compactProof, { poolTopology: {} });
-  const countOnlyProof = {
-    ...proof,
-    airdrop: {
-      plannedRecipientCount: 2,
-      deliveredCount: 2,
-      failedCount: 0,
-      recipients: [],
-      transferred: [],
-      failed: [],
-    },
-  };
-  const countOnlyJson = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: matchingJson.launch.token,
-      airdrop: {
-        plannedRecipientCount: 2,
-        deliveredCount: 2,
-        failedCount: 0,
-      },
-    },
-  };
-  const countOnlyResult = compareClassicReportArtifact(JSON.stringify(countOnlyJson), countOnlyProof, { poolTopology: {} });
-  const zeroDeliveredCountProof = {
-    ...proof,
-    airdrop: {
-      ...proof.airdrop,
-      deliveredCount: 0,
-    },
-  };
-
-  assert.equal(passResult.status, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'airdrop-delivery').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'pass');
-  assert.equal(passResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'pass');
-  assert.equal(jsonPassResult.status, 'pass');
-  assert.equal(jsonPassResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'pass');
-  assert.equal(jsonPassResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'pass');
-  assert.equal(classicHtmlPassResult.status, 'pass');
-  assert.equal(classicHtmlPassResult.rows.find((row) => row.id === 'airdrop-delivery').state, 'pass');
-  assert.equal(classicHtmlPassResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'pass');
-  assert.equal(classicHtmlPassResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'pass');
-  assert.equal(classicHtmlExtraResult.status, 'mismatch');
-  assert.equal(classicHtmlExtraResult.rows.find((row) => row.id === 'airdrop-delivery').state, 'mismatch');
-  assert.equal(classicHtmlExtraResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'mismatch');
-  assert.equal(classicHtmlExtraResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'mismatch');
-  assert.match(classicHtmlExtraResult.rows.find((row) => row.id === 'airdrop-recipients').detail, /sets must match exactly/);
-  assert.equal(extraAirdropResult.status, 'mismatch');
-  assert.equal(extraAirdropResult.rows.find((row) => row.id === 'airdrop-delivery').state, 'mismatch');
-  assert.equal(extraAirdropResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'mismatch');
-  assert.equal(extraAirdropResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'mismatch');
-  assert.match(extraAirdropResult.rows.find((row) => row.id === 'airdrop-recipients').detail, /sets must match exactly/);
-  assert.equal(rawJsonPassResult.status, 'pass');
-  assert.equal(rawJsonPassResult.rows.find((row) => row.id === 'destination').state, 'pass');
-  assert.equal(rawJsonPassResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'pass');
-  assert.equal(missingTxResult.status, 'warn');
-  assert.equal(missingTxResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'warn');
-  assert.match(fingerprint, /"recipientsHash"/);
-  assert.match(fingerprint, /"transferredHash"/);
-  assert.equal(compactFingerprint, fingerprint);
-  assert.notEqual(compactProofResult.status, 'pass');
-  assert.equal(compactProofResult.rows.find((row) => row.id === 'airdrop-compact-evidence').state, 'missing');
-  assert.match(compactProofResult.rows.find((row) => row.id === 'airdrop-compact-evidence').detail, /full JSON proof/);
-  assert.equal(comparisonAirdropDeliveryEvidenceState(countOnlyProof.airdrop).complete, false);
-  assert.deepEqual([...comparisonAirdropDeliveryEvidenceState(countOnlyProof.airdrop).missing], [
-    'recipient rows',
-    'delivered rows',
-    'transaction signatures',
-  ]);
-  assert.equal(comparisonAirdropDeliveryEvidenceState(zeroDeliveredCountProof.airdrop).complete, false);
-  assert.deepEqual([...comparisonAirdropDeliveryEvidenceState(zeroDeliveredCountProof.airdrop).missing], [
-    'delivered count',
-  ]);
-  assert.notEqual(countOnlyResult.status, 'pass');
-  assert.equal(countOnlyResult.rows.find((row) => row.id === 'airdrop-delivery').state, 'missing');
-  assert.equal(countOnlyResult.rows.find((row) => row.id === 'airdrop-recipients').state, 'missing');
-  assert.equal(countOnlyResult.rows.find((row) => row.id === 'airdrop-transactions').state, 'missing');
-  assert.match(countOnlyResult.rows.find((row) => row.id === 'airdrop-delivery').detail, /missing exact airdrop evidence/);
-});
-
-test('v2 classic artifact comparison requires structured Classic report evidence for replacement gates', () => {
-  const {
-    compareClassicReportArtifact,
-    classicComparisonRequiredEvidence,
-  } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'B'.repeat(44),
-    token: {
-      mint: 'A'.repeat(44),
-      mintAuthorityRenounced: true,
-    },
-    liquidity: {
-      poolIds: [],
-      results: [],
-    },
-    destinationWallet: 'C'.repeat(44),
-    transfer: {
-      destinationWallet: 'C'.repeat(44),
-      walletEmpty: true,
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const config = { poolTopology: {} };
-  const structuredArtifact = {
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      destinationWallet: proof.destinationWallet,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-        },
-      },
-    },
-  };
-  const looseTextArtifact = [
-    'Mint authority renounced.',
-    proof.token.mint,
-    proof.walletPublicKey,
-    proof.destinationWallet,
-  ].join(' ');
-
-  const structuredResult = compareClassicReportArtifact(JSON.stringify(structuredArtifact), proof, config);
-  const looseResult = compareClassicReportArtifact(looseTextArtifact, proof, config);
-  const structuredEvidence = classicComparisonRequiredEvidence(structuredResult, proof, config);
-  const looseEvidence = classicComparisonRequiredEvidence(looseResult, proof, config);
-
-  assert.equal(structuredResult.status, 'pass');
-  assert.equal(structuredResult.structuredEvidence, true);
-  assert.equal(structuredEvidence.pass, true);
-  assert.equal(looseResult.status, 'pass');
-  assert.equal(looseResult.structuredEvidence, false);
-  assert.equal(looseEvidence.pass, false);
-  assert.match(looseEvidence.detail, /structured Classic report evidence/);
-});
-
-test('v2 persisted Classic comparison keeps structured evidence for reload-safe gates', () => {
-  const persistence = loadClassicComparisonPersistenceHarness();
-  const { classicComparisonRequiredEvidence } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'PersistWallet111111111111111111111111111111',
-    token: { mint: 'PersistMint11111111111111111111111111111111' },
-    transfer: {
-      destinationWallet: 'PersistDest111111111111111111111111111111',
-      walletEmpty: true,
-    },
-  };
-  const rows = [
-    { id: 'mint', label: 'Token mint', state: 'pass' },
-    { id: 'launch-wallet', label: 'Launch wallet', state: 'pass' },
-    { id: 'destination', label: 'Destination wallet', state: 'pass' },
-  ];
-  const normalized = persistence.normalizeClassicReportComparison({
-    input: JSON.stringify({ source: 'classic' }),
-    comparedAt: new Date().toISOString(),
-    result: {
-      status: 'pass',
-      artifactKind: 'json',
-      artifactSource: 'classic',
-      structuredEvidence: true,
-      proofFingerprint: 'persist-proof',
-      passCount: rows.length,
-      warnCount: 0,
-      missingCount: 0,
-      mismatchCount: 0,
-      fieldCount: rows.length,
-      rows,
-    },
-  });
-  const evidence = classicComparisonRequiredEvidence(normalized.result, proof, { poolTopology: {} });
-
-  assert.equal(normalized.result.structuredEvidence, true);
-  assert.equal(evidence.pass, true);
-  assert.match(js, /structuredEvidence: result\.structuredEvidence === true/);
-  assert.match(js, /classicComparison: null/);
-  assert.match(js, /comparedAt: null/);
-});
-
-test('v2 persisted Classic comparison keeps required rows beyond legacy cutoff', () => {
-  const persistence = loadClassicComparisonPersistenceHarness();
-  const {
-    classicComparisonRequiredEvidence,
-    classicComparisonRequiredRows,
-  } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'PersistWallet222222222222222222222222222222',
-    token: {
-      mint: 'PersistMint22222222222222222222222222222222',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-      metadataUpdateAuthorityRevoked: true,
-      metadataImmutable: true,
-    },
-    liquidity: {
-      poolIds: ['PersistPool22222222222222222222222222222222'],
-      results: [{
-        poolId: 'PersistPool22222222222222222222222222222222',
-        quoteMint: 'PersistQuote222222222222222222222222222222',
-        supplyPercent: 100,
-        tickSpacing: 60,
-        initialPrice: 1,
-        createPoolTx: 'PersistCreateTx2222222222222222222222222222',
-        positionCount: 1,
-        lockedPositionCount: 1,
-        feeKeyCount: 1,
-        mainPositions: [{
-          positionNftMint: 'PersistPositionNft222222222222222222222222',
-          feeKeyNftMint: 'PersistFeeKey22222222222222222222222222222',
-          recipient: 'PersistFeeRecipient222222222222222222222222',
-          transferredTo: 'PersistFeeRecipient222222222222222222222222',
-          sharePercent: 100,
-          lowerMultiplier: 1,
-          upperMultiplier: 2,
-          txIds: {
-            open: 'PersistOpenTx22222222222222222222222222222',
-            lock: 'PersistLockTx22222222222222222222222222222',
-            transfer: 'PersistFeeTransferTx222222222222222222222',
-          },
-          locked: true,
-        }],
-      }],
-    },
-    transfer: {
-      destinationWallet: 'PersistDest222222222222222222222222222222',
-      walletEmpty: true,
-    },
-    airdrop: {
-      plannedRecipientCount: 1,
-      deliveredCount: 1,
-      failedCount: 0,
-      recipients: [{ wallet: 'PersistAirdropWallet222222222222222222222', tokens: 10 }],
-      transferred: [{ wallet: 'PersistAirdropWallet222222222222222222222', tokens: 10, txId: 'PersistAirdropTx222222222222222222222222' }],
-      failed: [],
-    },
-  };
-  const config = { poolTopology: {} };
-  const requiredRows = classicComparisonRequiredRows(proof, config).map((row) => ({
-    ...row,
-    state: 'pass',
-  }));
-  const fillerRows = Array.from({ length: 24 }, (_, index) => ({
-    id: `filler-${index}`,
-    label: `Filler ${index}`,
-    state: 'pass',
-  }));
-  const rows = [...fillerRows, ...requiredRows];
-  const normalized = persistence.normalizeClassicReportComparison({
-    input: JSON.stringify({ source: 'classic', rows: rows.length }),
-    comparedAt: new Date().toISOString(),
-    result: {
-      status: 'pass',
-      artifactKind: 'json',
-      artifactSource: 'classic',
-      structuredEvidence: true,
-      proofFingerprint: 'persist-full-proof',
-      passCount: rows.length,
-      warnCount: 0,
-      missingCount: 0,
-      mismatchCount: 0,
-      fieldCount: rows.length,
-      rows,
-    },
-  });
-  const evidence = classicComparisonRequiredEvidence(normalized.result, proof, config);
-
-  assert.ok(requiredRows.length > 15);
-  assert.ok(rows.findIndex((row) => row.id === 'mint') > 20);
-  assert.ok(normalized.result.rows.length > 20);
-  assert.equal(normalized.result.rows.find((row) => row.id === 'airdrop-transactions')?.state, 'pass');
-  assert.equal(evidence.pass, true);
-  assert.match(js, /CLASSIC_REPORT_COMPARISON_ROW_LIMIT = 80/);
-  assert.match(js, /slice\(0, CLASSIC_REPORT_COMPARISON_ROW_LIMIT\)/);
-  assert.doesNotMatch(js, /slice\(0, 20\)/);
-});
-
-test('v2 classic artifact comparison rejects v2 report envelopes as self-artifacts', () => {
-  const { compareClassicReportArtifact } = loadClassicComparisonHarness();
-  const proof = {
-    walletPublicKey: 'SelfWallet111111111111111111111111111111111',
-    token: {
-      mint: 'SelfMint1111111111111111111111111111111111',
-      mintAuthorityRenounced: true,
-      freezeAuthorityDisabled: true,
-    },
-    liquidity: {
-      poolIds: [],
-      results: [],
-    },
-    transfer: {
-      destinationWallet: 'SelfDest1111111111111111111111111111111111',
-    },
-    airdrop: {
-      plannedRecipientCount: 0,
-      deliveredCount: 0,
-      failedCount: 0,
-    },
-  };
-  const v2Envelope = {
-    schema: 'trebuchet-launch-report',
-    version: 1,
-    launch: {
-      dataVersion: 8,
-      source: 'trebuchet-v2',
-      mint: proof.token.mint,
-      launchWallet: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        mint: proof.token.mint,
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-      reportParityAudit: { status: 'pass' },
-    },
-  };
-
-  const result = compareClassicReportArtifact(JSON.stringify(v2Envelope), proof, { poolTopology: {} });
-  const sourceRow = result.rows.find((row) => row.id === 'artifact-source');
-
-  assert.equal(result.status, 'mismatch');
-  assert.equal(result.artifactSource, 'trebuchet-v2');
-  assert.equal(sourceRow.state, 'mismatch');
-  assert.match(sourceRow.detail, /completed Classic artifact/);
-
-  const fieldOnlyEnvelope = {
-    mint: proof.token.mint,
-    launchWallet: proof.walletPublicKey,
-    fieldVerification: {
-      source: 'trebuchet-v2-field-verification',
-      ready: true,
-      proofFingerprint: 'self-proof',
-    },
-  };
-  const fieldOnlyResult = compareClassicReportArtifact(JSON.stringify(fieldOnlyEnvelope), proof, { poolTopology: {} });
-  assert.equal(fieldOnlyResult.artifactSource, 'trebuchet-v2');
-  assert.equal(fieldOnlyResult.rows.find((row) => row.id === 'artifact-source')?.state, 'mismatch');
-
-  const schemaOnlyEnvelope = {
-    schema: 'trebuchet-v2-proof',
-    proof: {
-      token: { mint: proof.token.mint },
-      walletPublicKey: proof.walletPublicKey,
-    },
-  };
-  const schemaOnlyResult = compareClassicReportArtifact(JSON.stringify(schemaOnlyEnvelope), proof, { poolTopology: {} });
-  assert.equal(schemaOnlyResult.artifactSource, 'trebuchet-v2');
-  assert.equal(schemaOnlyResult.rows.find((row) => row.id === 'artifact-source')?.state, 'mismatch');
-
-  const nestedMarkerEnvelope = {
-    source: 'classic',
-    launch: {
-      mint: proof.token.mint,
-      walletPublicKey: proof.walletPublicKey,
-      transfer: proof.transfer,
-      token: {
-        authorities: {
-          mintAuthorityRenounced: true,
-          freezeAuthorityDisabled: true,
-        },
-      },
-    },
-    metadata: {
-      exported: {
-        reportParityAudit: { status: 'pass' },
-      },
-    },
-  };
-  const nestedMarkerResult = compareClassicReportArtifact(JSON.stringify(nestedMarkerEnvelope), proof, { poolTopology: {} });
-  assert.equal(nestedMarkerResult.artifactSource, 'trebuchet-v2');
-  assert.equal(nestedMarkerResult.rows.find((row) => row.id === 'artifact-source')?.state, 'mismatch');
-
-  const fieldOnlyHtml = `
-    <html><body>
-      <h2>Field verification packet</h2>
-      <p>Field parity packet complete.</p>
-      <p>${proof.token.mint}</p>
-      <p>${proof.walletPublicKey}</p>
-    </body></html>
-  `;
-  const fieldOnlyHtmlResult = compareClassicReportArtifact(fieldOnlyHtml, proof, { poolTopology: {} });
-  assert.equal(fieldOnlyHtmlResult.artifactSource, 'trebuchet-v2');
-  assert.equal(fieldOnlyHtmlResult.rows.find((row) => row.id === 'artifact-source')?.state, 'mismatch');
-
-  const scriptMarkerHtml = `
-    <html><body>
-      <script id="trebuchet-v2-proof" type="application/json">{}</script>
-      <p>${proof.token.mint}</p>
-      <p>${proof.walletPublicKey}</p>
-    </body></html>
-  `;
-  const scriptMarkerResult = compareClassicReportArtifact(scriptMarkerHtml, proof, { poolTopology: {} });
-  assert.equal(scriptMarkerResult.artifactSource, 'trebuchet-v2');
-  assert.equal(scriptMarkerResult.rows.find((row) => row.id === 'artifact-source')?.state, 'mismatch');
-  assert.match(js, /function classicArtifactHasV2Marker/);
-  assert.match(js, /classicArtifactHasV2Marker\(parsed\)/);
-  assert.match(js, /Object\.values\(value\)\.some/);
-  assert.match(js, /value\.fieldVerification/);
-  assert.match(js, /value\.reportParityAudit/);
-  assert.match(js, /schema === 'trebuchet-v2-proof'/);
-  assert.match(js, /trebuchet-v2-field-verification/);
-  assert.match(js, /trebuchet-v2-proof/);
-  assert.match(js, /field verification packet/);
 });
 
 test('v2 app boots through the local API client when available', () => {
@@ -10762,7 +6633,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
           'tokenomicsChart',
           'liquidityChart',
           'fundingMeter',
-          'parityPanel',
           'firstViewportFit',
         ],
         expectedRequiredChecks: [
@@ -10771,7 +6641,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
           'tokenomicsChart',
           'liquidityChart',
           'fundingMeter',
-          'parityPanel',
           'firstViewportFit',
         ],
         viewports: [
@@ -10786,7 +6655,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
               tokenomicsChart: true,
               liquidityChart: true,
               fundingMeter: true,
-              parityPanel: true,
               firstViewportFit: true,
             },
           },
@@ -10801,7 +6669,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
               tokenomicsChart: true,
               liquidityChart: true,
               fundingMeter: true,
-              parityPanel: true,
               firstViewportFit: true,
             },
           },
@@ -10893,7 +6760,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
     'tokenomicsChart',
     'liquidityChart',
     'fundingMeter',
-    'parityPanel',
     'firstViewportFit',
   ]);
   assert.deepEqual(boot.viewportSmoke.expectedRequiredChecks, boot.viewportSmoke.requiredChecks);
@@ -10903,7 +6769,6 @@ test('v2 API client bootstraps local session and read-only app state', async () 
   assert.match(apiClientJs, /kind: proof\.kind \|\| null/);
   assert.match(apiClientJs, /requiredChecks: safeArray\(proof\.requiredChecks\)/);
   assert.match(apiClientJs, /expectedRequiredChecks: safeArray\(proof\.expectedRequiredChecks\)/);
-  assert.match(js, /proof\.artifactVersion !== 1 \|\| proof\.kind !== 'trebuchet-v2-viewport-smoke'/);
 
   assert.equal(calls.filter((call) => call.url === '/api/session').length, 1);
   for (const call of calls.filter((item) => item.url !== '/api/session')) {
@@ -11438,19 +7303,14 @@ test('startup routes an interrupted launch to recovery before the tutorial', () 
   assert.match(js, /const workspace = recoveryWorkspaceForJournal\(journal\)/);
   assert.match(js, /view: 'launch'/);
   assert.match(js, /workspace,/);
-  assert.match(js, /if \(journalNeedsTokenFinish\(journal\)\) return false/);
-  assert.match(js, /action === 'open-token-recovery'[\s\S]*?openTokenRecovery/);
   assert.match(js, /restoreLaunchConfigFromJournal\(journal\)/);
   assert.match(js, /state\.launchWorkspace = workspace/);
 });
 
 test('completed liquidity recovery opens Finish without replaying resume or funding', () => {
-  assert.match(js, /function canContinueJournalToFinish\(journal\)/);
-  assert.match(js, /completedLpJournal\(journal\)/);
-  assert.match(js, /label: 'Continue to Finish'/);
-  assert.match(js, /action: 'continue-journal-finish'/);
-  assert.match(js, /function openJournalFinish\(journalId\)/);
-  assert.match(js, /state\.launchWorkspace = 'finish'/);
+  // A coin's Continue restores the launch at the step it needs: Finish once its pools are done.
+  assert.match(js, /return liquidityComplete \? 'finish' : 'liquidity';/);
+  assert.match(js, /setLaunchWorkspace\(recoveryWorkspaceForJournal\(journal\)\);/);
   assert.match(js, /function recoveryAuthorizationEndpoint\(\)/);
   assert.match(js, /function stageRecoveryAuthorization/);
   assert.match(js, /const fundingEstimate = recoveryEndpoint\s*\?\s*null/);
@@ -11825,8 +7685,8 @@ test('a finished launch is matched to the coin by its mint, never its name', () 
 
 test('a coin being created shows its facts, not a numbered track of phases', () => {
   // One row per fact, with no ordinals and no Continue/back navigation.
-  // Plan is not a phase of its own: its settings live in Token, Liquidity and Leftovers.
-  for (const fact of ['wallet', 'mint', 'liquidity', 'fund', 'finish']) {
+  // Plan is not a phase of its own: its settings live in Launch setup, Token setup, Liquidity and Recovery.
+  for (const fact of ['wallet', 'mint', 'liquidity', 'finish']) {
     assert.match(html, new RegExp(`class="coin-fact"[^>]*data-coin-fact="${fact}"`));
   }
   assert.doesNotMatch(html, /data-coin-fact="configure"/);
@@ -11857,26 +7717,12 @@ test('a coin page names its creation facts as nouns', () => {
   assert.doesNotMatch(serverJs, /label: '(Create the token|Open the pools|Lock the liquidity|Return the assets)/);
 });
 
-test('the parity audit states which checks pass, not a percentage score', () => {
-  assert.doesNotMatch(js, /audit\?\.score \|\| 0\}% complete|token-stat-label">Score</);
-  assert.match(js, /checks pass · \$\{audit\?\.missingCount \|\| 0\} missing/);
-});
-
 test('the coin page and the create view share one facts vocabulary', () => {
   assert.doesNotMatch(js, /CREATION_STEP_STATES|Not done yet|remaining steps can/);
   assert.match(js, /const meta = COIN_FACT_MARKS\[step\.state\] \|\| COIN_FACT_MARKS\.todo;/);
   assert.match(js, /unrecorded: \{ icon: 'fa-circle-question'/);
   // The same action words in both places.
   assert.match(js, /return: 'Sweep the launch wallet'/);
-});
-
-test('an NFT collection shows its facts, not numbered phases', () => {
-  const nfts = read('public/v2/nfts.js');
-  assert.match(nfts, /<nav class="nft-fact-list" aria-label="What is true about this collection">/);
-  assert.doesNotMatch(nfts, /nft-tab-n|Collection phases|<span class="eyebrow">0[1-6]<\/span>|'Not started'|'After import'/);
-  assert.doesNotMatch(css, /\.nft-tabs\b|\.nft-tab-n/);
-  // The rail keeps one action; the facts list replaces its checks.
-  assert.doesNotMatch(nfts, /nft-gap">Checks</);
 });
 
 test('a coin is called Live only once the chain agrees', () => {
@@ -11899,4 +7745,57 @@ test('a locked Recovery PIN opens the PIN panel instead of a toast, and generate
   assert.match(dialogs, /Unlock your Recovery PIN[\s\S]{0,200}openRecoveryPinGate\(\{ reason: 'unlock' \}\);\s*return;/);
   assert.match(actions, /async function ensureRecoveryPinUnlocked\(\)/);
   assert.equal((actions.match(/ensureRecoveryPinUnlocked\(\)\)\) return/g) || []).length, 2);
+});
+
+test('with the Recovery PIN locked the rail says Unlock and opens the PIN panel, not Create a launch wallet', () => {
+  const workspace = readFileSync(new URL('../public/v2/features/launch/workspace.js', import.meta.url), 'utf8');
+  assert.match(workspace, /pinLocked && !walletKey\s*\? \{ state: 'todo', value: 'PIN locked', action: 'Unlock' \}/);
+  assert.match(workspace, /next\.id === 'wallet' && state\.secretPin\?\.locked === true[\s\S]{0,120}openRecoveryPinGate\(\{ reason: 'unlock' \}\);/);
+});
+
+test('launch presets and support layers are wired into the Price and Pairs pages', () => {
+  assert.equal((html.match(/data-action="apply-launch-preset"/g) || []).length, 5);
+  for (const id of ['spark', 'anchor', 'constellation', 'vortex', 'custom']) assert.match(html, new RegExp(`data-preset="${id}"`));
+  assert.match(js, /function applyLaunchPreset\(/);
+  assert.match(js, /action === 'apply-launch-preset'/);
+  // Layers: a field for them, a parser, the plan carries them, and the map and list line draw them.
+  assert.match(js, /data-base-field="baseSupportLayersText"/);
+  assert.match(js, /function analyzeSupportLayers\(/);
+  assert.match(js, /\.\.\.\(supportLayers\.length \? \{ layers: supportLayers \} : \{\}\)/);
+  assert.match(js, /function poolGlyphSvg\(/);
+  assert.match(js, /poolGlyphSvg\(planPoolFor\(row\), row\.color\)/);
+  assert.match(js, /`bid,\$\{layer\.sharePercent\}/);
+});
+
+test('the rail holds funding, then Launch (red when ready) and Sweep (amber when the wallet holds something)', () => {
+  assert.match(js, /data-action="estimate-funding" data-stay="1"/);
+  assert.match(js, /rail-launch\$\{launchReady \? ' is-ready' : ''\}/);
+  assert.match(js, /rail-sweep\$\{leftovers \? ' has-leftovers' : ''\}/);
+  assert.match(css, /\.rail-launch\.is-ready \{[^}]*var\(--red/);
+  assert.match(css, /\.rail-sweep\.has-leftovers \{[^}]*var\(--amber/);
+});
+
+test('Meteora is a venue for any pool inside the launch, not a separate Lean launch', () => {
+  assert.doesNotMatch(html, /<span>Lean launch<\/span>/);
+  // Every pool line has the venue and the fee as button groups, not dropdowns.
+  assert.match(js, /function rowSwitchesHtml\(row\)/);
+  assert.match(js, /action: 'set-pool-venue'/);
+  assert.match(js, /action === 'set-pool-venue' \? \{ venue:/);
+  assert.match(js, /function applyPoolSwitch\(action, control\)/);
+  assert.match(js, /\['raydium', 'Raydium'/);
+  assert.match(js, /\['meteora-damm-v2', 'Meteora'/);
+  assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{ feeBps:/);
+  assert.match(js, /meteora,\$\{pool\.damm\?\.feeBps \|\| 25\}/);
+});
+
+test('v2 quote acquisition requests allow for live quotes instead of the short UI timeout', () => {
+  assert.match(apiClientJs, /autoSwapPlan: safeArray\(autoSwapPlan\), .*\n.*\n\s*timeoutMs: 90_000/);
+  assert.match(apiClientJs, /recoveryDigest \? \{ recoveryDigest \} : \{\}\) \}, timeoutMs: 60_000/);
+  assert.match(apiClientJs, /cleanup\/prepare`, \{ method: 'POST', body: \{ walletPublicKey \}, timeoutMs: 90_000 \}/);
+});
+
+test('v2 primary views share framed workspaces', () => {
+  assert.match(css, /#view-wallet \.surface,[\s\S]*?#view-settings \.surface[\s\S]*?border: 1px solid var\(--line-strong\)/);
+  assert.match(css, /#view-settings \.release-panel \.secret-pin-actions\s*\{[\s\S]*?grid-column: 1 \/ -1/);
+  assert.match(css, /body:not\(\[data-active-view="launch"\]\) \.view\.is-active,[\s\S]*?overflow: hidden/);
 });

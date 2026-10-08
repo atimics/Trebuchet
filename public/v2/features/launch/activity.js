@@ -378,7 +378,7 @@ function fieldRunbookActionControl(action = '', stage = {}) {
     return { dataAction: walletPublicKey ? 'import-wallet' : 'generate-wallet', label: walletPublicKey ? 'Import wallet' : 'Generate wallet' };
   }
   if (action === 'grind-or-select-vanity-ca') {
-    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Cancel grind' : 'Grind CA', disabled: false };
+    return { dataAction: 'start-vanity', label: state.vanityRunning ? 'Add grind' : 'Grind CA', disabled: false };
   }
   if (['stage-launch-plan', 'fix-pool-topology'].includes(action)) {
     return { dataAction: 'review-plan', label: 'Stage plan' };
@@ -424,17 +424,8 @@ function fieldRunbookActionControl(action = '', stage = {}) {
       disabled: !airdropStatus.complete || !proofCanCreateLocalDossier(proof, config),
     };
   }
-  if (action === 'compare-classic-artifact') {
-    const comparisonInput = String(
-      state.classicReportComparison?.input
-      || document.querySelector('.classic-artifact-text')?.value
-      || '',
-    ).trim();
-    if (!comparisonInput) return { dataAction: 'load-classic-artifact', label: 'Load artifact' };
-    return { dataAction: 'compare-classic-artifact', label: 'Compare' };
-  }
   if (action === 'load-or-resume-journal') {
-    return { dataAction: 'inspect-recovery', label: 'Recovery' };
+    return { dataAction: 'inspect-recovery', label: 'Open coin' };
   }
   if (action === 'resolve-proof-audit') {
     return fallback('Audit', 'Open Diagnostics and resolve the missing proof-audit rows before retiring Classic.');

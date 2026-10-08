@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Trebuchet</title>
   <link rel="stylesheet" href="../vendor/fontawesome/css/all.min.css">
-  <link rel="stylesheet" href="./styles.css?v=119">
+  <link rel="stylesheet" href="./styles.css?v=175">
 </head>
 <body data-execution-environment="loading" data-custody-signal="loading">
   <div class="app-shell">
@@ -23,10 +23,6 @@
           <i class="fa-solid fa-coins"></i>
           <span>Coins</span>
         </button>
-        <button class="nav-item" type="button" data-view="nfts">
-          <i class="fa-solid fa-images"></i>
-          <span>NFTs</span>
-        </button>
         <button class="nav-item" type="button" data-view="wallet">
           <i class="fa-solid fa-wallet"></i>
           <span>Wallet</span>
@@ -34,10 +30,6 @@
         <button class="nav-item" type="button" data-view="discovery">
           <i class="fa-solid fa-compass"></i>
           <span>Discovery</span>
-        </button>
-        <button class="nav-item" type="button" data-view="history">
-          <i class="fa-solid fa-clock-rotate-left"></i>
-          <span>History</span>
         </button>
         <button class="nav-item" type="button" data-view="settings">
           <i class="fa-solid fa-sliders"></i>
@@ -50,6 +42,7 @@
       <button class="launch-identity-sidebar" id="launchIdentitySidebar" type="button" data-action="open-launch-identity" aria-label="Open active launch identity" hidden></button>
 
       <div class="sidebar-footer">
+        <button class="nav-toggle" type="button" id="navToggle" data-action="toggle-nav" aria-label="Expand navigation" title="Expand navigation"><i class="fa-solid fa-angles-right" aria-hidden="true"></i></button>
         <button class="network-button" type="button" id="networkButton" aria-label="Mode and network settings">
           <span class="status-dot"></span>
           <span class="network-button-copy"><strong id="custodySignalLabel">Checking…</strong><small id="networkLabel"></small></span>
@@ -90,38 +83,12 @@
         <div class="coins-list-view" id="coinsListView">
           <div class="coins-toolbar">
             <button class="primary-button" type="button" data-action="new-coin"><i class="fa-solid fa-plus"></i><span>New coin</span></button>
-            <button class="secondary-button" type="button" data-view="lean" title="One pool, locked for good, a fraction of the venue cost"><i class="fa-solid fa-bolt"></i><span>Lean launch</span></button>
             <div class="coins-add" id="coinsAddForm">
               <input id="addCoinMint" type="text" autocomplete="off" spellcheck="false" placeholder="Add an existing coin: paste its mint address" aria-label="Mint address of an existing coin">
               <button class="secondary-button" type="button" data-action="add-coin"><i class="fa-solid fa-link"></i><span>Add</span></button>
             </div>
           </div>
           <div class="coins-list" id="coinsList" aria-live="polite"></div>
-        </div>
-        <div class="coin-page" id="coinPage" hidden>
-          <button class="text-button coin-back" type="button" data-action="coins-back"><i class="fa-solid fa-arrow-left"></i> All coins</button>
-          <div class="coin-page-body" id="coinPageBody"></div>
-        <section class="coin-section pool-support" id="poolSupportPanel" hidden aria-labelledby="poolSupportTitle">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Action</span>
-              <h2 id="poolSupportTitle">Add buy support</h2>
-            </div>
-          </div>
-          <div class="pool-support-form">
-            <input id="poolSupportTarget" data-support-field="target" type="hidden">
-            <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
-            <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct" data-choice="slider">
-              <option value="12">−12%</option>
-              <option value="25">−25%</option>
-              <option value="50" selected>−50%</option>
-              <option value="75">−75%</option>
-            </select></label>
-            <button class="secondary-button" type="button" data-action="preview-pool-support"><i class="fa-solid fa-magnifying-glass-chart"></i><span>Preview</span></button>
-          </div>
-          <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
-        </section>
-        <div class="coin-page-footer" id="coinPageFooter"></div>
         </div>
       </section>
 
@@ -233,7 +200,7 @@
                   <i class="fa-solid fa-satellite-dish" aria-hidden="true"></i><strong>Live</strong>
                 </button>
               </div>
-              <small id="launchSettingsEnvironment">Nothing is sent</small>
+              <span class="launch-settings-environment" id="launchSettingsEnvironment">Nothing is sent</span>
             </div>
             </div>
 
@@ -241,29 +208,47 @@
             <nav class="coin-state" id="coinState" aria-label="What is true about this coin">
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="wallet" data-coin-fact="wallet">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Launch wallet</strong><small data-coin-fact-value="wallet"></small></span>
+                <span><strong>Launch setup</strong><small data-coin-fact-value="wallet"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="mint" data-coin-fact="mint">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Token</strong><small data-coin-fact-value="mint"></small></span>
+                <span><strong>Token setup</strong><small data-coin-fact-value="mint"></small></span>
               </button>
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="liquidity" data-coin-fact="liquidity">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
                 <span><strong>Liquidity</strong><small data-coin-fact-value="liquidity"></small></span>
               </button>
-              <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="fund" data-coin-fact="fund">
-                <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Funding</strong><small data-coin-fact-value="fund"></small></span>
-              </button>
+              
               <button class="coin-fact" type="button" aria-pressed="false" aria-controls="launchWorkspaceViewport" data-launch-workspace="finish" data-coin-fact="finish">
                 <i class="fa-solid fa-circle coin-fact-mark" aria-hidden="true"></i>
-                <span><strong>Leftovers</strong><small data-coin-fact-value="finish"></small></span>
+                <span><strong>Finish</strong><small data-coin-fact-value="finish"></small></span>
               </button>
             </nav>
 
             <aside class="launch-next-rail" id="launchNextRail" aria-label="Next action, cost and supply"></aside>
 
             <div class="launch-workspace-viewport" id="launchWorkspaceViewport" role="region" tabindex="0" aria-live="polite">
+            <section class="coin-chain-pane" id="coinChainPane" aria-live="polite" hidden></section>
+            <section class="coin-section pool-support" id="poolSupportPanel" hidden aria-labelledby="poolSupportTitle">
+              <div class="section-heading">
+                <div>
+                  <span class="eyebrow">Action</span>
+                  <h2 id="poolSupportTitle">Add buy support</h2>
+                </div>
+              </div>
+              <div class="pool-support-form">
+                <input id="poolSupportTarget" data-support-field="target" type="hidden">
+                <label><span>SOL to add</span><input id="poolSupportSol" data-support-field="solAmount" type="text" inputmode="decimal" autocomplete="off" value="0.1"></label>
+                <label><span>Spread down to</span><select id="poolSupportDepth" data-support-field="depthPct" data-choice="slider">
+                  <option value="12">−12%</option>
+                  <option value="25">−25%</option>
+                  <option value="50" selected>−50%</option>
+                  <option value="75">−75%</option>
+                </select></label>
+                <button class="secondary-button" type="button" data-action="preview-pool-support"><i class="fa-solid fa-magnifying-glass-chart"></i><span>Preview</span></button>
+              </div>
+              <div class="pool-support-result" id="poolSupportResult" aria-live="polite"></div>
+            </section>
             <section class="launch-identity-dock" id="launchIdentityDock" aria-label="Active token launch identity" hidden></section>
             <section class="setup-dock" data-launch-pane="fund mint liquidity finish" aria-label="Phase settings">
               <div class="setup-dock-head">
@@ -282,7 +267,17 @@
                 <div class="plan-track" id="planTrack">
 <section class="plan-slide" data-plan-slide="details" data-phase="mint" role="tabpanel">
 <form class="config-grid" id="launchConfig" aria-label="Launch configuration">
+                  <div class="token-standard-row">
                   <label>
+                    <span>Token standard</span>
+                    <select id="mintFormat" data-choice="buttons">
+                      <option value="token-2022" data-short="Token-2022" selected>Token-2022 · on-mint identity</option>
+                      <option value="classic-spl" data-short="Classic SPL">Classic SPL · compatibility</option>
+                    </select>
+                  </label>
+                </div>
+                  <div class="identity-fields">
+<label>
                     <span>Token name</span>
                     <input id="tokenName" type="text" value="" placeholder="Your token name" autocomplete="off">
                   </label>
@@ -294,6 +289,18 @@
                     <span>Description</span>
                     <input id="tokenDescription" type="text" value="" placeholder="What is this token for?" autocomplete="off">
                   </label>
+                  <div class="identity-terms">
+                    <label>
+                      <span>Total supply</span>
+                      <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
+                    </label>
+                    <label class="sealed-launch-control" for="sealedLaunch">
+                      <input id="sealedLaunch" type="checkbox" checked>
+                      <span><strong>Sealed launch</strong></span>
+                    </label>
+                  </div>
+                  </div>
+                  <div class="logo-panel">
                   <div class="logo-input-row">
                     <span class="logo-input-label">Logo</span>
                     <label class="logo-upload-control" for="tokenLogoFile">
@@ -303,30 +310,19 @@
                     </label>
                   </div>
                   <div class="token-logo-preview" id="tokenLogoPreview"></div>
+                  </div>
                 </form>
-<div class="config-grid launch-more-grid">
-                    <label>
-                      <span>Total supply</span>
-                      <input id="tokenSupply" type="text" value="1,000,000,000" inputmode="numeric" max="10000000000" autocomplete="off">
-                    </label>
-                    <label class="sealed-launch-control" for="sealedLaunch">
-                      <input id="sealedLaunch" type="checkbox" checked>
-                      <span>
-                        <strong>Sealed launch</strong>
-                      </span>
-                    </label>
-                    <label>
-                      <span>Mint standard</span>
-                      <select id="mintFormat" data-choice="buttons">
-                        <option value="token-2022" data-short="Token-2022" selected>Token-2022 · on-mint identity</option>
-                        <option value="classic-spl" data-short="Classic SPL">Classic SPL · compatibility</option>
-                      </select>
-                    </label>
-                </div>
 </section>
 <section class="plan-slide" data-plan-slide="address" data-phase="mint" role="tabpanel">
-<div class="vanity-details-body grinder" aria-label="Optional custom contract address">
-                  <div class="vanity-inputs grinder-fields">
+<div class="vanity-details-body grinder grinder-two" aria-label="Optional custom contract address">
+                  <div class="grinder-setup">
+                    <div class="grinder-preview" id="vanityPreview" aria-live="polite"></div>
+                    <div class="candidate-strip grinder-results" id="vanityCandidates">
+                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
+                  </div>
+                  </div>
+                  <div class="grinder-controls">
+                    <div class="vanity-inputs grinder-fields">
                     <label class="grinder-field">
                       <span>Starts with</span>
                       <input id="vanityStart" type="text" value="" placeholder="e.g. MKT" autocomplete="off" spellcheck="false" aria-describedby="vanityFeedback">
@@ -339,8 +335,8 @@
                   <div class="grinder-options">
                     <label class="grinder-field vanity-length-select" for="vanityLength">
                       <span>Length</span>
-                      <select id="vanityLength" data-choice="slider">
-                        <option value="">Any</option>
+                      <select id="vanityLength" data-choice="buttons">
+                        <option value="" data-short="Any">Any</option>
                         <option value="44" data-short="44">44 characters</option>
                         <option value="43" data-short="43">43 characters</option>
                         <option value="42" data-short="42">42 characters</option>
@@ -352,11 +348,10 @@
                       <span><strong>Any case</strong></span>
                     </label>
                   </div>
-                  <div class="candidate-strip grinder-results" id="vanityCandidates">
-                    <button class="pill-button is-active" type="button" data-action="select-vanity" data-public-key="" aria-pressed="true">Random</button>
-                    <button class="pill-button" type="button" data-action="start-vanity">Grind</button>
+                    <div class="grinder-statuses-slot" id="vanityStatuses"></div>
+                    <div class="grinder-grind" id="vanityGrind"></div>
                   </div>
-                  </div>
+                </div>
 </section>
 <section class="plan-slide" data-plan-slide="price" data-phase="liquidity" role="tabpanel">
 <div class="config-grid price-grid">
@@ -376,11 +371,12 @@
                       <span><input id="liquidityBudgetSol" type="number" value="1" min="0" step="0.1"><strong>SOL</strong></span>
                     </label>
                   </div>
-                  <div class="launch-budget-presets" role="group" aria-label="Liquidity budget presets">
-                    <button type="button" data-action="select-launch-budget" data-budget="0"><strong>None</strong></button>
-                    <button class="is-selected" type="button" data-action="select-launch-budget" data-budget="1"><strong>1 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="10"><strong>10 SOL</strong></button>
-                    <button type="button" data-action="select-launch-budget" data-budget="100"><strong>100 SOL</strong></button>
+                  <div class="launch-budget-presets" role="group" aria-label="Launch presets">
+                    <button type="button" data-action="apply-launch-preset" data-preset="spark" data-budget="0"><strong>Spark</strong><small><span>0 SOL</span><span>token only</span></small></button>
+                    <button type="button" data-action="apply-launch-preset" data-preset="anchor" data-budget="1"><strong>Anchor</strong><small><span>1 SOL</span><span>1 market</span></small></button>
+                    <button type="button" data-action="apply-launch-preset" data-preset="constellation" data-budget="10"><strong>Constellation</strong><small><span>10 SOL</span><span>3 markets</span></small></button>
+                    <button type="button" data-action="apply-launch-preset" data-preset="vortex" data-budget="100"><strong>Vortex</strong><small><span>100 SOL</span><span>5 markets</span></small></button>
+                    <button type="button" data-action="apply-launch-preset" data-preset="custom"><strong>Custom</strong><small><span>your pools</span></small></button>
                   </div>
                   <div class="launch-budget-strategy" id="launchBudgetStrategy" aria-live="polite"></div>
                 </section>
@@ -410,15 +406,16 @@
                     </div>
                   </form>
 </section>
-<section class="plan-slide" data-plan-slide="return" data-phase="finish" role="tabpanel">
+<section class="plan-slide" data-plan-slide="return" data-phase="wallet" role="tabpanel">
+<div class="ledger-slot" id="recoverLedger"></div>
 <section class="return-wallet asset-destinations" id="returnWalletCard" aria-label="Where assets go"></section>
 <div class="mini-table" id="reportPreview"></div>
                     <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="toggle-report-publish">Toggle publish</button>
+                      <button class="report-publish-switch" type="button" role="switch" aria-checked="false" data-action="toggle-report-publish"><span class="switch-track" aria-hidden="true"><span></span></span><span>Publish report to Arweave</span></button>
                       <button class="pill-button" type="button" data-action="download-report-preview">Download preview</button>
                     </div>
 </section>
-<section class="plan-slide" data-plan-slide="airdrop" data-phase="finish" role="tabpanel">
+<section class="plan-slide" data-plan-slide="airdrop" data-phase="wallet" role="tabpanel">
 <label class="supply-field" for="airdropCsvText"><span>CSV recipients</span></label>
                     <textarea id="airdropCsvText" rows="4" spellcheck="false" placeholder="wallet,tokens&#10;Recipient111...,1000"></textarea>
                     <div class="airdrop-budget-controls">
@@ -426,17 +423,13 @@
                         <span>Budget %</span>
                         <input id="airdropSupplyPercent" type="number" value="2" min="0" max="99" step="0.1">
                       </label>
-                      <label>
-                        <span>Airdrop wallets</span>
-                        <input id="airdropWallets" type="number" value="0" min="0" step="1">
-                      </label>
                       <label class="toggle-line">
                         <input id="airdropAutoFit" type="checkbox" checked>
                         <span>Auto-fit</span>
                       </label>
                     </div>
                     <div class="operator-toolbar compact">
-                      <button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button>
+                      <span class="airdrop-lists" id="airdropListButtons"><button class="pill-button" type="button" data-action="sample-airdrop">Sample CSV</button></span>
                       <button class="pill-button" type="button" data-action="fit-airdrop-budget">Fit budget</button>
                       <button class="pill-button" type="button" data-action="clear-airdrop">Clear</button>
                     </div>
@@ -482,16 +475,11 @@
               </summary>
               <div class="diagnostics-grid">
                 <div>
-                  <span class="eyebrow">System status</span>
-                  <h3>What is real here</h3>
-                </div>
-                <div>
                   <span class="eyebrow">Preflight</span>
                   <h3>Checks</h3>
                 </div>
               </div>
               <section class="live-ops-panel" id="liveOpsPanel" aria-label="Live launch activity"></section>
-              <div class="parity-list" id="parityPanel"></div>
               <div class="guardrail-list" id="guardrailList"></div>
             </details>
             </div>
@@ -500,13 +488,7 @@
         </div>
       </section>
 
-      <section class="view" id="view-nfts" aria-labelledby="viewTitle">
-        <div class="nft-root" id="nftRoot" aria-live="polite"></div>
-      </section>
 
-      <section class="view" id="view-lean" aria-labelledby="viewTitle">
-        <div class="nft-root" id="leanRoot" aria-live="polite"></div>
-      </section>
 
       <section class="view" id="view-wallet" aria-labelledby="viewTitle">
         <div class="two-column">
@@ -526,6 +508,7 @@
                 </button>
               </div>
             </div>
+            <div class="held-wallets" id="heldWallets"></div>
             <div class="account-list" id="accountList"></div>
           </section>
           <section class="surface">
@@ -535,7 +518,6 @@
               </span>
               <span class="risk-badge wallet-rarity-badge" id="activeWalletRarityBadge" hidden></span>
             </div>
-            <div class="wallet-recovery-inventory-slot" id="walletRecoveryInventory"></div>
             <div class="wallet-detail-panel" id="walletDetailPanel"></div>
             <div class="asset-table" id="assetTable"></div>
           </section>
@@ -553,6 +535,14 @@
               <button class="discovery-pane-tab" id="discoveryTabWallets" type="button" role="tab" aria-selected="false" aria-controls="discoveryPanelWallets" data-discovery-pane="wallets">
                 <i class="fa-solid fa-wallet" aria-hidden="true"></i>
                 <span><strong>Wallets</strong></span>
+              </button>
+              <button class="discovery-pane-tab" id="discoveryTabInspect" type="button" role="tab" aria-selected="false" aria-controls="discoveryPanelInspect" data-discovery-pane="inspect">
+                <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                <span><strong>Inspect</strong></span>
+              </button>
+              <button class="discovery-pane-tab" id="discoveryTabSaved" type="button" role="tab" aria-selected="false" aria-controls="discoveryPanelSaved" data-discovery-pane="saved">
+                <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
+                <span><strong>Saved</strong><small class="badge" id="discoveryRegistryCount">0</small></span>
               </button>
             </nav>
             <section class="discovery-pane is-active" id="discoveryPanelTokens" data-discovery-pane-panel="tokens" role="tabpanel" aria-labelledby="discoveryTabTokens">
@@ -576,9 +566,11 @@
               <div class="personal-discovery-status" id="personalDiscoveryStatus" aria-live="polite"></div>
               <div class="personal-token-network" id="personalTokenNetwork"></div>
             </section>
-            <details class="discovery-utility-panel discovery-manual-tools">
-              <summary><i class="fa-solid fa-magnifying-glass"></i><span>Inspect mint</span></summary>
-              <form class="discovery-inspect-bar" id="discoveryInspectForm">
+
+
+            </section>
+            <section class="discovery-pane" id="discoveryPanelInspect" data-discovery-pane-panel="inspect" role="tabpanel" aria-labelledby="discoveryTabInspect" hidden>
+            <form class="discovery-inspect-bar" id="discoveryInspectForm">
                 <label class="visually-hidden" for="discoveryMintInput">Token mint</label>
                 <input id="discoveryMintInput" name="mint" type="text" placeholder="Solana mint" autocomplete="off" spellcheck="false">
                 <button class="primary-button" id="discoveryInspectButton" type="submit">
@@ -586,11 +578,10 @@
                   <span>Inspect</span>
                 </button>
               </form>
-            </details>
             <div class="discovery-error" id="discoveryError" aria-live="polite"></div>
-            <details class="discovery-utility-panel discovery-saved-tools">
-              <summary><i class="fa-solid fa-box-archive"></i><span>Saved</span><span class="badge" id="discoveryRegistryCount">0</span></summary>
-              <div class="discovery-source-banner" id="discoverySourceBanner"></div>
+            </section>
+            <section class="discovery-pane" id="discoveryPanelSaved" data-discovery-pane-panel="saved" role="tabpanel" aria-labelledby="discoveryTabSaved" hidden>
+            <div class="discovery-source-banner" id="discoverySourceBanner"></div>
               <div class="discovery-toolbar">
                 <label>
                   <i class="fa-solid fa-magnifying-glass"></i>
@@ -604,7 +595,7 @@
                 </div>
               </div>
               <div class="discovery-table" id="discoveryTable"></div>
-            </details>
+            
             </section>
             <section class="discovery-pane" id="discoveryPanelWallets" data-discovery-pane-panel="wallets" role="tabpanel" aria-labelledby="discoveryTabWallets" hidden>
             <section class="personal-discovery-panel wallet-tracking-panel" aria-labelledby="walletTrackingTitle">
@@ -625,29 +616,12 @@
             </section>
             </section>
           </section>
-          <aside class="rail" data-discovery-pane-panel="tokens">
+          <aside class="rail" data-discovery-pane-panel="tokens inspect saved">
             <section class="surface">
               <div class="evidence-panel" id="evidencePanel"></div>
             </section>
           </aside>
         </div>
-      </section>
-
-      <section class="view" id="view-history" aria-labelledby="viewTitle">
-        <section class="surface surface-main">
-          <div class="history-pane-tabs" id="historyPaneTabs" role="tablist" aria-label="History workspace">
-            <button class="history-pane-tab is-selected" id="historyTabRecovery" type="button" role="tab" aria-selected="true" aria-controls="historyPanelRecovery" data-action="select-history-pane" data-history-pane="recovery"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i><strong>Recovery</strong></button>
-            <button class="history-pane-tab" id="historyTabWallets" type="button" role="tab" aria-selected="false" aria-controls="historyPanelWallets" data-action="select-history-pane" data-history-pane="wallets"><i class="fa-solid fa-wallet" aria-hidden="true"></i><strong>Wallets</strong></button>
-            <button class="history-pane-tab" id="historyTabAudit" type="button" role="tab" aria-selected="false" aria-controls="historyPanelAudit" data-action="select-history-pane" data-history-pane="audit"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><strong>Activity</strong></button>
-            <button class="history-pane-tab" id="historyTabJournal" type="button" role="tab" aria-selected="false" aria-controls="historyPanelJournal" data-action="select-history-pane" data-history-pane="journal"><i class="fa-solid fa-list" aria-hidden="true"></i><strong>Launches</strong></button>
-          </div>
-          <div class="history-pane-stage">
-            <section class="history-pane is-active" id="historyPanelRecovery" data-history-pane-panel="recovery" role="tabpanel" aria-labelledby="historyTabRecovery"><div class="recovery-wizard" id="recoveryWizard"></div></section>
-            <section class="history-pane" id="historyPanelWallets" data-history-pane-panel="wallets" role="tabpanel" aria-labelledby="historyTabWallets" hidden><div class="recovery-wallet-workspace" id="recoveryWalletWorkspace"></div></section>
-            <section class="history-pane" id="historyPanelAudit" data-history-pane-panel="audit" role="tabpanel" aria-labelledby="historyTabAudit" hidden><div class="history-execution-audit" id="historyExecutionAudit"></div></section>
-            <section class="history-pane" id="historyPanelJournal" data-history-pane-panel="journal" role="tabpanel" aria-labelledby="historyTabJournal" hidden><div class="timeline" id="timeline"></div></section>
-          </div>
-        </section>
       </section>
 
       <section class="view" id="view-settings" aria-labelledby="viewTitle">
@@ -711,7 +685,7 @@
       <header class="sweep-confirm-head">
         <span class="eyebrow">Recovery operation</span>
         <h2 id="sweepConfirmTitle">Sweep recovery wallet</h2>
-        <p id="sweepConfirmDetail">Choose the destination, then type the full source address to authorize the sweep.</p>
+        <p id="sweepConfirmDetail">Everything left in the launch wallet goes to this wallet.</p>
       </header>
       <div class="sweep-confirm-route" aria-label="Sweep route">
         <span><small>From recovery wallet</small><code id="sweepConfirmSource"></code></span>
@@ -722,11 +696,7 @@
         <span>Destination wallet</span>
         <input id="sweepConfirmDestination" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Solana destination address">
       </label>
-      <label class="sweep-confirm-field" for="sweepConfirmTypedAddress">
-        <span>Type the full recovery wallet address</span>
-        <input id="sweepConfirmTypedAddress" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Exact source address required">
-      </label>
-      <p class="sweep-confirm-message" id="sweepConfirmMessage" role="status" aria-live="assertive">The local recovery entry is removed only after Trebuchet verifies the source wallet is empty.</p>
+      <p class="sweep-confirm-message" id="sweepConfirmMessage" role="status" aria-live="assertive">The launch wallet's key stays saved in this app after the sweep.</p>
       <div class="sweep-confirm-actions">
         <button class="pill-button" type="button" data-action="cancel-sweep-confirm">Cancel</button>
         <button class="pill-button danger" type="button" data-action="submit-sweep-confirm">
@@ -741,12 +711,10 @@
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
   <script src="./runtime-state.js?v=2"></script>
-  <script src="./api-client.js?v=42"></script>
+  <script src="./api-client.js?v=47"></script>
   <script src="../gif-optimizer.js?v=3"></script>
-  <script src="./core.js?v=1"></script>
+  <script src="./core.js?v=6"></script>
   <script src="./market-evidence.js?v=1"></script>
-  <script src="./app.js?v=210"></script>
-  <script src="./nfts.js?v=2"></script>
-  <script src="./lean.js?v=2"></script>
+  <script src="./app.js?v=275"></script>
 </body>
 </html>

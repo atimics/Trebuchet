@@ -77,15 +77,15 @@ function renderAll() {
   renderStages();
   renderQueue();
   renderGuardrails();
-  renderParityPanel();
   renderWallet();
   renderDiscovery();
   renderExtension();
   renderSettings();
-  renderHistory();
   renderActivityLogDrawer();
   renderRecoveryPinGate();
   renderLaunchWorkspace();
   enhanceNumberSteppers();
   drawLaunchCanvas();
+  // State can change without new markup (the app connecting, a PIN unlock): re-check guards.
+  scheduleActionGuards();
 }

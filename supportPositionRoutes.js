@@ -53,7 +53,7 @@ export function installSupportPositionRoutes(app, { runtime, isDemoMode, demoCha
 
   app.get('/api/v2/support/jobs', (req, res) => {
     try {
-      const wallets = pendingWallets.list().map((wallet) => wallet.publicKey).filter((wallet) => !req.query.walletPublicKey || wallet === req.query.walletPublicKey);
+      const wallets = pendingWallets.records().map((wallet) => wallet.publicKey).filter((wallet) => !req.query.walletPublicKey || wallet === req.query.walletPublicKey);
       res.json({ success: true, jobs: isDemoMode() ? [] : requireRuntime().list(wallets) });
     } catch (error) { onError(res, error); }
   });
@@ -77,6 +77,13 @@ export function installSupportPositionRoutes(app, { runtime, isDemoMode, demoCha
       res.json({ success: true, job });
     } catch (error) { onError(res, error); }
     finally { if (claimed) release(walletPublicKey); }
+  });
+  app.post('/api/v2/support/jobs/:jobId/cancel', async (req, res) => {
+    const walletPublicKey = String(req.body?.walletPublicKey || '').trim();
+    try {
+      if (isDemoMode()) return res.json({ success: true, job: null });
+      res.json({ success: true, job: await requireRuntime().cancel({ id: req.params.jobId, walletPublicKey }) });
+    } catch (error) { onError(res, error); }
   });
   app.post('/api/v2/support/open', async (req, res) => {
     const body = req.body || {}, walletPublicKey = String(body.walletPublicKey || '').trim(); let claimed = false;

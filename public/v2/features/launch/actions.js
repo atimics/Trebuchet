@@ -12,9 +12,16 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     if (!quiet) notify('Airdrop requires the Trebuchet desktop app');
     return;
   }
-  const allRecipients = Array.isArray(proof.airdrop?.recipients) ? proof.airdrop.recipients : [];
+  // Once this launch has saved its airdrop plan, that plan is what runs: the server refuses any other
+  // amounts, so the screen confirms and sends the saved recipients and amounts, not a recomputed list.
+  const walletPublicKey = proof.walletPublicKey || selectedLaunchWalletPublicKey();
+  const savedPlan = state.apiClient.getAirdropPlan
+    ? await state.apiClient.getAirdropPlan(walletPublicKey).catch(() => null)
+    : null;
+  const savedRows = Array.isArray(savedPlan?.recipients) ? savedPlan.recipients.map((row) => ({ wallet: row.wallet, tokens: row.tokens })) : null;
+  const allRecipients = savedRows || (Array.isArray(proof.airdrop?.recipients) ? proof.airdrop.recipients : []);
   const failedRecipients = Array.isArray(proof.airdrop?.failed)
-    ? proof.airdrop.failed.map((row) => ({ wallet: row.wallet, tokens: row.tokens }))
+    ? proof.airdrop.failed.map((row) => savedRows?.find((saved) => saved.wallet === row.wallet) || { wallet: row.wallet, tokens: row.tokens })
     : [];
   const recipients = retry ? failedRecipients : allRecipients;
   if (!recipients.length) {
@@ -22,9 +29,10 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
     return;
   }
   if (!skipConfirm) {
+    const total = recipients.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0);
     const ok = await confirmOperatorAction({
       title: retry ? 'Retry failed airdrop recipients' : 'Run airdrop before final sweep',
-      detail: 'Trebuchet will sign token transfers from the managed launch wallet.',
+      detail: `Trebuchet will send ${total.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens to ${recipients.length} wallet${recipients.length === 1 ? '' : 's'}${savedRows ? ', the amounts saved for this launch' : ''}, signed by the managed launch wallet.`,
       confirmLabel: retry ? 'Retry airdrop' : 'Run airdrop',
       danger: true,
     });
@@ -40,10 +48,12 @@ async function runV2Airdrop({ retry = false, skipConfirm = false, quiet = false,
   renderAll();
   try {
     const payload = {
-      walletPublicKey: proof.walletPublicKey || selectedLaunchWalletPublicKey(),
-      tokenMint: proof.airdrop?.tokenMint || proof.token.mint,
-      tokenDecimals: proof.airdrop?.tokenDecimals ?? proof.token.decimals ?? currentLaunchConfig().token.decimals,
-      isToken2022: proof.token.mintFormat === 'token-2022' || proof.token.isToken2022 === true || proof.airdrop?.isToken2022 === true,
+      walletPublicKey,
+      tokenMint: savedPlan?.tokenMint || proof.airdrop?.tokenMint || proof.token.mint,
+      tokenDecimals: savedPlan?.tokenDecimals ?? proof.airdrop?.tokenDecimals ?? proof.token.decimals ?? currentLaunchConfig().token.decimals,
+      isToken2022: savedPlan?.programId
+        ? savedPlan.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+        : proof.token.mintFormat === 'token-2022' || proof.token.isToken2022 === true || proof.airdrop?.isToken2022 === true,
       recipients,
     };
     const result = retry
@@ -188,7 +198,7 @@ async function startQuoteAcquire() {
       resetQuoteAcquireState({ keepRunning: false });
     }
     const fundingEstimateStatus = classicFundingEstimateStatus(currentLaunchConfig()), routes = quoteAcquireRoutes();
-    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Rerun funding estimate first' : 'Run funding estimate first'); return; }
+    if (!fundingEstimateStatus.matchesConfig) { notify(fundingEstimateStatus.stale ? 'Funding estimate is out of date' : 'No funding estimate yet'); return; }
     if (!routes.length) { notify(quoteAcquireManualCount() ? 'This estimate needs manual quote-token prefund' : 'No quote acquire needed'); return; }
     if (!state.demoActive && !walletIsUnlocked()) {
       const unlocked = await unlockSecretPin({ reason: 'unlock' }); if (!unlocked || !walletIsUnlocked()) return;
@@ -220,7 +230,6 @@ async function clearQuoteAcquire() {
   resetQuoteAcquireState({ keepRunning: false });
   renderChartDeck();
   renderClassicBridge();
-  notify('Quote acquire job cleared');
 }
 
 async function reviewAndArmRun() {
@@ -241,13 +250,11 @@ async function reviewAndArmRun() {
   }
   if (state.lastRunEnvelope?.status === 'armed') {
     renderClassicBridge();
-    notify('Approved. It can run now.');
     return;
   }
   const recoveryEndpoint = recoveryAuthorizationEndpoint();
   if (recoveryEndpoint && stageRecoveryAuthorization(recoveryEndpoint)) {
     renderAll();
-    notify('Review the one remaining recovery action, then arm it');
     return;
   }
   if (!state.transactions.length) {
@@ -319,7 +326,6 @@ async function simulateLaunch() {
     state.launchMode = 'dry-run';
     await stageTransactions();
     setLaunchWorkspace('mint', { focus: true });
-    notify('Test mode on');
   } catch (error) {
     notify(error.message || 'Could not enable Test mode');
   }

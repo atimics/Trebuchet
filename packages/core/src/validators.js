@@ -287,10 +287,10 @@ export function normalizeLogoImageMime(buffer) {
   return mime;
 }
 
-// The logo is embedded in the on-chain metadata JSON and the launch report,
-// whose sponsored Arweave upload caps near 95KB. A 200x200 ceiling plus a
-// byte cap keeps every copy inside that budget.
-export const LOGO_MAX_DIMENSION_PX = 200;
+// No chain limits a logo's pixels: the token metadata holds a link, and the image is uploaded to
+// Arweave, free under ~100 KB. The byte cap is the real limit. The launch report embeds the logo
+// only while it is small (it links the uploaded copy otherwise), so pixels need only a sane ceiling.
+export const LOGO_MAX_DIMENSION_PX = 1024;
 export const LOGO_MAX_BYTES = 100 * 1024;
 
 /** { width, height } of a PNG, JPEG, or GIF; throws when unreadable. */

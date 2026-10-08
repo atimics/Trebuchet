@@ -153,3 +153,20 @@ for (const error of [new Error('This transaction has already been processed'),
     await assert.rejects(chain.sendTransaction(tx), (actual) => actual === error);
   });
 }
+
+test('a finalized blockhash check waits for finality to reach the status slot instead of failing', async () => {
+  const tx = await signed();
+  let checks = 0;
+  const chain = adapter({
+    getBlockHeight: async () => 101,
+    isBlockhashValid: async (_hash, options) => {
+      assert.equal(options.minContextSlot, 120);
+      if (++checks < 3) throw Object.assign(new Error('failed to determine if the blockhash is valid: Minimum context slot has not been reached'), { code: -32016 });
+      return { context: { slot: 120 }, value: false };
+    },
+  });
+  assert.equal((await chain.readTransaction(tx)).state, 'expired');
+  assert.equal(checks, 3);
+  const broken = adapter({ getBlockHeight: async () => 101, isBlockhashValid: async () => { throw Object.assign(new Error('rpc down'), { code: -32000 }); } });
+  await assert.rejects(broken.readTransaction(tx), /rpc down/);
+});

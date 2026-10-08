@@ -6,6 +6,7 @@ import { openRuntimeStore, publicJson } from '@trebuchet/runtime/store';
 import { createPreparedTransactionService } from '@trebuchet/runtime/prepared-transaction';
 import { createSolanaSigner, SOLANA_GENESIS_HASHES } from '@trebuchet/runtime/solana';
 import { getNetwork, getRpcUrl } from './rpcConfig.js';
+import { createExecutionConnection } from './rpcConnection.js';
 
 export const LIQUIDITY_OPERATION_KIND = 'liquidity-transaction';
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
@@ -70,7 +71,7 @@ export async function checkLiquidityResult(connection, network, { operation, lau
 }
 
 export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgress,
-  createConnection = () => new Connection(getRpcUrl(), 'finalized'), networkForRequest = getNetwork,
+  createConnection = () => createExecutionConnection(), networkForRequest = getNetwork,
   now = Date.now, timeoutMs = 60_000,
 }) {
   if (!owner || typeof getScopeId !== 'function' || typeof recordProgress !== 'function') throw new TypeError('Liquidity execution requires the profile owner and journal interfaces');
@@ -101,7 +102,9 @@ export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgr
       return await run({ store, service, approval, connection, network, walletPublicKey });
     } catch (cause) {
       if (cause.code === 'RECOVERY_STORAGE_UNAVAILABLE') throw cause;
-      throw Object.assign(new Error('Resume the saved liquidity operation to verify its result.', { cause }), {
+      // Say why: the saved operation is re-checked on every resume, so a bare "resume" message loops.
+      console.error(`[liquidity] ${cause.code || 'LIQUIDITY_INTERRUPTED'}: ${cause.message}`);
+      throw Object.assign(new Error(`A pool step could not be confirmed (${cause.message || 'interrupted'}). Nothing after it was sent.`, { cause }), {
         code: 'EXECUTION_RECOVERY_REQUIRED', statusCode: 409, operationId: cause.operationId || store.getActiveOperation(walletPublicKey)?.id,
         errorDetails: { code: cause.code || 'LIQUIDITY_INTERRUPTED', message: cause.message },
       });
@@ -109,6 +112,20 @@ export function createLiquidityExecutionRuntime({ owner, getScopeId, recordProgr
   };
   const checkpoint = (walletPublicKey, result) => recordProgress(walletPublicKey, { ...result.event, txId: result.txId || result.signature || null, operationId: result.operationId });
   return {
+    // The liquidity plan saved when this launch first prepared liquidity, if any. A resume follows
+    // it: the screen may have changed since (a toggle, a fix that carries more fields), and the
+    // saved plan is immutable, so rebuilding from the screen can only conflict or diverge.
+    savedPlan(input) {
+      owner.assertActive();
+      const walletPublicKey = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey)).publicKey.toBase58();
+      const scopeId = getScopeId(walletPublicKey);
+      if (!scopeId) return null;
+      const db = openRuntimeStore(owner.profile);
+      try {
+        const saved = db.getLaunch(hash({ scopeId, walletPublicKey, network: networkForRequest(), kind: 'liquidity-plan' }));
+        return saved?.config?.plan || null;
+      } finally { db.close(); }
+    },
     forLaunch(input) {
       const wallet = Keypair.fromSecretKey(Uint8Array.from(input.tempWalletSecretKey));
       const walletPublicKey = wallet.publicKey.toBase58(), scopeId = getScopeId(walletPublicKey), plan = liquidityPlan(input);

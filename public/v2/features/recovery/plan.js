@@ -88,6 +88,10 @@ function customPoolFromRecovery(pool = {}, index = 0) {
     ladderText: manualLadderText,
     supportSol: pool?.support?.mode === 'custom' ? Number(pool.support.solValue || 0) : 0,
     supportDepth: pool?.support?.mode === 'custom' ? Number(pool.support.depthPct || 12) : 12,
+    supportLayersText: pool?.support?.mode === 'custom' ? supportLayersText(pool.support.layers) : '',
+    venue: pool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium',
+    dammFeeBps: Number(pool?.damm?.feeBps) || 25,
+    dammRange: Number(pool?.damm?.rangeMultiple) || 1000,
   };
 }
 
@@ -111,6 +115,13 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || pools.find((pool) => String(pool.quoteToken || pool.quoteSymbol || '').toUpperCase() === 'SOL');
   const restoredFlywheelPool = pools.find((pool) => String(pool.id || '').endsWith('-flywheel'));
   // Before per-launch tiers, the SOL pool used config 8 and pairs config 5.
+  state.solPoolVenue = restoredSolPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.solPoolDamm = {
+    feeBps: Number(restoredSolPool?.damm?.feeBps) || 25,
+    rangeMultiple: Number(restoredSolPool?.damm?.rangeMultiple) || 1000,
+  };
+  state.quotePoolVenue = restoredFlywheelPool?.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+  state.quotePoolDamm = { feeBps: Number(restoredFlywheelPool?.damm?.feeBps) || 25, rangeMultiple: Number(restoredFlywheelPool?.damm?.rangeMultiple) || 1000 };
   state.solPoolConfigIndex = restoredSolPool
     ? Math.floor(Number(restoredSolPool.ammConfigIndex ?? 8))
     : DEFAULT_POOL_CONFIG_INDEX;
@@ -122,10 +133,20 @@ function restoreLaunchConfigFromJournal(journal = {}) {
     || String(pool.quoteMint || '') === DEFAULT_SOL_MINT
   )) || pools[0] || null;
   const nonSolPools = pools.filter((pool) => pool !== solPool);
-  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool));
+  // A pair is the built-in flywheel pair only when it has no ladder, support or extra slices of its own;
+  // one that has any is kept as an ordinary pair so none of those settings are lost.
+  const isPlainPair = (pool) => pool.venue !== 'meteora-damm-v2'
+    && (!pool.ladder || pool.ladder.mode === 'off')
+    && (!pool.support || pool.support.mode !== 'custom')
+    && (!Array.isArray(pool.distribution) || pool.distribution.length <= 1);
+  const builtInPoolIndex = nonSolPools.findIndex((pool) => recoveryVenueForPool(pool) && isPlainPair(pool));
   const builtInPool = builtInPoolIndex >= 0 ? nonSolPools[builtInPoolIndex] : null;
   const builtInVenue = builtInPool ? recoveryVenueForPool(builtInPool) : null;
   const customPools = nonSolPools.filter((_, index) => index !== builtInPoolIndex);
+  if (builtInPool) {
+    state.quotePoolVenue = builtInPool.venue === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium';
+    state.quotePoolDamm = { feeBps: Number(builtInPool.damm?.feeBps) || 25, rangeMultiple: Number(builtInPool.damm?.rangeMultiple) || 1000 };
+  }
 
   if ($('#tokenName') && token.name != null) $('#tokenName').value = String(token.name).slice(0, 32);
   if ($('#tokenSymbol') && token.symbol != null) $('#tokenSymbol').value = String(token.symbol).slice(0, 10).toUpperCase();
@@ -142,6 +163,10 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       animated: token.logo.animated === true,
     };
     state.launchIdentity = null;
+    // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
+    if (!journal?.token?.metadataUri) {
+      fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
+    }
   }
   if ($('#mintFormat')) $('#mintFormat').value = token.mintFormat === 'classic-spl'
     ? 'classic-spl'
@@ -165,12 +190,26 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   if ($('#ladderBands')) $('#ladderBands').value = String(solPool?.ladder?.mode === 'simple' ? Number(solPool.ladder.bandCount || 0) : 0);
   state.baseManualLadderText = manualLadderTextFromPool(solPool || {});
   state.baseSupportDepth = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.depthPct || 12) : 12);
+  state.baseSupportLayersText = solPool?.support?.mode === 'custom' ? supportLayersText(solPool.support.layers) : '';
   if ($('#supportSol')) $('#supportSol').value = String(solPool?.support?.mode === 'custom' ? Number(solPool.support.solValue || 0) : 0);
 
   if ($('#quotePoolPercent')) $('#quotePoolPercent').value = String(Number(builtInPool?.supplyPercent || 0));
   if ($('#quotePoolVenue') && builtInVenue) $('#quotePoolVenue').value = builtInVenue.key;
   state.customPools = customPools.map(customPoolFromRecovery);
-  state.customPoolCounter = Math.max(state.customPoolCounter, state.customPools.length);
+  // Keep the id counter past every restored id (pairs may be numbered 2 and 3 after one was
+  // removed), and give a pair that was saved with a repeated id its own, so each pair edits itself.
+  state.customPoolCounter = Math.max(
+    state.customPoolCounter,
+    state.customPools.length,
+    ...state.customPools.map((pool) => Number(/^custom-pool-(\d+)$/.exec(pool.id)?.[1] || 0)),
+  );
+  const seenPoolIds = new Set();
+  state.customPools.forEach((pool) => {
+    if (seenPoolIds.has(pool.id)) {
+      do { state.customPoolCounter += 1; pool.id = `custom-pool-${state.customPoolCounter}`; } while (seenPoolIds.has(pool.id));
+    }
+    seenPoolIds.add(pool.id);
+  });
 
   const feeKeyRecipient = String(
     topology.feeKeyRecipient
@@ -193,7 +232,6 @@ function restoreLaunchConfigFromJournal(journal = {}) {
       : airdropRows.filter((row) => row?.source === 'funder').map((row) => String(row.wallet || '')).filter(Boolean),
   };
   if ($('#airdropCsvText')) $('#airdropCsvText').value = state.airdropCsvText;
-  if ($('#airdropWallets')) $('#airdropWallets').value = String(Number(airdrop.recipientCount || airdropRows.length || 0));
   if ($('#airdropSupplyPercent')) $('#airdropSupplyPercent').value = String(Number(airdrop.requestedSupplyPercent ?? airdrop.supplyPercent ?? 0));
   if ($('#airdropAutoFit')) $('#airdropAutoFit').checked = airdrop.autoFit !== false;
 

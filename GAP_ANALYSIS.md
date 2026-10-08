@@ -59,9 +59,7 @@ scope for the test. Read-only smoke is useful but does not replace this step.
 
 The field run must produce:
 
-- `release-evidence/v2/field-verification.json`;
-- the retained full raw Classic comparison input;
-- `release-evidence/v2/release-attestation.json`.
+- `release-evidence/v2/field-verification.json`.
 
 The gate recomputes the launch fingerprint and sweep hash, validates concrete
 proof and required Classic rows, verifies exact evidence and Classic SHA-256
@@ -133,7 +131,7 @@ pass state alone is not acceptance.
 The Trebuchet production gap is closed only when:
 
 - no v1 tag can ship the Trebuchet-default product;
-- the exact field evidence and attestation are committed;
+- the exact field evidence is committed;
 - the production gate passes on the release commit;
 - all required platform credentials are present;
 - dependency risk has a recorded production disposition;

@@ -239,6 +239,9 @@ function applyBootState(boot) {
   state.launchMode = state.demoActive ? 'dry-run' : 'guarded';
   state.environmentReady = true;
   state.rpcActiveUrl = boot.rpc?.activeUrl || null;
+  state.chainNetwork = boot.rpc?.network || null;
+  state.rpcNetwork = boot.rpc?.rpcNetwork || null;
+  state.networkMismatch = boot.rpc?.networkMismatch === true;
   state.rpcSaved = Array.isArray(boot.rpc?.saved) ? boot.rpc.saved : [];
   state.rpcName = boot.rpc?.label || 'Unknown RPC';
   state.rpcHealth = boot.rpc?.health || 'unknown';
@@ -264,6 +267,7 @@ function applyBootState(boot) {
     failedJournalCount: boot.recovery?.failedJournalCount || 0,
     pendingWalletCount: boot.recovery?.pendingWalletCount || 0,
   };
+  refreshHeldWallets({ background: true });
   applyPersonalDiscoveryState(boot.discovery || {});
   state.managedWallets = Array.isArray(boot.wallets?.managed)
     ? boot.wallets.managed
@@ -295,8 +299,8 @@ function applyBootState(boot) {
   state.clmmFeeTiers = normalizeClmmFeeTiers(boot.feeTiers?.tiers);
   state.clmmFeeTiersSource = boot.feeTiers?.available ? 'local-api' : 'fallback';
   state.clmmFeeTiersError = boot.feeTiers?.error || null;
-  if (state.vanityCandidates.length && !state.selectedVanityPublicKey) {
-    state.selectedVanityPublicKey = state.vanityCandidates[state.vanityCandidates.length - 1].publicKey;
+  if (!state.selectedVanityPublicKey) {
+    state.selectedVanityPublicKey = freeVanityCandidates().at(-1)?.publicKey || null;
   }
   // Prefer a wallet whose key still exists (readable, then locked) over one whose saved key is gone
   // from this computer. A key-gone wallet can never sign, and selecting one made the screen say
@@ -369,6 +373,7 @@ async function bootLocalApi() {
   }
   if (state.discovery.scanning) schedulePersonalDiscoveryPoll();
   if (boot.api?.available) {
+    client.syncRentRate?.().then(() => { state.classicFundingEstimate = null; renderAll(); }).catch(() => null);
     refreshDestinations({ force: true });
     autoVerifyQuoteTokens();
     // The one-step card is the static web host's launcher. On the desktop it

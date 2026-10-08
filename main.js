@@ -11,6 +11,8 @@
 // a desktop app, which is fine in practice — plenty of real Electron
 // apps are built this way.
 
+// First: web3.js captures fetch when it loads, and every RPC request must go through the limiter.
+import './rpcLimiter.js';
 import { app, BrowserWindow, Menu, shell, safeStorage, dialog } from 'electron';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
@@ -70,11 +72,7 @@ import {
 
 // __dirname equivalent in ESM. Used to resolve sibling files like README.md.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const requestedDesktopUi = String(process.env.TREBUCHET_UI || '').trim().toLowerCase();
-const classicUiRequested = process.argv.includes('--classic')
-  || requestedDesktopUi === 'classic'
-  || requestedDesktopUi === 'v1';
-const desktopUiPath = classicUiRequested ? '/' : '/v2/';
+const desktopUiPath = '/v2/';
 
 // One desktop process owns the local API, recovery journal, and launch-wallet
 // operation mutex. Starting a second Electron process would otherwise create a
@@ -198,7 +196,7 @@ function openExternalSafe(rawUrl) {
 //
 // Communication is one-way: main → renderer via executeJavaScript,
 // which evaluates code in the page's JS context. That reaches
-// window.__showUpdateResult, defined in public/app.js.
+// window.__showUpdateResult, defined in public/v2/features/shell/dialogs.js.
 // ---------------------------------------------------------------------------
 // The repo path here MUST match the canonical case on GitHub
 // (capital T in "Trebuchet"). GitHub's REST API returns 404 on a
@@ -383,7 +381,7 @@ async function checkForUpdates(win, options = {}) {
 // Push the result of a check into the renderer. Since this codebase
 // doesn't use IPC (the renderer is sandboxed and talks to Express via
 // fetch), we evaluate a call to window.__showUpdateResult — which is
-// defined in public/app.js — directly in the page context.
+// defined in public/v2/features/shell/dialogs.js — directly in the page context.
 function sendUpdateResult(win, info) {
   if (!win || win.isDestroyed()) return;
   // JSON-stringify is the safe way to embed an object into JS source.
@@ -843,9 +841,9 @@ function createWindow() {
 
   // When the user hits the window's X (or Cmd/Ctrl+W, or quits via the
   // app menu), Chromium fires the renderer's beforeunload event. The
-  // renderer (see the window.addEventListener('beforeunload') at the
-  // bottom of public/app.js) returns a non-empty value when a launch
-  // is in progress, signalling "the unload should be prevented".
+  // renderer's beforeunload handler (if the page registers one) returns a
+  // non-empty value when a launch is in progress, signalling "the unload
+  // should be prevented".
   //
   // In a browser, this would trigger Chrome/Firefox's native "Leave
   // site? Changes you may not be saved" dialog. In Electron, the
@@ -868,15 +866,9 @@ function createWindow() {
       buttons: ['Stay', 'Leave anyway'],
       defaultId: 0,
       cancelId: 0,
-      title: 'Launch in progress',
-      message: 'A launch is in progress.',
-      detail:
-        'Anything created on-chain so far (token mint, pools) is permanent. ' +
-        'If you close now, you\'ll need to recover the ephemeral wallet from ' +
-        'the Pending Wallets panel next time you open the app — its secret ' +
-        'key is saved in your OS keychain, so the funds remain accessible.\n\n' +
-        'In-progress UI state (current step, pool config you\'ve typed) will ' +
-        'be lost.',
+      title: 'Wallet work in progress',
+      message: 'Transactions are being sent.',
+      detail: 'Saved steps continue the next time Trebuchet opens. Keys stay in Trebuchet.',
     });
     if (choice === 1) {
       // User chose "Leave anyway". preventDefault on the will-prevent-unload
@@ -892,7 +884,7 @@ function createWindow() {
     // showed has triggered the Chromium compositor hit-testing bug on
     // Windows — the same bug we work around in did-finish-load above,
     // and the same one that drove the window.confirm() → HTML modal
-    // migration in public/app.js. After a native dialog dismisses,
+    // migration in the page. After a native dialog dismisses,
     // text inputs in the renderer become un-clickable: single-clicks
     // don't focus them, even though double-click can still select text.
     // The user has to alt-tab away and back to fix it. From their

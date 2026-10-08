@@ -5,8 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Keypair } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { acquireProfileOwner } from '../packages/runtime/src/owner.js';
 import { openRuntimeStore } from '../packages/runtime/src/store.js';
+import { SOLANA_GENESIS_HASHES } from '../packages/runtime/src/solana.js';
 import { airdropChain, airdropContext, airdropInput, recipients, sweepWallet } from './fixtures/airdrop-chain.mjs';
 
 const walletPublicKey = sweepWallet.publicKey.toBase58();
@@ -69,7 +71,7 @@ test('a recipient balance from an earlier transfer keeps its own exact airdrop r
 
 for (const [label, change] of Object.entries({ amount: { recipients: [{ wallet: recipients[0], tokens: '3' }] },
   recipient: { recipients: [{ wallet: Keypair.generate().publicKey.toBase58(), tokens: '2.5' }] },
-  mint: { tokenMint: Keypair.generate().publicKey.toBase58() }, program: { isToken2022: true }, decimals: { tokenDecimals: 9 } })) {
+  mint: { tokenMint: Keypair.generate().publicKey.toBase58() }, decimals: { tokenDecimals: 9 } })) {
   test(`the saved airdrop ${label} remains fixed across retries`, async (t) => {
     const f = fixture(t);
     f.runtime.prepare({ walletPublicKey, airdrop: airdropInput });
@@ -79,12 +81,81 @@ for (const [label, change] of Object.entries({ amount: { recipients: [{ wallet: 
   });
 }
 
+// The plan the app sends and journals names the coin, its decimals and the recipients, and no token program.
+const token2022 = TOKEN_2022_PROGRAM_ID.toBase58(), classic = TOKEN_PROGRAM_ID.toBase58();
+const airdropPlans = (profile) => {
+  const db = new DatabaseSync(path.join(profile, 'execution.sqlite'), { readOnly: true });
+  try { return db.prepare("SELECT body FROM launches WHERE json_extract(body, '$.purpose') = 'airdrop' ORDER BY created_at, rowid").all().map((row) => JSON.parse(row.body).plan); }
+  finally { db.close(); }
+};
+
+test('a Token-2022 launch airdrops with the token program saved with its coin', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: token2022 } });
+  f.connection.getAccountInfo = async () => { throw new Error('the saved program needs no chain read'); };
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, token2022);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [token2022]);
+});
+
+test('a launch without a saved token program reads it from the mint once', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  let reads = 0; const read = f.connection.getAccountInfo;
+  f.connection.getAccountInfo = async (...args) => { reads += 1; return read(...args); };
+  assert.equal((await f.runtime.execute(airdropInput)).transferred.length, 2);
+  const journal = f.journal.activeForWallet(walletPublicKey);
+  assert.equal(journal.token.tokenProgram, token2022);
+  assert.equal(journal.events.filter((event) => event.stage === 'token_program_read').length, 1);
+  await f.runtime.execute(airdropInput);
+  assert.equal(reads, 1); assert.equal(f.state.sends.length, 2);
+});
+
+test('a plan saved under the wrong token program is replaced before any payment', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, classic);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic, token2022]);
+  const restored = f.runtime.prepare({ walletPublicKey });
+  assert.equal(restored.programId, token2022); assert.equal(restored.isToken2022, true); assert.equal(restored.recipients.length, 2);
+  assert.deepEqual(await f.runtime.execute(airdropInput), result);
+  assert.equal(f.state.sends.length, 2);
+});
+
+test('a plan that already delivered keeps its token program', async (t) => {
+  const f = fixture(t);
+  f.runtime.prepare({ walletPublicKey });
+  f.connection.getAccountInfo = async () => null;
+  assert.equal((await f.runtime.execute({ ...airdropInput, recipients: airdropInput.recipients.slice(0, 1) })).transferred.length, 1);
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: token2022 } });
+  assert.equal(f.runtime.prepare({ walletPublicKey }).programId, classic);
+  assert.equal((await f.runtime.execute(airdropInput)).transferred.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic]);
+});
+
+test('a request cannot choose the token program', async (t) => {
+  const f = fixture(t);
+  f.runtime.prepare({ walletPublicKey, airdrop: airdropInput });
+  const result = await f.runtime.execute({ ...airdropInput, isToken2022: true });
+  assert.equal(result.transferred.length, 2); assert.equal(f.state.sends.length, 2);
+  assert.deepEqual(airdropPlans(f.profile).map((plan) => plan.programId), [classic]);
+});
+
+test('an unreadable mint pauses the airdrop before a plan is saved', async (t) => {
+  const f = fixture(t, { chain: { token2022: true } });
+  f.connection.getAccountInfo = async () => { throw new Error('fetch failed'); };
+  await assert.rejects(f.runtime.execute(airdropInput), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  assert.equal(f.state.sends.length, 0); assert.deepEqual(airdropPlans(f.profile), []);
+});
+
 test('a failed recipient checkpoint stops the next payment and replay restores it', async (t) => {
   let fail = true, f;
   f = fixture(t, { updateJournal: (...args) => {
     if (fail) throw Object.assign(new Error('journal commit failed'), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
     return f.journal.upsertForWallet(...args);
   } });
+  f.journal.upsertForWallet(walletPublicKey, { token: { tokenProgram: classic } });
   await assert.rejects(f.runtime.execute(airdropInput), { code: 'RECOVERY_STORAGE_UNAVAILABLE' });
   assert.equal(f.state.sends.length, 1); assert.equal(f.walletExecution.active(walletPublicKey), null);
   fail = false;
@@ -253,4 +324,51 @@ test('an older receipt remains recoverable after a failed chain read', async (t)
   assert.equal(f.state.sends.length, 2);
   const db = openRuntimeStore(f.profile);
   try { assert.equal(db.getOperation(operation.id).state, 'confirmed'); } finally { db.close(); }
+});
+
+// The batch service itself is tested against a local validator. This drives the airdrop runtime's
+// grouping, replay, and recovery through a stand-in that stores a confirmed batch as that service does.
+function batchFixture(t, { loseReply = false } = {}) {
+  const calls = [];
+  const f = fixture(t, { batchSize: 5, wrapWalletExecution: (walletExecution, journal) => ({ ...walletExecution, transferBatchMax: 5,
+    transferTokenBatch: async ({ mint, programId, decimals, sourceTokenAccount, recipients: rows, action }) => {
+      calls.push(rows);
+      const scopeId = journal.activeForWallet(walletPublicKey).id;
+      const db = openRuntimeStore(f.profile);
+      try {
+        const launch = db.saveLaunch({ id: `batch-${calls.length}`, walletPublicKey, network: 'devnet', planDigest: String(calls.length).padStart(64, "0"),
+          config: { scopeId, action, genesisHash: SOLANA_GENESIS_HASHES.devnet } });
+        const operation = db.prepareOperation({ launchId: launch.id, kind: 'token-transfer-batch',
+          payload: { mint, programId, decimals, sourceTokenAccount, recipients: rows } });
+        db.setOperationState(operation.id, 'confirmed', { chain: { signature: `sig-${calls.length}`, mint, programId, decimals, sourceTokenAccount,
+          recipients: rows.map((row) => ({ ...row, destinationTokenAccount: `ata-${row.destinationWallet}`, receivedRaw: row.amountRaw, transferFeeRaw: '0' })), feeLamports: 5000, rentLamports: 0 } });
+        if (loseReply && calls.length === 1) throw new Error('reply lost');
+        return { operationId: operation.id, txId: `sig-${calls.length}` };
+      } finally { db.close(); }
+    } }) });
+  return { ...f, calls };
+}
+
+test('airdrop recipients go out several to a transaction and each is recorded from its receipt', async (t) => {
+  const f = batchFixture(t);
+  const progress = [];
+  const result = await f.runtime.execute({ ...airdropInput, onProgress: (row) => progress.push(row.recipient) });
+  assert.equal(f.calls.length, 1, 'both recipients share one transaction');
+  assert.deepEqual(f.calls[0].map((row) => row.destinationWallet), recipients);
+  assert.equal(f.state.sends.length, 0, 'no single transfers are sent');
+  assert.deepEqual(result.transferred.map((row) => [row.wallet, row.amountRaw, row.txId]), recipients.map((wallet) => [wallet, '2500000', 'sig-1']));
+  assert.deepEqual(progress, recipients);
+  const journal = f.journal.activeForWallet(walletPublicKey);
+  assert.equal(journal.events.filter((event) => event.stage === 'airdrop_recipient_done').length, 2);
+  assert.deepEqual(await f.runtime.execute(airdropInput), result, 'a finished airdrop sends nothing again');
+  assert.equal(f.calls.length, 1);
+});
+
+test('a batch whose reply was lost is recorded from its saved receipt, not sent again', async (t) => {
+  const f = batchFixture(t, { loseReply: true });
+  await assert.rejects(f.runtime.execute(airdropInput), /reply lost/);
+  assert.equal(f.journal.activeForWallet(walletPublicKey).airdrop?.transferred?.length || 0, 0);
+  const result = await f.runtime.execute(airdropInput);
+  assert.equal(f.calls.length, 1, 'the confirmed batch is not sent again');
+  assert.deepEqual(result.transferred.map((row) => row.txId), ['sig-1', 'sig-1']);
 });

@@ -103,18 +103,18 @@ function renderPersonalDiscovery() {
       ` : ''}
     </section>
     ${managedWallets.length ? `
-      <details class="managed-discovery-wallets">
-        <summary>
+      <section class="managed-discovery-wallets">
+        <header class="managed-head">
           <span><i class="fa-solid fa-key"></i> ${managedWallets.length} launch wallet${managedWallets.length === 1 ? '' : 's'}</span>
           <small>Automatic</small>
-        </summary>
+        </header>
         <div class="discovery-wallet-chip-list">${visibleManagedWallets.map(discoveryWalletChip).join('')}</div>
         ${managedWallets.length > visibleManagedWallets.length ? `
           <button class="pill-button discovery-wallet-show-more" type="button" data-action="show-more-discovery-wallets">
             Show ${Math.min(100, managedWallets.length - visibleManagedWallets.length)} more launch wallets
           </button>
         ` : ''}
-      </details>
+      </section>
     ` : ''}
     ${enabledWatchOnlyCount + enabledManagedCount ? `<p class="discovery-scan-budget">Refresh looks through ${enabledWatchOnlyCount + enabledManagedCount} wallet${enabledWatchOnlyCount + enabledManagedCount === 1 ? '' : 's'}, ${scanConcurrency} at a time.</p>` : ''}
   `;
@@ -193,8 +193,10 @@ function renderPersonalDiscovery() {
   `;
 }
 
+const DISCOVERY_PANES = ['tokens', 'wallets', 'inspect', 'saved'];
+
 function renderDiscoveryPanes() {
-  const pane = state.discovery.activePane === 'wallets' ? 'wallets' : 'tokens';
+  const pane = DISCOVERY_PANES.includes(state.discovery.activePane) ? state.discovery.activePane : 'tokens';
   state.discovery.activePane = pane;
   $$('.discovery-pane-tab').forEach((button) => {
     const selected = button.dataset.discoveryPane === pane;
@@ -203,7 +205,7 @@ function renderDiscoveryPanes() {
     button.tabIndex = selected ? 0 : -1;
   });
   $$('[data-discovery-pane-panel]').forEach((panel) => {
-    const selected = panel.dataset.discoveryPanePanel === pane;
+    const selected = String(panel.dataset.discoveryPanePanel).split(/\s+/).includes(pane);
     panel.hidden = !selected;
     panel.classList.toggle('is-active', selected);
   });
@@ -434,8 +436,8 @@ function renderDiscovery() {
         <i class="fa-solid fa-copy"></i><span>Copy</span>
       </button>
     </div>
-    <details class="discovery-more">
-      <summary><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</summary>
+    <section class="discovery-more">
+      <header class="more-head"><span>Details</span>${warningSummaries.length ? `<small>${warningSummaries.length} warning${warningSummaries.length === 1 ? '' : 's'}</small>` : ''}</header>
       <div class="discovery-audit">
       <div class="audit-line">
         <span class="evidence-dot pass"></span>
@@ -448,26 +450,25 @@ function renderDiscovery() {
         </div>
       `}
       ${warningSummaries.map((warning) => `
-        <details class="discovery-warning-line">
-          <summary>
+        <div class="discovery-warning-line">
+          <div class="warning-head">
             <i class="fa-solid fa-triangle-exclamation"></i>
             <span><strong>${escapeHtml(warning.title)}</strong><small>${escapeHtml(warning.detail)}</small></span>
-            <i class="fa-solid fa-chevron-down"></i>
-          </summary>
-          <code>${escapeHtml(warning.raw)}</code>
-        </details>
+          </div>
+          <code title="${escapeHtml(warning.raw)}">${escapeHtml(warning.raw)}</code>
+        </div>
       `).join('')}
-      <details class="discovery-notes" ${selected.notes ? 'open' : ''}>
-        <summary><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></summary>
+      <div class="discovery-notes">
+        <div class="notes-head"><span>Notes</span><small>${selected.notes ? 'Saved' : 'Add'}</small></div>
         <label class="discovery-notes-editor">
           <textarea id="discoveryNotesInput" rows="2" maxlength="500" placeholder="Questions or verification context…">${escapeHtml(selected.notes || '')}</textarea>
         </label>
-      </details>
+      </div>
       <button class="secondary-button compact danger-button" type="button" data-action="remove-discovery" data-token="${escapeHtml(selected.mint)}">
         <i class="fa-solid fa-trash"></i><span>Remove saved analysis</span>
       </button>
       </div>
-    </details>
+    </section>
   `;
   hydrateDiscoveryTokenPalettes();
 }

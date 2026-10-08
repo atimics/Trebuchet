@@ -5,6 +5,7 @@ import { buildSupportPositionPlan } from './support-position-plan.js';
 import { createPreparedTransactionService } from './prepared-transaction.js';
 import { readPreparedFailure, verifyPreparedFailure } from './prepared-failure.js';
 import { supportReceiptWitness, verifySupportEffects, verifySavedSupport, readSupportState } from './support-position-result.js';
+import { createSolanaChain } from './solana.js';
 
 export const SUPPORT_POSITION_KIND = 'support-position';
 const hash = (value) => createHash('sha256').update(publicJson(value)).digest('hex');
@@ -38,7 +39,7 @@ export function createSupportPositionService(options) {
       if (!Array.isArray(jobs) || new Set(jobs.map((job) => job.id)).size !== jobs.length) throw new Error('Read distinct support jobs');
       for (const job of jobs) {
         const { plan } = job;
-        if (identity(plan) !== job.id || hash(plan) !== job.digest || !['prepared', 'approved', 'confirmed', 'failed'].includes(job.state)
+        if (identity(plan) !== job.id || hash(plan) !== job.digest || !['prepared', 'approved', 'confirmed', 'failed', 'cancelled'].includes(job.state)
             || !whole(plan.maxSpendLamports) || !whole(plan.rentCeilingLamports) || !whole(plan.feeCeilingLamports)
             || plan.maxSpendLamports !== Number(plan.depositLamports) + plan.feeCeilingLamports + plan.rentCeilingLamports
             || !Array.isArray(job.approvals) || new Set(job.approvals.map((item) => item.id)).size !== job.approvals.length
@@ -61,6 +62,9 @@ export function createSupportPositionService(options) {
           const result = verifyPreparedFailure(store, job.result.operationId, job.witness), operation = store.getOperation(result.operationId);
           if (operation.kind !== SUPPORT_POSITION_KIND || !equal(store.getLaunch(operation.launchId)?.config?.plan, plan)
               || !equal(job.result, { status: 'failed', poolId: plan.poolId, nftMint: plan.nftMint, ...result })) throw new Error('Verify the saved support failure against its receipt');
+        } else if (job.state === 'cancelled') {
+          if (job.result?.status !== 'cancelled' || job.result.poolId !== plan.poolId || job.result.nftMint !== plan.nftMint || job.witness !== null
+              || !whole(job.result.absentSlot) || !Array.isArray(job.result.expiredSignatures)) throw new Error('Verify the saved support cancellation');
         } else if (job.result !== null || job.witness !== null) throw new Error('Read complete support state');
       }
       return jobs;
@@ -104,8 +108,52 @@ export function createSupportPositionService(options) {
     // Read back and validate the saved witness before releasing wallet admission.
     const verified = get(saved.id); store.finishWalletWorkflow(job.id, verified.result); return { jobId: job.id, ...verified.result };
   });
+  // Release an approved support that never happened. The chain must show the position absent, and
+  // every transaction signed for it must have expired unlanded, so nothing can still open it later.
+  const cancel = async (id) => {
+    const initial = get(id);
+    if (!initial) throw fail('OPERATION_UNKNOWN', 'Use the saved support job');
+    return owned(initial.plan.walletPublicKey, async () => {
+      const job = get(id); checkHost(job);
+      if (job.state === 'cancelled') return { jobId: id, ...job.result };
+      if (job.state !== 'approved') throw fail('OPERATION_CONFLICT', job.state === 'prepared' ? 'This support was never approved; nothing holds the wallet' : 'This support already finished');
+      reservation(job);
+      const { plan } = job, wallet = plan.walletPublicKey;
+      const operations = store.listWalletOperations(wallet).filter((op) => op.kind === SUPPORT_POSITION_KIND && store.getLaunch(op.launchId)?.config?.workflowId === id);
+      if (operations.some((op) => op.state === 'confirmed')) throw fail('SUPPORT_POSITION_EXISTS', 'This support landed; resume it to record the position');
+      const chain = createSolanaChain({ connection, network, expectedGenesisHash });
+      const expiredSignatures = [];
+      for (const op of operations.filter((item) => item.state !== 'failed')) {
+        for (const transaction of store.getTransactions(op.id)) {
+          const read = await chain.readTransaction(transaction);
+          if (read.state !== 'expired') {
+            throw fail('OPERATION_IN_FLIGHT', read.state === 'rebroadcast'
+              ? 'A signed support transaction can still land; try cancelling again in about two minutes'
+              : 'A support transaction reached the chain; resume the support to record its result', { operationId: op.id });
+          }
+          expiredSignatures.push(transaction.signature);
+        }
+      }
+      // Only the position's own accounts matter here: a pool that moved since does not change whether it exists.
+      const identities = await connection.getMultipleAccountsInfoAndContext([plan.nftMint, plan.nftAccount, plan.positionAddress].map((key) => new PublicKey(key)),
+        { commitment: 'finalized', minContextSlot: plan.observedSlot });
+      if (!whole(identities?.context?.slot) || !Array.isArray(identities.value) || identities.value.length !== 3) throw fail('CHAIN_STATE_UNAVAILABLE', 'Read the support position accounts');
+      if (identities.value.some(Boolean)) throw fail('SUPPORT_POSITION_EXISTS', 'The support position exists on-chain; resume it to record the position');
+      const absent = { slot: identities.context.slot };
+      const result = { status: 'cancelled', poolId: plan.poolId, nftMint: plan.nftMint, absentSlot: absent.slot, expiredSignatures };
+      return records.transaction(() => {
+        for (const op of operations.filter((item) => !['confirmed', 'failed'].includes(item.state))) {
+          store.setOperationState(op.id, 'failed', { cancelled: true, absentSlot: absent.slot, expiredSignatures });
+        }
+        update(id, (value) => ({ ...value, state: 'cancelled', result }));
+        store.finishWalletWorkflow(id, result);
+        return { jobId: id, ...result };
+      });
+    });
+  };
   return {
     get,
+    cancel,
     list(walletPublicKey) { return load().filter((job) => job.plan.walletPublicKey === walletPublicKey); },
     async prepare(input) {
       const { scopeId, key, walletPublicKey, poolId, nftMint, depositLamports, tickLower, tickUpper, requestId, nft2022 = true, lookupTables = [],

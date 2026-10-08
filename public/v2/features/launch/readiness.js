@@ -178,6 +178,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       bootstrap: pool.bootstrap,
       ladder: pool.ladder,
       support: pool.support,
+      ...(pool.venue === 'meteora-damm-v2' ? { venue: pool.venue, damm: pool.damm } : {}),
     };
   });
 }
@@ -305,22 +306,6 @@ function localApiLaunchPlanStatus(plan = state.launchPlan, config = currentLaunc
   };
 }
 
-function localApiLaunchPlanStaleReason(planStatus = localApiLaunchPlanStatus()) {
-  const reasons = [];
-  if (!planStatus.matchesConfig) reasons.push('current token/pool model');
-  if (!planStatus.matchesWallet) reasons.push('selected launch wallet');
-  return reasons.join(' or ') || 'current token/pool model or selected launch wallet';
-}
-
-function localApiLaunchPlanIncompleteReason(planStatus = localApiLaunchPlanStatus()) {
-  if (!planStatus.decodedOperationEvidence) return 'its local-wallet operation rows are not fully decoded';
-  if (Array.isArray(planStatus.missingOperationIds) && planStatus.missingOperationIds.length) {
-    return `it is missing required operation ${planStatus.missingOperationIds[0]}${planStatus.missingOperationIds.length === 1 ? '' : ` and ${planStatus.missingOperationIds.length - 1} more`}`;
-  }
-  if (planStatus.operationSequenceOrdered === false) return 'its operations are not in the required Classic launch order';
-  return 'it is missing the complete ordered run envelope';
-}
-
 function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   const topology = config?.poolTopology || {};
   const token = config?.token || {};
@@ -348,7 +333,13 @@ function classicFundingEstimateRequest(config = currentLaunchConfig()) {
   };
 }
 
+// The server's readiness check decides whether an estimate is current, so the screen asks the same
+// core function: a second copy here normalized support layers differently and every preset launch
+// was blocked as "estimate stale" while the screen called it covered.
 function classicFundingEstimateFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.v2FundingEstimateFingerprint === 'function') {
+    return TrebuchetCore.v2FundingEstimateFingerprint(config);
+  }
   return JSON.stringify(stableFundingFingerprintValue(classicFundingEstimateRequest(config)));
 }
 
@@ -470,79 +461,5 @@ function proofLaunchConfigSnapshotState(proof = currentLaunchProof()) {
     complete: missing.length === 0 && mismatches.length === 0,
     missing,
     mismatches,
-  };
-}
-
-function utf8ByteLength(value) {
-  const text = String(value ?? '');
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).length;
-  try {
-    return unescape(encodeURIComponent(text)).length;
-  } catch (_) {
-    return text.length;
-  }
-}
-
-function tokenConfigStatus(config = currentLaunchConfig()) {
-  const token = config?.token || {};
-  const name = String(token.name || '').trim();
-  const symbol = String(token.symbol || '').trim();
-  const supplyRaw = String(token.supply ?? '').trim().replace(/,/g, '');
-  const description = String(token.description || '').trim();
-  const logo = token.logo && typeof token.logo === 'object' ? token.logo : null;
-  const issues = [];
-  if (!name) {
-    issues.push('Token name is required.');
-  } else if (utf8ByteLength(name) > CLASSIC_TOKEN_NAME_MAX_BYTES) {
-    issues.push(`Token name must be ${CLASSIC_TOKEN_NAME_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!symbol) {
-    issues.push('Token symbol is required.');
-  } else if (utf8ByteLength(symbol) > CLASSIC_TOKEN_SYMBOL_MAX_BYTES) {
-    issues.push(`Token symbol must be ${CLASSIC_TOKEN_SYMBOL_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (utf8ByteLength(description) > CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES) {
-    issues.push(`Token description must be ${CLASSIC_TOKEN_DESCRIPTION_MAX_BYTES} UTF-8 bytes or fewer.`);
-  }
-  if (!/^[1-9]\d*$/.test(supplyRaw)) {
-    issues.push('Total supply must be a positive whole number.');
-  } else {
-    try {
-      if (BigInt(supplyRaw) > CLASSIC_MAX_WHOLE_TOKEN_SUPPLY) {
-        issues.push('Total supply must not exceed 10,000,000,000.');
-      }
-    } catch (_) {
-      issues.push('Total supply must be a positive whole number.');
-    }
-  }
-  if (state.tokenLogoError) {
-    issues.push(`Token logo failed validation: ${state.tokenLogoError}`);
-  } else if (logo) {
-    const mime = String(logo.type || logo.mime || logo.mimeType || '').toLowerCase();
-    const sizeBytes = Number(logo.sizeBytes ?? logo.size);
-    const width = Number(logo.width);
-    const height = Number(logo.height);
-    if (mime && !['image/png', 'image/jpeg', 'image/gif'].includes(mime)) {
-      issues.push('Token logo must be a PNG, JPG, or GIF image.');
-    }
-    if (Number.isFinite(sizeBytes) && (sizeBytes <= 0 || sizeBytes > CLASSIC_LOGO_MAX_BYTES)) {
-      issues.push('Token logo must be 100KB or smaller.');
-    }
-    if (Number.isFinite(width) && Number.isFinite(height)) {
-      if (width > CLASSIC_LOGO_MAX_DIMENSION || height > CLASSIC_LOGO_MAX_DIMENSION) {
-        issues.push(`Token logo must be at most ${CLASSIC_LOGO_MAX_DIMENSION}x${CLASSIC_LOGO_MAX_DIMENSION}px.`);
-      }
-      if (width < CLASSIC_LOGO_MIN_DIMENSION || height < CLASSIC_LOGO_MIN_DIMENSION) {
-        issues.push(`Token logo must be at least ${CLASSIC_LOGO_MIN_DIMENSION}x${CLASSIC_LOGO_MIN_DIMENSION}px.`);
-      }
-    }
-  }
-  return {
-    ready: issues.length === 0,
-    issues,
-    name,
-    symbol,
-    supply: supplyRaw,
-    hasLogo: Boolean(logo),
   };
 }

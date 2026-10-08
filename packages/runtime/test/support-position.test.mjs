@@ -187,3 +187,24 @@ test('an uncertain failed support fee retains wallet admission', async (t) => {
   f.state.receiptTransform = (r) => r; await assert.rejects(f.execute(), { code: 'TRANSACTION_FAILED' });
   assert.equal(f.service().get(f.job.id).result.feeLamports, 80000); assert.equal(f.store.getWalletWorkflow(f.input.walletPublicKey), null); assert.equal(f.state.sends.length, 1);
 });
+
+test('an approved support that never landed is cancelled only once its transaction expired, and frees the wallet', async (t) => {
+  const f = await fixture(t); f.state.drop = true;
+  await assert.rejects(f.execute(), { code: 'CHAIN_STATE_UNAVAILABLE' });
+  assert.ok(f.store.getWalletWorkflow(f.input.walletPublicKey));
+  await assert.rejects(f.service().cancel(f.job.id), { code: 'OPERATION_IN_FLIGHT' });
+  f.state.height = 501; f.state.valid = false;
+  const result = await f.service().cancel(f.job.id);
+  assert.equal(result.status, 'cancelled'); assert.deepEqual(result.expiredSignatures, [f.state.sends[0].signature]);
+  assert.equal(f.store.getWalletWorkflow(f.input.walletPublicKey), null); assert.equal(f.store.getActiveOperation(f.input.walletPublicKey), null);
+  f.reopen(); assert.equal(f.service().get(f.job.id).state, 'cancelled');
+  assert.equal((await f.service().cancel(f.job.id)).status, 'cancelled');
+  assert.equal(f.state.sends.length, 1);
+});
+
+test('a support that landed or was never approved cannot be cancelled', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.service().cancel(f.job.id), { code: 'OPERATION_CONFLICT' });
+  assert.equal((await f.execute()).status, 'confirmed');
+  await assert.rejects(f.service().cancel(f.job.id), { code: 'OPERATION_CONFLICT' });
+});

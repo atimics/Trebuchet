@@ -139,9 +139,8 @@ test('release docs explain trust states and verification', () => {
   assert.match(docs, /APPLE_API_KEY/);
   assert.match(docs, /V2 production gate/);
   assert.match(docs, /release-evidence\/v2\/field-verification\.json/);
-  assert.match(docs, /release-evidence\/v2\/release-attestation\.json/);
   assert.match(docs, /independently recomputes/i);
-  assert.match(docs, /different GitHub users/i);
+  assert.doesNotMatch(docs, /attestation|different GitHub users/i);
   assert.match(docs, /30 days/i);
   assert.match(docs, /V2 releases cannot fall back to unsigned test artifacts/);
   assert.match(docs, /SHA256SUMS\.txt/);

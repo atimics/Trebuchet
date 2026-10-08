@@ -1,5 +1,7 @@
 (function installTrebuchetV2Api(global) {
   const API_SESSION_PATH = '/api/session';
+  // Requests that read the chain wait their turn behind the app's RPC rate limit: give them a minute.
+  const CHAIN_REQUEST_TIMEOUT_MS = 60_000;
   const LAUNCH_PLAN_PATH = '/api/v2/launch-plan';
   const V2_EXECUTION_READINESS_PATH = '/api/v2/execution-readiness';
   const V2_DEMO_LAUNCH_RUN_PATH = '/api/v2/demo-launch/run';
@@ -275,6 +277,9 @@
       },
       rpc: {
         activeUrl: rpcConfig.active || null,
+        network: rpcConfig.activeNetwork || null,
+        rpcNetwork: rpcConfig.rpcNetwork || null,
+        networkMismatch: rpcConfig.networkMismatch === true,
         label: rpcLabel(rpcConfig.active, rpcConfig.saved),
         saved: safeArray(rpcConfig.saved),
         savedCount: safeArray(rpcConfig.saved).length,
@@ -475,6 +480,7 @@
 
     async function stageLaunchPlan(config) {
       const data = await request(LAUNCH_PLAN_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: config || {},
       });
@@ -493,6 +499,7 @@
       airdropRecipients,
     } = {}) {
       const data = await request(V2_EXECUTION_READINESS_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { walletPublicKey, config: config || {}, tokenMint, priorResults, fundingEstimate, airdropRecipients },
       });
@@ -516,6 +523,13 @@
 
     async function getPersonalDiscovery() {
       return request(V2_PERSONAL_DISCOVERY_PATH);
+    }
+
+    // Rent changes the funding estimate; the server reads it from the chain.
+    async function syncRentRate() {
+      const data = await request('/api/rent', { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
+      globalThis.TrebuchetCore?.setRentLamportsPerByte?.(data?.rentLamportsPerByte);
+      return data?.rentLamportsPerByte;
     }
 
     async function previewLogoStamp({ logo, mint } = {}) {
@@ -738,6 +752,18 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}`, { timeoutMs: 90_000 });
     }
 
+    async function listAirdropLists() {
+      return request('/api/v2/airdrop-lists', { timeoutMs: 15_000 });
+    }
+
+    async function calibrateVanity() {
+      return request('/api/v2/vanity/calibrate', { method: 'POST', body: {}, timeoutMs: 20_000 });
+    }
+
+    async function getCoinAirdrop(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/airdrop`, { timeoutMs: 90_000 });
+    }
+
     async function getCoinEvidence(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/evidence`, { timeoutMs: 180_000 });
     }
@@ -765,6 +791,10 @@
       return request(`/api/v2/support/jobs?walletPublicKey=${encodeURIComponent(walletPublicKey)}`);
     }
 
+    async function cancelSupportJob({ jobId, walletPublicKey }) {
+      return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', body: { walletPublicKey }, timeoutMs: 90_000 });
+    }
+
     async function getSupportJob(jobId) {
       return request(`/api/v2/support/jobs/${encodeURIComponent(jobId)}`);
     }
@@ -779,7 +809,7 @@
 
     async function listDestinations(launchWallet = '') {
       const query = launchWallet ? `?launchWallet=${encodeURIComponent(launchWallet)}` : '';
-      return request(`/api/v2/destinations${query}`);
+      return request(`/api/v2/destinations${query}`, { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
     }
 
     async function saveLaunch({ id = null, name = null, config }) {
@@ -790,15 +820,18 @@
     }
 
     async function pickFlywheelMint({ kind = 'meme', last = null } = {}) {
-      return request(`${FLYWHEEL_POOLS_PATH}/pick`, { method: 'POST', body: { kind, last } });
+      return request(`${FLYWHEEL_POOLS_PATH}/pick`, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { kind, last } });
     }
 
     async function listFlywheelPools() {
-      return request(FLYWHEEL_POOLS_PATH, { method: 'GET' });
+      return request(FLYWHEEL_POOLS_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'GET' });
     }
 
     async function addFlywheelMint({ kind = 'meme', mint }) {
-      return request(`${FLYWHEEL_POOLS_PATH}/add`, { method: 'POST', body: { kind, mint } });
+      return request(`${FLYWHEEL_POOLS_PATH}/add`, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { kind, mint } });
     }
 
     async function removeFlywheelMint({ kind = 'meme', mint }) {
@@ -821,6 +854,7 @@
       airdrop,
     }) {
       const data = await request(ESTIMATE_LP_FUNDING_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: {
           allocations,
@@ -838,7 +872,12 @@
     }
 
     async function listFlywheelHubs() {
-      return request('/api/v2/flywheel-hubs');
+      return request('/api/v2/flywheel-hubs', { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
+    }
+
+    async function getTokenLogos(mints) {
+      const data = await request('/api/v2/token-logos', { method: 'POST', body: { mints }, timeoutMs: 20000 });
+      return data?.logos && typeof data.logos === 'object' ? data.logos : {};
     }
 
     async function resolveFlywheelHub(mint) {
@@ -853,6 +892,7 @@
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
       const data = await request(QUOTE_TOKEN_INFO_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { quoteToken: token },
       });
@@ -863,7 +903,7 @@
     }
 
     async function getClmmFeeTiers() {
-      const data = await request(CLMM_FEE_TIERS_PATH);
+      const data = await request(CLMM_FEE_TIERS_PATH, { timeoutMs: CHAIN_REQUEST_TIMEOUT_MS });
       return safeArray(data.tiers);
     }
 
@@ -871,6 +911,8 @@
       const data = await request(ACQUIRE_QUOTE_TOKENS_PATH, {
         method: 'POST',
         body: { walletPublicKey, autoSwapPlan: safeArray(autoSwapPlan), ...(requestId ? { requestId } : {}) },
+        // Preparing waits for a live quote on every route; the UI default of a few seconds is far too short.
+        timeoutMs: 90_000,
       });
       if (!data?.jobId) {
         throw new V2ApiError('Acquire quote tokens response missing jobId.', { code: 'BAD_ACQUIRE_JOB' });
@@ -880,12 +922,12 @@
 
     async function executeAcquireQuoteTokens({ jobId, walletPublicKey, planDigest, maxSpendLamports, recoveryDigest } = {}) {
       return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/${recoveryDigest ? 'cleanup' : 'execute'}`, {
-        method: 'POST', body: { walletPublicKey, planDigest, maxSpendLamports, ...(recoveryDigest ? { recoveryDigest } : {}) },
+        method: 'POST', body: { walletPublicKey, planDigest, maxSpendLamports, ...(recoveryDigest ? { recoveryDigest } : {}) }, timeoutMs: 60_000,
       });
     }
 
     async function prepareAcquireQuoteCleanup({ jobId, walletPublicKey } = {}) {
-      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/cleanup/prepare`, { method: 'POST', body: { walletPublicKey } });
+      return request(`${ACQUIRE_QUOTE_TOKENS_PATH}/${encodeURIComponent(jobId)}/cleanup/prepare`, { method: 'POST', body: { walletPublicKey }, timeoutMs: 90_000 });
     }
 
     async function getActiveAcquireQuoteTokens(walletPublicKey) {
@@ -905,6 +947,7 @@
 
     async function checkDetailedBalance(publicKey) {
       const data = await request(CHECK_BALANCE_DETAILED_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { publicKey },
       });
@@ -916,6 +959,7 @@
 
     async function findFundingWallet(publicKey) {
       const data = await request(FIND_FUNDER_PATH, {
+        timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { publicKey },
       });
@@ -1020,6 +1064,21 @@
       return data.state || null;
     }
 
+    async function getAirdropPlan(walletPublicKey) {
+      const data = await request(`/api/v2/airdrop-plan?wallet=${encodeURIComponent(walletPublicKey || '')}`, { timeoutMs: 15_000 });
+      return data?.plan || null;
+    }
+
+    async function getWalletContents(address, { fresh = false } = {}) {
+      const data = await request(`/api/v2/wallets/contents?address=${encodeURIComponent(address || '')}${fresh ? '&fresh=1' : ''}`, { timeoutMs: 20_000 });
+      return data?.contents || null;
+    }
+
+    async function listHeldWallets() {
+      const data = await request('/api/v2/wallets/held', { timeoutMs: 15_000 });
+      return { wallets: Array.isArray(data?.wallets) ? data.wallets : [], secretPinLocked: data?.secretPinLocked === true };
+    }
+
     async function runAirdrop({ walletPublicKey, tokenMint, tokenDecimals, isToken2022 = false, recipients } = {}) {
       const data = await request(RUN_AIRDROP_PATH, {
         method: 'POST',
@@ -1052,11 +1111,19 @@
       return request(TRANSFER_ASSETS_PATH, {
         method: 'POST',
         body: { walletPublicKey, destinationWallet },
+        // The sweep sends every NFT, the airdrop and each token one finalized transfer at a time:
+        // minutes, not seconds. A short timeout left it running with the page showing nothing.
+        timeoutMs: 30 * 60_000,
       });
     }
 
     async function cancelLaunchRefund({ walletPublicKey, destinationWallet } = {}) {
       return sweepPendingWallet({ walletPublicKey, destinationWallet });
+    }
+
+    // Make the app's network and its RPC agree: 'rpc' keeps the RPC, 'network' keeps the network.
+    async function reconcileNetwork(match) {
+      return request('/api/rpc-config/reconcile', { method: 'POST', body: { match } });
     }
 
     async function selectRpc(url) {
@@ -1183,11 +1250,15 @@
       prepareSolSupport,
       getSupportJobs,
       getSupportJob,
+      cancelSupportJob,
       openSolSupport,
       listCoins,
       addCoin,
       removeCoin,
       getCoin,
+      getCoinAirdrop,
+      calibrateVanity,
+      listAirdropLists,
       getCoinEvidence,
       getSellQuote,
       listCoinPositions,
@@ -1197,6 +1268,7 @@
       getClmmFeeTiers,
       getQuoteTokenInfo,
       listFlywheelHubs,
+      getTokenLogos,
       resolveFlywheelHub,
       getAirdropProgress,
       getAcquireQuoteTokens,
@@ -1214,6 +1286,7 @@
       addDiscoveryWallet,
       inspectDiscoveryToken,
       previewLogoStamp,
+      syncRentRate,
       listLaunchJournals,
       listVanityCandidates,
       listManagedWallets,
@@ -1233,10 +1306,14 @@
       getSecretPinInventory,
       retryAirdrop,
       runAirdrop,
+      getAirdropPlan,
+      getWalletContents,
+      listHeldWallets,
       runDemoLaunch,
       addRpc,
       removeRpc,
       selectRpc,
+      reconcileNetwork,
       setDiscoveryWalletEnabled,
       testRpc,
       setUserPrefs,

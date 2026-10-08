@@ -126,6 +126,8 @@ function renderWallet() {
       state: proofAssetState,
     } : null,
   ].filter(Boolean) : [];
+  refreshHeldWallets();
+  renderHeldWallets();
   $('#accountList').innerHTML = walletRows.map((item) => {
     const isActive = item.publicKey === selectedPublicKey;
     return `
@@ -133,7 +135,7 @@ function renderWallet() {
         <span class="ident">${escapeHtml(item.name.slice(0, 1))}</span>
         <span class="account-copy">
           <h3>${escapeHtml(item.name)}</h3>
-          <p>${escapeHtml(item.address)}</p>
+          <p>${item.publicKey ? walletChipHtml(item.publicKey) : escapeHtml(item.address)}</p>
         </span>
         <span class="balance">
           <strong>${Number(item.balance || 0).toFixed(2)} SOL</strong>
@@ -162,7 +164,7 @@ function renderWallet() {
           <i class="fa-solid fa-key"></i><span>${revealBusy ? 'Revealing' : secretBlocked || pinLockedForUnlock ? 'Unlock PIN' : revealed ? 'Reveal again' : 'Reveal'}</span>
         </button>
         <button class="pill-button danger" type="button" data-action="discard-wallet" ${discardBusy || state.fullRunRunning || state.realExecutionRunning ? 'disabled' : ''}>
-          <i class="fa-solid fa-trash"></i><span>${discardBusy ? 'Discarding' : 'Discard'}</span>
+          <i class="fa-solid fa-eye-slash"></i><span>${discardBusy ? 'Hiding' : 'Hide'}</span>
         </button>
       </span>
     </header>
@@ -245,17 +247,6 @@ function renderWallet() {
 
   // Old launch wallets and unfinished launches live in History; here they
   // only get a pointer, and only when there is something to look at.
-  const oldWallets = recoveryWalletsNeedingAttention().length;
-  const openJournals = state.recovery.activeJournalCount || 0;
-  $('#walletRecoveryInventory').innerHTML = oldWallets || openJournals ? `
-    <p class="wallet-recovery-pointer">
-      <span>${escapeHtml([
-        openJournals ? `${openJournals} unfinished launch${openJournals === 1 ? '' : 'es'}` : null,
-        oldWallets ? `${oldWallets} old launch wallet${oldWallets === 1 ? '' : 's'} may still hold assets` : null,
-      ].filter(Boolean).join(' · '))}.</span>
-      <button class="text-button" type="button" data-action="inspect-recovery">Open in History</button>
-    </p>
-  ` : '';
 
   $('#assetTable').innerHTML = proofAssets.length ? `
     <div class="wallet-proof-heading">
@@ -272,4 +263,107 @@ function renderWallet() {
       </article>
     `).join('')}
   ` : '';
+}
+
+const HELD_WALLET_READERS = 2;
+const HELD_WALLET_BACKGROUND_PAUSE_MS = 1000;
+
+// Every key Trebuchet holds, read from the chain: the ones holding anything are listed, and
+// Sweep all sends each launch wallet's tokens and SOL to the return wallet, one at a time.
+// Read in the background too (every 5 minutes at most), so counts elsewhere come from the chain.
+function refreshHeldWallets({ force = false, background = false } = {}) {
+  const held = state.heldWallets;
+  if ((!background && state.activeView !== 'wallet') || state.apiStatus !== 'connected' || !state.apiClient?.listHeldWallets) return;
+  if (held.loading || (!force && held.list && Date.now() - held.at < (background ? 300_000 : 30_000))) return;
+  state.heldWallets = { ...held, loading: true, error: null };
+  state.apiClient.listHeldWallets()
+    .then(async ({ wallets }) => {
+      state.heldWallets = { ...state.heldWallets, list: wallets.map((wallet) => ({ ...wallet, contents: null, error: null })), at: Date.now() };
+      renderHeldWallets();
+      const queue = [...state.heldWallets.list];
+      // Each read is three RPC calls. A background read goes one wallet at a time with a pause,
+      // and the Wallet page two at a time, so a list of dozens of keys stays under the RPC's rate limit.
+      const pauseMs = background ? HELD_WALLET_BACKGROUND_PAUSE_MS : 0;
+      const worker = async () => {
+        for (let row = queue.shift(); row; row = queue.shift()) {
+          try { row.contents = await walletContents(row.address, { fresh: force }); } catch (error) { row.error = error.message || 'Could not read'; }
+          renderHeldWallets();
+          if (pauseMs && queue.length) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+        }
+      };
+      // The strip and Recovery count wallets from these reads.
+      const settle = () => { if (state.activeView !== 'wallet') renderAll(); };
+      await Promise.all(Array.from({ length: background ? 1 : HELD_WALLET_READERS }, worker));
+      settle();
+    })
+    .catch((error) => { state.heldWallets = { ...state.heldWallets, error: error.message || 'Could not list the keys' }; })
+    .finally(() => { state.heldWallets = { ...state.heldWallets, loading: false }; renderHeldWallets(); });
+}
+
+function heldWalletHoldsAnything(row) {
+  return Boolean(row.contents && (row.contents.lamports > 0 || row.contents.tokens.length || row.contents.openAccounts));
+}
+
+function sweepAllTargets() {
+  return (state.heldWallets.list || [])
+    .filter((row) => (row.kind === 'launch' || row.kind === 'retired') && row.readable !== false && walletSweepable(row.contents))
+    .map((row) => row.address);
+}
+
+function renderHeldWallets() {
+  const target = $('#heldWallets');
+  if (!target) return;
+  const { list, sweep, error } = state.heldWallets;
+  if (!list) { target.innerHTML = error ? `<p class="is-error">${escapeHtml(error)}</p>` : ''; return; }
+  const read = list.filter((row) => row.contents || row.error).length;
+  const holding = list.filter(heldWalletHoldsAnything);
+  const targets = sweepAllTargets();
+  const running = sweep && !sweep.finished;
+  const locked = state.secretPin.locked;
+  const button = running
+    ? `<button class="primary-button compact" type="button" disabled><span class="rail-spin" aria-hidden="true"></span><span>Sweeping ${sweep.done + 1} of ${sweep.total}</span></button>`
+    : locked && targets.length
+      ? '<button class="primary-button compact" type="button" data-action="unlock-secret-pin"><i class="fa-solid fa-lock-open"></i><span>Unlock PIN to sweep</span></button>'
+      : `<button class="primary-button compact" type="button" data-action="sweep-all-wallets" ${targets.length ? '' : 'disabled'}><i class="fa-solid fa-broom"></i><span>Sweep all${targets.length ? ` (${targets.length})` : ''}</span></button>`;
+  const status = (row) => {
+    if (sweep?.current === row.address) return '<span class="risk-badge">Sweeping</span>';
+    const failure = sweep?.failed.find((item) => item.address === row.address);
+    if (failure) return `<span class="risk-badge danger" title="${escapeHtml(failure.error)}">Not swept</span>`;
+    return '';
+  };
+  target.innerHTML = `
+    <div class="held-wallets-head">
+      <span><strong>Keys in Trebuchet</strong><small>${list.length} keys · ${read < list.length ? `${read} read · ` : ''}${holding.length} holding anything</small></span>
+      <span class="held-wallets-action">${button}${!running && !targets.length && read === list.length ? '<small>Nothing to sweep</small>' : ''}</span>
+    </div>
+    ${holding.length ? `<ul class="held-wallets-list">${holding.map((row) => `
+      <li>${walletChipHtml(row.address, { label: WALLET_KEY_LABELS[row.kind] || '' })}<span>${escapeHtml(walletContentsSummary(row.contents))}</span>${status(row)}</li>`).join('')}</ul>` : ''}
+    ${sweep?.finished ? `<p class="held-wallets-result" role="status">Swept ${sweep.total - sweep.failed.length} of ${sweep.total}${sweep.failed.length ? `; ${sweep.failed.length} not swept` : ''}.</p>` : ''}`;
+}
+
+async function sweepAllWallets() {
+  const targets = sweepAllTargets();
+  if (!targets.length || state.heldWallets.sweep?.finished === false) return;
+  if (state.fullRunRunning || state.realExecutionRunning) return;
+  const defaultDestination = state.destinations?.signed?.[0] || state.destinations?.funder || '';
+  const confirmation = await openSweepConfirmation({ publicKey: `${targets.length} launch wallet${targets.length === 1 ? '' : 's'}`, defaultDestination });
+  if (!confirmation) return;
+  const sweep = { total: targets.length, done: 0, current: null, failed: [], finished: false };
+  state.heldWallets = { ...state.heldWallets, sweep };
+  for (const address of targets) {
+    sweep.current = address;
+    renderHeldWallets();
+    try {
+      await state.apiClient.sweepPendingWallet({ walletPublicKey: address, destinationWallet: confirmation.destinationWallet });
+    } catch (error) {
+      sweep.failed.push({ address, error: error.message || 'Sweep failed' });
+    }
+    const row = (state.heldWallets.list || []).find((item) => item.address === address);
+    if (row) row.contents = await walletContents(address, { fresh: true }).catch(() => row.contents);
+    sweep.done += 1;
+  }
+  sweep.current = null;
+  sweep.finished = true;
+  renderHeldWallets();
+  refreshLocalApiState().catch(() => null);
 }

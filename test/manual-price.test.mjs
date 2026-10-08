@@ -88,12 +88,6 @@ test('when a market source exists, it wins over the user price and the drift gua
   );
 });
 
-test('the user-entered flag rides the allocation payload from the funding step', () => {
-  assert.match(read('public/modules/funding.js'), /priceEnteredByUser: p\.priceEnteredByUser === true/);
-});
-
-// ---- second opinion (replaces the vacuous cross-pool check) --------------------
-
 test('the old cross-pool market-cap check is gone (it could never fire)', () => {
   const src = read('lpService.js');
   assert.doesNotMatch(src, /Pools would open at different market caps/);
@@ -138,13 +132,3 @@ test('server routes preflight to the demo handler in demo mode', () => {
 
 // ---- dialog wiring ---------------------------------------------------------------
 
-test('the editor asks for a price when none resolves, once per token, and labels it user-set', () => {
-  const src = read('public/modules/pool-editor.js');
-  const html = read('public/index.html');
-  assert.match(html, /id="manualPriceModal"/);
-  assert.match(src, /function maybePromptForManualPrice\(pool\)/);
-  assert.match(src, /manualPricePromptedFor === pool\.quoteToken/, 'asks once per token');
-  assert.match(src, /pool\.priceEnteredByUser = true;/);
-  assert.match(src, /data-action="enterPrice"/, 'the card offers a way to (re)enter it');
-  assert.match(src, /click "Enter price" on the pool card/, 'the blocking reason says how to proceed');
-});

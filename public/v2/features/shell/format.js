@@ -79,42 +79,6 @@ function pendingRecoveryWallet(publicKey) {
   return state.recovery.pendingWallets.find((wallet) => wallet.publicKey === publicKey) || null;
 }
 
-function recoveryWalletState(wallet) {
-  const reason = walletLockInfo(wallet);
-  if (reason.state === 'missing') {
-    return { label: 'Key missing', className: 'danger', detail: reason.detail };
-  }
-  if (reason.state === 'wrong-key') {
-    return { label: 'Different PIN', className: 'danger', detail: reason.detail };
-  }
-  if (wallet?.decryptionFailed && !(state.secretPin.locked || wallet?.secretPinLocked)) {
-    return {
-      label: 'Secret missing',
-      className: 'danger',
-      detail: 'Local metadata exists, but Trebuchet cannot read the saved secret here.',
-    };
-  }
-  if (state.secretPin.locked || wallet?.secretPinLocked) {
-    return {
-      label: 'PIN locked',
-      className: 'warn',
-      detail: 'Unlock the Recovery PIN before revealing this launch wallet.',
-    };
-  }
-  if (wallet?.publicKey && wallet.publicKey === selectedLaunchWalletPublicKey()) {
-    return {
-      label: 'Selected',
-      className: '',
-      detail: 'This wallet is active for funding, recovery, and guarded launch execution.',
-    };
-  }
-  return {
-    label: 'Recoverable',
-    className: 'warn',
-    detail: 'Saved launch wallet secret is available through the guarded reveal flow.',
-  };
-}
-
 function fmtSol(value) {
   return `${value.toFixed(3)} SOL`;
 }

@@ -74,10 +74,6 @@ const baseUrl = `http://127.0.0.1:${port}`;
 await mkdir(outputDir, { recursive: true });
 await writeFile(path.join(configDir, 'userPrefs.json'), `${JSON.stringify({
   demoMode: true,
-  playIntroVideo: false,
-  playSoundEffects: false,
-  playBackgroundMusic: false,
-  coinPreview: false,
 }, null, 2)}\n`);
 
 const server = spawn(process.execPath, ['server.js'], {
@@ -174,8 +170,8 @@ try {
   await page.waitForSelector('#view-discovery.is-active');
   await page.waitForSelector('#discoveryTable .discovery-row');
   await hold(2200);
-  await page.click('[data-view="history"]');
-  await page.waitForSelector('#view-history.is-active');
+  await page.click('[data-view="wallet"]');
+  await page.waitForSelector('#view-wallet.is-active');
   await hold(1800);
 
   await context.close();

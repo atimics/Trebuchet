@@ -21,9 +21,9 @@ function journalMint(journal) {
 // What the launch record claims. The app says "Live" only once the chain
 // agrees (see coinChainStatus in the client), never from the record alone.
 function journalStatus(journal) {
-  if (journal.status === 'completed') return 'Launch recorded';
-  if (journal.status === 'archived') return 'Launch stopped';
-  return 'Being created';
+  if (journal.status === 'completed') return 'Launched';
+  if (journal.status === 'archived') return 'Stopped';
+  return 'Unfinished';
 }
 
 /**
@@ -58,6 +58,7 @@ export function mergeCoins({ launches = [], journals = [], added = [], practice 
       symbol: token.symbol || null,
       status: journalStatus(journal),
       journalId: journal.id || null,
+      walletPublicKey: journal.walletPublicKey || null,
       image: realImageUrl(token.imageUri),
       launchedHere: true,
       practice: isPractice,

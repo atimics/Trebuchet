@@ -18,8 +18,8 @@ v2 is a release candidate:
 - product shell and Classic-backed token launch execution are implemented;
 - demo, unit, package, Electron, API-backed E2E, viewport, and visual checks
   exist;
-- production `v2+` publishing is fail-closed on field proof, independent
-  attestation, and platform signing;
+- production `v2+` publishing is fail-closed on field proof and platform
+  signing;
 - the authorized funded mainnet field run has not yet supplied the checked-in
   release evidence.
 

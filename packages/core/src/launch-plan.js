@@ -4,6 +4,8 @@ import {
   COST_LAUNCH_REPORT_SOL,
   COST_LOCK_SOL,
   COST_POOL_RENT_SOL,
+  MAX_SUPPORT_LAYERS,
+  supportLayersProblem,
   COST_POSITION_SOL,
   COST_TOKEN_CREATE_SOL,
   COST_TRANSFER_SOL,
@@ -221,15 +223,49 @@ function normalizeLadder(input = {}) {
   };
 }
 
+// Support is one quote-side range (`depthPct` below the start price), or layers: each a share of the
+// quote over its own range of start-price multiples (at most 1x). Layer shares are scaled to add
+// up to 100% and the layers are ordered nearest the start price first. Unusable layers are kept
+// as written so validation can name the problem instead of the plan silently changing.
 function normalizeSupport(input = {}) {
   const solValue = Math.max(0, numeric(input.solValue, 0));
   if (input.mode !== 'custom' || solValue <= 0) return { mode: 'off' };
-  return {
+  const support = {
     mode: 'custom',
     solValue: roundSol(solValue),
     depthPct: clamp(numeric(input.depthPct, 12), 1, 50),
   };
+  if (Array.isArray(input.layers) && input.layers.length) {
+    const layers = input.layers.map((layer) => ({
+      sharePercent: numeric(layer?.sharePercent, 0),
+      lowerMultiplier: numeric(layer?.lowerMultiplier, 0),
+      upperMultiplier: numeric(layer?.upperMultiplier, 1),
+    }));
+    const valid = layers.length <= MAX_SUPPORT_LAYERS && layers.every((layer) => (
+      layer.sharePercent > 0 && layer.lowerMultiplier > 0 && layer.upperMultiplier > layer.lowerMultiplier && layer.upperMultiplier <= 1
+    ));
+    const total = layers.reduce((sum, layer) => sum + layer.sharePercent, 0);
+    if (valid && total > 0) {
+      const ordered = [...layers].sort((a, b) => b.upperMultiplier - a.upperMultiplier || b.lowerMultiplier - a.lowerMultiplier);
+      let assigned = 0;
+      support.layers = ordered.map((layer, index) => {
+        const share = index === ordered.length - 1
+          ? roundSol(100 - assigned)
+          : roundSol((layer.sharePercent / total) * 100);
+        assigned += share;
+        return { sharePercent: share, lowerMultiplier: layer.lowerMultiplier, upperMultiplier: layer.upperMultiplier };
+      });
+      support.depthPct = clamp(roundSol((1 - Math.min(...ordered.map((layer) => layer.lowerMultiplier))) * 100), 1, 99);
+    } else {
+      support.layers = layers;
+    }
+  }
+  return support;
 }
+
+const METEORA_VENUE = 'meteora-damm-v2';
+const METEORA_FEE_BPS = [25, 50, 100, 200];
+const METEORA_RANGES = [100, 1000, 10000];
 
 function normalizeAirdropRows(rows = []) {
   if (!Array.isArray(rows)) return [];
@@ -574,10 +610,27 @@ function normalizePoolTopology(input = {}) {
       ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
       supplyPercent: normalizePercent(pool.supplyPercent, index === 0 ? 70 : 0),
       ammConfigIndex: Math.floor(numeric(pool.ammConfigIndex, quoteSymbol === 'USDC' ? 5 : 8)),
-      distribution,
-      bootstrap,
-      ladder: normalizeLadder(pool.ladder || {}),
-      support: normalizeSupport(pool.support || {}),
+      // A Meteora DAMM v2 pool is one position, locked when the pool is made: it has no
+      // slices, ladder, support or bootstrap of its own. Only carried when chosen, so Raydium plans
+      // keep their fingerprints.
+      ...(pool.venue === METEORA_VENUE
+        ? {
+          venue: METEORA_VENUE,
+          damm: {
+            feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
+            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1000))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1000)) : 1000,
+          },
+          distribution: [{ sharePercent: 100 }],
+          bootstrap: { mode: 'minimal' },
+          ladder: { mode: 'off' },
+          support: { mode: 'off' },
+        }
+        : {
+          distribution,
+          bootstrap,
+          ladder: normalizeLadder(pool.ladder || {}),
+          support: normalizeSupport(pool.support || {}),
+        }),
     };
   }).filter((pool) => pool.supplyPercent > 0);
   const totalPoolPercent = roundSol(pools.reduce((sum, pool) => sum + pool.supplyPercent, 0));
@@ -649,10 +702,9 @@ function normalizeVanity(input = {}) {
   if (selectedPublicKey && suffix && !fold(selectedPublicKey).endsWith(fold(suffix))) {
     throw new Error(`Selected Vanity CA does not end with ${suffix}`);
   }
-  const length = Number.isInteger(input.length) && input.length >= 32 && input.length <= 44 ? input.length : null;
-  if (selectedPublicKey && length && selectedPublicKey.length !== length) {
-    throw new Error(`Selected Vanity CA is not ${length} characters long`);
-  }
+  // The length is a grind filter. A chosen address is already valid, so its own length wins.
+  const requested = Number.isInteger(input.length) && input.length >= 32 && input.length <= 44 ? input.length : null;
+  const length = selectedPublicKey ? (requested ? selectedPublicKey.length : null) : requested;
   return {
     mode: prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : 'random',
     prefix,
@@ -736,6 +788,8 @@ function classicAllocations(poolTopology) {
     bootstrap: pool.bootstrap,
     ladder: pool.ladder,
     support: pool.support,
+    // The venue must reach the engine: without it every Meteora pool was opened as Raydium CLMM.
+    ...(pool.venue === METEORA_VENUE ? { venue: pool.venue, damm: pool.damm } : {}),
   }));
 }
 
@@ -1004,6 +1058,19 @@ function airdropSupportBackingStatus(plan = {}, estimate = {}) {
   }
 
   const supportSol = totalSupportSol(topology.pools);
+  // A Meteora pool is one single-sided position: it can't hold buy support, so this can't be
+  // fixed there. Say so as a warning instead of blocking a launch nothing could unblock.
+  const solPool = (topology.pools || []).find((pool) => pool.id === 'sol-main')
+    || (topology.pools || []).find((pool) => String(pool.quoteSymbol || pool.quoteToken || '').toUpperCase() === 'SOL');
+  if (solPool?.venue === METEORA_VENUE && supportSol <= 0) {
+    return {
+      required: true,
+      state: 'warn',
+      meteora: true,
+      detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply. The SOL pool is on Meteora, which holds no buy support: sells of these tokens are paid from buyers' SOL.`,
+      supportSol,
+    };
+  }
   const targetMarketCapUsd = positiveFinite(topology.targetMarketCapUsd, 0);
   const solUsd = fundingEstimateSolUsd(estimate);
   if (targetMarketCapUsd <= 0) {
@@ -1043,13 +1110,13 @@ function airdropSupportBackingStatus(plan = {}, estimate = {}) {
   }
 
   const shortSol = Math.max(0, requiredSupportSol - supportSol);
-  const supportDetail = supportSol > 0
-    ? `support backs ${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})`
-    : 'support is off';
+  // The fix the page offers: the shortfall, rounded up to a hundredth of a SOL.
+  const addSol = Math.ceil(shortSol * 100) / 100;
   return {
     required: true,
     state: 'danger',
-    detail: `Held reserves ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}), but ${supportDetail}. Add at least ${formatPlanSol(shortSol)} total support or lower the prealloc/airdrop budget.`,
+    detail: `Airdrop and held tokens: ${formatPlanPercent(heldReservePercent)} of supply (${formatPlanUsd(reserveUsd)}). Buy support: ${supportSol > 0 ? `${formatPlanSol(supportSol)} (${formatPlanUsd(supportUsd)})` : 'none'}. Needs ${formatPlanSol(requiredSupportSol)}.`,
+    fix: addSol > 0 ? { action: 'add-sol-support', sol: addSol } : null,
     supportSol,
     supportUsd,
     requiredSupportSol,
@@ -1127,6 +1194,10 @@ function ladderRouteIssues(pools = []) {
     if (Number(pool.supplyPercent || 0) <= 0) return;
     const ladder = pool.ladder || { mode: 'off' };
     const poolLabel = `Pool ${index + 1}`;
+    if (pool.support?.mode === 'custom' && Array.isArray(pool.support.layers)) {
+      const problem = supportLayersProblem(pool.support.layers);
+      if (problem) issues.push({ index, detail: `${poolLabel}: support ${problem}.` });
+    }
     if (ladder.mode === 'off' || !ladder.mode) return;
     if (ladder.mode === 'simple') {
       const bandCount = Number(ladder.bandCount);
@@ -1203,8 +1274,8 @@ function ladderRouteIssues(pools = []) {
   return issues;
 }
 
-function readinessIssue({ id, phase, title, detail, severity = 'blocker' }) {
-  return { id, phase, title, detail, severity };
+function readinessIssue({ id, phase, title, detail, severity = 'blocker', fix = null }) {
+  return { id, phase, title, detail, severity, ...(fix ? { fix } : {}) };
 }
 
 function readinessPhase({
@@ -1306,7 +1377,9 @@ export function buildV2LaunchPlan(input = {}, options = {}) {
     if (pool.ladder.mode === 'manual') return sum + pool.ladder.bands.length;
     return sum;
   }, 0);
-  const supportCount = poolTopology.pools.filter((pool) => pool.support.mode === 'custom').length;
+  const supportCount = poolTopology.pools.reduce((sum, pool) => (
+    pool.support.mode !== 'custom' ? sum : sum + (Array.isArray(pool.support.layers) && pool.support.layers.length ? pool.support.layers.length : 1)
+  ), 0);
   const feeKeyTransferCount = poolTopology.pools.reduce(
     (sum, pool) => sum + pool.distribution.filter((slice) => slice.recipient).length,
     0,
@@ -2086,22 +2159,25 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
   if (
     airdropBacking.required
     && airdropBacking.state !== 'pass'
+    && !airdropBacking.meteora
     && setupSafetyGateRequired
     && (fundingEstimateAttached || Number(airdropBacking.supportSol || 0) <= 0)
   ) {
     addBlocker({
       id: 'airdrop-support-underbacked',
       phase: 'liquidity',
-      title: 'Held reserve support underbacked',
+      title: 'Airdrop not backed by buy support',
       detail: airdropBacking.detail,
+      fix: airdropBacking.fix,
     });
   } else if (airdropBacking.required && airdropBacking.state !== 'pass') {
     warnings.push(readinessIssue({
       id: 'airdrop-support-underbacked',
       phase: 'liquidity',
-      title: 'Held reserve support underbacked',
+      title: 'Airdrop not backed by buy support',
       detail: airdropBacking.detail,
       severity: 'warning',
+      fix: airdropBacking.fix,
     }));
   }
 
