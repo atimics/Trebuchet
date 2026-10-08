@@ -22,5 +22,5 @@ test('every metadata write is sent with a priority fee, never the fee-less libra
   assert.doesNotMatch(source, /tokenMetadataInitializeWithRentTransfer|tokenMetadataUpdateFieldWithRentTransfer/);
   assert.match(source, /async function initializeTokenMetadataWithPriority[\s\S]*?sendIxsWithPriority\(/);
   assert.match(source, /async function updateTokenMetadataFieldWithPriority[\s\S]*?sendIxsWithPriority\(/);
-  assert.match(source, /const commitmentTx = await updateTokenMetadataFieldWithPriority\(/);
+  assert.match(source, /step\('metadata commitment', commitmentDone/);
 });

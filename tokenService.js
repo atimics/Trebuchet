@@ -20,6 +20,7 @@ import {
   getMint,
   unpackMint,
   getAccount,
+  unpackAccount,
   AuthorityType,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -30,6 +31,7 @@ import {
   getMetadataPointerState,
   getTokenMetadata,
   tokenMetadataUpdateAuthority,
+  createUpdateAuthorityInstruction as createTokenMetadataUpdateAuthorityInstruction,
   createInitializeInstruction as createTokenMetadataInitializeInstruction,
   createUpdateFieldInstruction as createTokenMetadataUpdateFieldInstruction,
   getNewAccountLenForExtensionLen,
@@ -71,6 +73,7 @@ import {
 } from './metadataUploadService.js';
 import { saveSealedIdentity } from './sealedIdentityStore.js';
 import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
+import { inspectSolanaTransaction } from '@trebuchet/runtime/solana';
 import { redactUrl } from './logRedaction.js';
 import { parseMetaplexUri } from './tokenMetadataLayout.js';
 import {
@@ -109,7 +112,8 @@ function hasPermanentSelfMetadataPointer(mintInfo, mint) {
 
 import {
   samplePriorityFeeMicroLamports,
-  computeBudgetIxs,
+  sendPriorityTransaction,
+  settleSignedTransaction,
   priorityFeeLamports,
   umiComputeBudgetIxs,
   CU_SOL_TRANSFER,
@@ -255,21 +259,13 @@ export function resetMetadataFactoriesForTests() {
 // ---------------------------------------------------------------------------
 
 // Build a transaction from `instructions` with a freshly-sampled priority
-// fee prepended, sign with [payer, ...signers], send, and confirm at
-// 'finalized' (the commitment every replaced spl-token wrapper used).
-// The fee is sampled per-send so retries and later steps reflect current
-// conditions rather than a stale bid.
-async function sendIxsWithPriority({ payer, instructions, signers = [], units = CU_MINT_OPS, label = 'tx' }) {
-  const microLamports = await samplePriorityFeeMicroLamports(connection);
-  const tx = new Transaction().add(
-    ...computeBudgetIxs({ units, microLamports }),
-    ...instructions,
-  );
-  const sig = await sendAndConfirmTransaction(connection, tx, [payer, ...signers], {
-    commitment: 'finalized',
-  });
-  console.log(`  ${label}: ${sig} (prio ${microLamports} uL/CU)`);
-  return sig;
+// fee prepended and confirm at 'finalized'. Rebroadcasts keep the original
+// signed bytes. A new blockhash and fee follow proven expiry and a state check.
+async function sendIxsWithPriority({ label = 'tx', ...options }) {
+  const result = await sendPriorityTransaction({ connection, ...options });
+  const signature = result.skipped ? '(already completed)' : result.signature;
+  console.log(`  ${label}: ${signature}`);
+  return signature;
 }
 
 // Token-2022 inline metadata, sent like every other launch transaction: with a sampled priority
@@ -297,12 +293,13 @@ function rentTopUpInstructions(payer, mint, lamports) {
   return lamports > 0 ? [SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: mint, lamports })] : [];
 }
 
-async function initializeTokenMetadataWithPriority({ payer, mint, programId, name, symbol, uri, label = 'metadata' }) {
+async function initializeTokenMetadataWithPriority({ payer, mint, programId, name, symbol, uri, label = 'metadata', ...sendOptions }) {
   const lamports = await metadataRentTopUp(mint, { name, symbol, uri }, programId);
   return sendIxsWithPriority({
     payer,
     units: CU_MINT_OPS,
     label,
+    ...sendOptions,
     instructions: [
       ...rentTopUpInstructions(payer, mint, lamports),
       createTokenMetadataInitializeInstruction({
@@ -312,7 +309,7 @@ async function initializeTokenMetadataWithPriority({ payer, mint, programId, nam
   });
 }
 
-async function updateTokenMetadataFieldWithPriority({ payer, mint, programId, field, value, label = `metadata ${field}` }) {
+async function updateTokenMetadataFieldWithPriority({ payer, mint, programId, field, value, label = `metadata ${field}`, ...sendOptions }) {
   const current = await getTokenMetadata(connection, mint, 'confirmed', programId);
   if (!current) throw new Error(`Mint ${mint.toBase58()} has no metadata to update`);
   const lamports = await metadataRentTopUp(mint, updateTokenMetadata(current, field, value), programId);
@@ -320,6 +317,7 @@ async function updateTokenMetadataFieldWithPriority({ payer, mint, programId, fi
     payer,
     units: CU_MINT_OPS,
     label,
+    ...sendOptions,
     instructions: [
       ...rentTopUpInstructions(payer, mint, lamports),
       createTokenMetadataUpdateFieldInstruction({ programId, metadata: mint, updateAuthority: payer.publicKey, field, value }),
@@ -328,12 +326,9 @@ async function updateTokenMetadataFieldWithPriority({ payer, mint, programId, fi
 }
 
 // Ensure an associated token account exists for (mint, owner), payer pays.
-// Replaces getOrCreateAssociatedTokenAccount: the idempotent-create
-// instruction is a no-op when the ATA already exists, so we always send
-// (with priority) instead of read-then-maybe-create — one fewer RPC read
-// and no read/create race. Returns { address } to match the shape the
-// call sites already consume.
-async function ensureAta({ payer, mint, owner, programId = TOKEN_PROGRAM_ID }) {
+// Verify an existing ATA first. Use the idempotent-create instruction when
+// creation is needed, so a concurrent account creation is also safe.
+async function ensureAta({ payer, mint, owner, programId = TOKEN_PROGRAM_ID, ...sendOptions }) {
   const address = getAssociatedTokenAddressSync(
     mint,
     owner,
@@ -345,6 +340,16 @@ async function ensureAta({ payer, mint, owner, programId = TOKEN_PROGRAM_ID }) {
     payer,
     units: CU_MINT_OPS,
     label: `ensure ATA ${address.toBase58().slice(0, 8)}…`,
+    ...sendOptions,
+    alreadyDone: sendOptions.alreadyDone || (async ({ minContextSlot }) => {
+      const info = await connection.getAccountInfo(address, { commitment: 'finalized', minContextSlot });
+      if (!info) return false;
+      const account = unpackAccount(address, info, programId);
+      if (!account.isInitialized || account.isFrozen || !account.mint.equals(mint) || !account.owner.equals(owner)) {
+        throw new Error('Verify the associated token account mint, owner, and state.');
+      }
+      return true;
+    }),
     instructions: [
       createAssociatedTokenAccountIdempotentInstruction(
         payer.publicKey, // payer
@@ -564,24 +569,56 @@ export function signWithScalarMint(transaction, payer, mintSigner) {
   return transaction;
 }
 
-async function sendMintTransaction(transaction, payer, mintSigner, commitment) {
-  if (!mintSigner.scalar) {
-    return sendAndConfirmTransaction(connection, transaction, [payer, mintSigner], { commitment });
+async function sendMintTransaction(transaction, payer, mintSigner, _commitment, sendOptions = {}) {
+  return sendIxsWithPriority({
+    payer, instructions: transaction.instructions, signers: mintSigner.scalar ? [] : [mintSigner],
+    ...(mintSigner.scalar ? { signTransaction: (tx) => signWithScalarMint(tx, payer, mintSigner) } : {}),
+    label: 'create Token-2022 mint', ...sendOptions,
+  });
+}
+
+async function recoverTokenTransactions(payer, mint, journalEvents, progress) {
+  let minContextSlot = 0;
+  const settled = new Set(journalEvents.filter((event) => event.stage === 'token_transaction_settled'
+    && ['confirmed', 'failed', 'expired'].includes(event.state)).map((event) => {
+      if (event.tokenMint === mint.toBase58()) minContextSlot = Math.max(minContextSlot, event.evidence?.slot || 0);
+      return event.signature;
+    }));
+  for (const event of journalEvents) {
+    if (event.stage !== 'token_transaction_signed' || settled.has(event.transaction?.signature)) continue;
+    const transaction = event.transaction;
+    const identity = inspectSolanaTransaction(transaction?.wire);
+    const decoded = Transaction.from(Buffer.from(transaction.wire, 'base64'));
+    if (event.tokenMint !== mint.toBase58() || identity.walletPublicKey !== payer.publicKey.toBase58()
+        || !decoded.instructions.some((ix) => ix.keys.some((key) => key.pubkey.equals(mint)))) {
+      throw Object.assign(new Error('Recover the saved token transaction for its original wallet and mint.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+    }
+    const result = await settleSignedTransaction(connection, transaction);
+    await progress({ stage: 'token_transaction_settled', tokenMint: mint.toBase58(), label: event.label,
+      signature: transaction.signature, state: result.state, evidence: result.evidence });
+    minContextSlot = Math.max(minContextSlot, result.evidence.slot);
+    settled.add(transaction.signature);
+    if (result.state === 'failed') throw Object.assign(new Error('The saved token transaction failed on-chain.'), { code: 'TRANSACTION_FAILED', signature: transaction.signature });
   }
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash(commitment);
-  transaction.recentBlockhash = blockhash;
-  signWithScalarMint(transaction, payer, mintSigner);
-  const signature = await connection.sendRawTransaction(transaction.serialize(), { preflightCommitment: commitment });
-  const confirmation = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, commitment);
-  if (confirmation.value.err) {
-    throw new Error(`Create-mint transaction failed: ${JSON.stringify(confirmation.value.err)}`);
-  }
-  return signature;
+  return minContextSlot;
+}
+
+function tokenTransactionOptions(mint, label, progress, alreadyDone, onSlot = () => {}) {
+  return {
+    alreadyDone,
+    onSigned: (transaction) => progress({ stage: 'token_transaction_signed', tokenMint: mint.toBase58(), label, transaction }),
+    onSettled: (transaction) => {
+      onSlot(transaction.evidence.slot);
+      return progress({ stage: 'token_transaction_settled', tokenMint: mint.toBase58(), label,
+        signature: transaction.signature, state: transaction.state, evidence: transaction.evidence });
+    },
+  };
 }
 
 async function createToken2022WithOnMintMetadata({
   tempWallet,
   mintKeypair,
+  minContextSlot = 0,
   name,
   symbol,
   totalSupply,
@@ -597,130 +634,122 @@ async function createToken2022WithOnMintMetadata({
   const programId = TOKEN_2022_PROGRAM_ID;
   const mintSigner = mintKeypair || Keypair.generate();
   const mint = mintSigner.publicKey;
-  const mintSpace = getMintLen([ExtensionType.MetadataPointer]);
-  const mintRent = await connection.getMinimumBalanceForRentExemption(mintSpace, 'finalized');
-
-  console.log('Creating Token-2022 mint with a self-referencing metadata pointer...');
-  const initializeMint = new Transaction().add(
-    SystemProgram.createAccount({
-      fromPubkey: tempWallet.publicKey,
-      newAccountPubkey: mint,
-      space: mintSpace,
-      lamports: mintRent,
-      programId,
-    }),
-    // The pointer is permanent and self-referencing. Setting its authority to
-    // null at initialization prevents a later redirect to spoofed metadata.
-    createInitializeMetadataPointerInstruction(mint, null, mint, programId),
-    createInitializeMint2Instruction(mint, 9, tempWallet.publicKey, null, programId),
-  );
-  const mintCreateTx = await sendMintTransaction(initializeMint, tempWallet, mintSigner, 'finalized');
-  console.log('Token-2022 mint created:', mint.toBase58());
-  progress({
-    stage: 'mint_created',
-    tokenMint: mint.toBase58(),
-    txId: mintCreateTx,
-    mintFormat: MINT_FORMAT_TOKEN_2022,
-    tokenProgram: programId.toBase58(),
-  });
-
-  const metadataCreateTx = await initializeTokenMetadataWithPriority({
-    payer: tempWallet,
-    mint,
-    programId,
-    name: onChainMetadataName,
-    symbol: onChainMetadataSymbol,
-    uri: onChainMetadataUri,
-    label: 'metadata',
-  });
-  // Bind the public identity document to the mint itself. Indexers can read
-  // the ordinary name/symbol/URI fields; Trebuchet proof can additionally
-  // verify that the URI content still matches this launch-time commitment.
-  const commitmentTx = await updateTokenMetadataFieldWithPriority({
-    payer: tempWallet,
-    mint,
-    programId,
-    field: 'trebuchet:sha256',
-    value: metadataHash,
-    label: 'metadata commitment',
-  });
-  progress({
-    stage: 'metadata_account_created',
-    tokenMint: mint.toBase58(),
-    txId: metadataCreateTx,
-    commitmentTxId: commitmentTx,
-    metadataUri,
-    imageUri,
-    metadataHash,
-    onChainMetadataUri,
-    metadataStandard: 'token-2022-inline',
-    metadataPointerAuthorityRevoked: true,
-    sealedLaunch: sealedLaunch === true,
-    sealedMetadataPending: sealedLaunch === true,
-  });
-
-  const tokenAccount = await withRpcRetry(() => ensureAta({
-    payer: tempWallet,
-    mint,
-    owner: tempWallet.publicKey,
-    programId,
-  }));
   const totalTokens = BigInt(totalSupply) * (10n ** 9n);
-  const mintSupplyTx = await sendIxsWithPriority({
-    payer: tempWallet,
-    units: CU_MINT_OPS,
-    label: 'mint supply',
-    instructions: [
-      createMintToInstruction(mint, tokenAccount.address, tempWallet.publicKey, totalTokens, [], programId),
-    ],
+  let verifiedSlot = minContextSlot;
+  const finalized = ({ minContextSlot = 0 } = {}) => ({ commitment: 'finalized', minContextSlot: Math.max(minContextSlot, verifiedSlot) });
+  const readMint = async (context) => {
+    const account = await connection.getAccountInfo(mint, finalized(context));
+    if (!account) return null;
+    const state = unpackMint(mint, account, programId);
+    if (!state.isInitialized || state.decimals !== 9 || state.freezeAuthority
+        || !hasPermanentSelfMetadataPointer(state, mint)
+        || (state.mintAuthority && !state.mintAuthority.equals(tempWallet.publicKey))
+        || ![0n, totalTokens].includes(state.supply)
+        || (state.mintAuthority === null && state.supply !== totalTokens)) {
+      throw new Error('Verify the saved Token-2022 mint, supply, authorities, and metadata pointer.');
+    }
+    return state;
+  };
+  const readMetadata = async (context) => {
+    const metadata = await getTokenMetadata(connection, mint, finalized(context), programId);
+    if (metadata && (!metadata.mint.equals(mint) || metadata.name !== onChainMetadataName
+        || metadata.symbol !== onChainMetadataSymbol || metadata.uri !== onChainMetadataUri
+        || (metadata.updateAuthority && !metadata.updateAuthority.equals(tempWallet.publicKey)))) {
+      throw new Error('Verify the saved Token-2022 metadata identity and authority.');
+    }
+    return metadata;
+  };
+  const mintDone = async (context) => Boolean(await readMint(context));
+  const metadataDone = async (context) => Boolean(await readMetadata(context));
+  const commitmentDone = async (context) => {
+    const metadata = await readMetadata(context);
+    const existing = metadata?.additionalMetadata.find(([field]) => field === 'trebuchet:sha256')?.[1];
+    if (existing && existing !== metadataHash) throw new Error('Verify the saved metadata commitment before continuing.');
+    return existing === metadataHash;
+  };
+  const tokenAccountAddress = getAssociatedTokenAddressSync(mint, tempWallet.publicKey, false, programId);
+  const ataDone = async (context) => {
+    const account = await connection.getAccountInfo(tokenAccountAddress, finalized(context));
+    if (!account) return false;
+    const state = unpackAccount(tokenAccountAddress, account, programId);
+    if (!state.isInitialized || state.isFrozen || !state.owner.equals(tempWallet.publicKey) || !state.mint.equals(mint)) {
+      throw new Error('Verify the launch wallet token account before continuing.');
+    }
+    return true;
+  };
+  const supplyDone = async (context) => (await readMint(context))?.supply === totalTokens;
+  const authorityDone = async (context) => (await readMint(context))?.mintAuthority === null;
+  const metadataAuthorityDone = async (context) => {
+    const metadata = await readMetadata(context);
+    return Boolean(metadata && !metadata.updateAuthority);
+  };
+  const sendOptions = (label, alreadyDone) => ({
+    alreadyDone,
+    ...tokenTransactionOptions(mint, label, progress, alreadyDone, (slot) => { verifiedSlot = Math.max(verifiedSlot, slot); }),
   });
+  const step = async (label, alreadyDone, send) => {
+    const result = await landTxWithRetry({ label, alreadyDone, send: () => send(sendOptions(label, alreadyDone)) });
+    return result.skipped ? '(already completed)' : result.value;
+  };
+
+  console.log('Creating or resuming Token-2022 mint with a self-referencing metadata pointer...');
+  const mintCreateTx = await step('create mint', mintDone, async (options) => {
+    const mintSpace = getMintLen([ExtensionType.MetadataPointer]);
+    const mintRent = await connection.getMinimumBalanceForRentExemption(mintSpace, 'finalized');
+    const initializeMint = new Transaction().add(
+      SystemProgram.createAccount({ fromPubkey: tempWallet.publicKey, newAccountPubkey: mint, space: mintSpace, lamports: mintRent, programId }),
+      createInitializeMetadataPointerInstruction(mint, null, mint, programId),
+      createInitializeMint2Instruction(mint, 9, tempWallet.publicKey, null, programId),
+    );
+    return sendMintTransaction(initializeMint, tempWallet, mintSigner, 'finalized', options);
+  });
+  progress({ stage: 'mint_created', tokenMint: mint.toBase58(), txId: mintCreateTx,
+    mintFormat: MINT_FORMAT_TOKEN_2022, tokenProgram: programId.toBase58() });
+
+  const metadataCreateTx = await step('initialize metadata', metadataDone, (options) => initializeTokenMetadataWithPriority({
+    payer: tempWallet, mint, programId, name: onChainMetadataName, symbol: onChainMetadataSymbol, uri: onChainMetadataUri,
+    label: 'metadata', ...options,
+  }));
+  const commitmentTx = await step('metadata commitment', commitmentDone, (options) => updateTokenMetadataFieldWithPriority({
+    payer: tempWallet, mint, programId, field: 'trebuchet:sha256', value: metadataHash, label: 'metadata commitment', ...options,
+  }));
+  progress({ stage: 'metadata_account_created', tokenMint: mint.toBase58(), txId: metadataCreateTx, commitmentTxId: commitmentTx,
+    metadataUri, imageUri, metadataHash, onChainMetadataUri, metadataStandard: 'token-2022-inline',
+    metadataPointerAuthorityRevoked: true, sealedLaunch: sealedLaunch === true, sealedMetadataPending: sealedLaunch === true });
+
+  await step('ensure supply account', ataDone, (options) => ensureAta({
+    payer: tempWallet, mint, owner: tempWallet.publicKey, programId, ...options,
+  }));
+  const tokenAccount = { address: tokenAccountAddress };
+  const mintSupplyTx = await step('mint supply', supplyDone, (options) => sendIxsWithPriority({
+    payer: tempWallet, units: CU_MINT_OPS, label: 'mint supply', ...options,
+    instructions: [createMintToInstruction(mint, tokenAccount.address, tempWallet.publicKey, totalTokens, [], programId)],
+  }));
   progress({ stage: 'supply_minted', tokenMint: mint.toBase58(), txId: mintSupplyTx });
 
-  const revokeMintTx = await sendIxsWithPriority({
-    payer: tempWallet,
-    units: CU_MINT_OPS,
-    label: 'renounce mint authority',
-    instructions: [
-      createSetAuthorityInstruction(mint, tempWallet.publicKey, AuthorityType.MintTokens, null, [], programId),
-    ],
-  });
+  const revokeMintTx = await step('renounce mint authority', authorityDone, (options) => sendIxsWithPriority({
+    payer: tempWallet, units: CU_MINT_OPS, label: 'renounce mint authority', ...options,
+    instructions: [createSetAuthorityInstruction(mint, tempWallet.publicKey, AuthorityType.MintTokens, null, [], programId)],
+  }));
   progress({ stage: 'mint_authority_revoked', tokenMint: mint.toBase58(), txId: revokeMintTx });
 
   let metadataUpdateAuthorityRevoked = false;
   if (sealedLaunch) {
-    progress({
-      stage: 'metadata_reveal_pending',
-      tokenMint: mint.toBase58(),
-      metadataUri,
-      metadataHash,
-      onChainMetadataUri,
-      sealedLaunch: true,
-      sealedMetadataPending: true,
-    });
+    progress({ stage: 'metadata_reveal_pending', tokenMint: mint.toBase58(), metadataUri, metadataHash,
+      onChainMetadataUri, sealedLaunch: true, sealedMetadataPending: true });
   } else {
-    const revokeMetadataTx = await tokenMetadataUpdateAuthority(
-      connection,
-      tempWallet,
-      mint,
-      tempWallet,
-      null,
-      [],
-      { commitment: 'finalized' },
-      programId,
-    );
+    const revokeMetadataTx = await step('renounce metadata authority', metadataAuthorityDone, (options) => sendIxsWithPriority({
+      payer: tempWallet, label: 'renounce metadata authority', ...options,
+      instructions: [createTokenMetadataUpdateAuthorityInstruction({ programId, metadata: mint, oldAuthority: tempWallet.publicKey, newAuthority: null })],
+    }));
     metadataUpdateAuthorityRevoked = true;
-    progress({
-      stage: 'metadata_update_authority_revoked',
-      tokenMint: mint.toBase58(),
-      txId: revokeMetadataTx,
-      immutable: true,
-    });
+    progress({ stage: 'metadata_update_authority_revoked', tokenMint: mint.toBase58(), txId: revokeMetadataTx, immutable: true });
   }
 
   const [mintInfo, tokenMetadata, tokenAccountInfo] = await Promise.all([
-    getMint(connection, mint, 'finalized', programId),
-    getTokenMetadata(connection, mint, 'finalized', programId),
-    getAccount(connection, tokenAccount.address, 'finalized', programId),
+    getMint(connection, mint, finalized(), programId),
+    getTokenMetadata(connection, mint, finalized(), programId),
+    getAccount(connection, tokenAccount.address, finalized(), programId),
   ]);
   if (mintInfo.supply !== totalTokens || mintInfo.mintAuthority !== null || mintInfo.freezeAuthority !== null) {
     throw new Error('Token-2022 safety verification failed after mint creation.');
@@ -779,6 +808,7 @@ export async function createTokenWithMetaplex({
   totalSupply,
   logoBase64,
   onProgress,
+  journalEvents = [],
   vanityPrefix,
   vanitySuffix,
   vanityCAKeypair,
@@ -846,13 +876,25 @@ export async function createTokenWithMetaplex({
     }
 
     const mintAddress = mintKeypair.publicKey.toBase58();
+    const recoveredSlot = await recoverTokenTransactions(tempWallet, mintKeypair.publicKey, journalEvents, progress);
     let metadataUri = null;
     let imageUri = null;
     let metadataHash;
     let onChainMetadataUri;
     let onChainMetadataName = name;
     let onChainMetadataSymbol = symbol;
-    if (sealedLaunch) {
+    const prepared = journalEvents.findLast((event) => event.stage === 'token_prepared'
+      && event.tokenMint === mintAddress && event.onChainMetadataUri && /^[a-f0-9]{64}$/i.test(event.metadataHash || ''));
+    if (prepared) {
+      if ((prepared.name && prepared.name !== name) || (prepared.symbol && prepared.symbol !== symbol)
+          || (prepared.totalSupply && String(prepared.totalSupply) !== String(totalSupply))
+          || (typeof prepared.sealedLaunch === 'boolean' && prepared.sealedLaunch !== sealedLaunch)) {
+        throw Object.assign(new Error('Use the saved token identity and supply when resuming this mint.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+      }
+      ({ metadataUri, imageUri, metadataHash, onChainMetadataUri } = prepared);
+      onChainMetadataName = sealedLaunch ? SEALED_TOKEN_NAME : name;
+      onChainMetadataSymbol = sealedLaunch ? SEALED_TOKEN_SYMBOL : symbol;
+    } else if (sealedLaunch) {
       // Nothing identifying leaves this machine until the reveal: Irys uploads
       // are public, and an early upload links name and art to this mint.
       const identity = prepareSealedIdentity({ logoBase64, name, symbol, description, mint: mintAddress });
@@ -886,12 +928,13 @@ export async function createTokenWithMetaplex({
     }
 
     progress({ stage: 'token_prepared', tokenMint: mintAddress, metadataUri, imageUri,
-      metadataHash, onChainMetadataUri, mintFormat: normalizedMintFormat });
+      metadataHash, onChainMetadataUri, mintFormat: normalizedMintFormat, name, symbol, totalSupply, sealedLaunch });
 
     if (normalizedMintFormat === MINT_FORMAT_TOKEN_2022) {
       return await createToken2022WithOnMintMetadata({
         tempWallet,
         mintKeypair,
+        minContextSlot: recoveredSlot,
         name,
         symbol,
         totalSupply,
@@ -1463,6 +1506,10 @@ export async function finishTokenCreation({
   const mint = new PublicKey(tokenMint);
   const mintPubkey = umiPublicKey(tokenMint);
   const totalTokens = BigInt(totalSupply) * (10n ** 9n);
+  let verifiedSlot = await recoverTokenTransactions(tempWallet, mint, journalEvents || [], progress);
+  const finalized = ({ minContextSlot = 0 } = {}) => ({ commitment: 'finalized', minContextSlot: Math.max(verifiedSlot, minContextSlot) });
+  const sendOptions = (label, alreadyDone) => tokenTransactionOptions(mint, label, progress, alreadyDone,
+    (slot) => { verifiedSlot = Math.max(verifiedSlot, slot); });
   const programId = await detectMintProgramId(mint);
   const isToken2022 = programId.equals(TOKEN_2022_PROGRAM_ID);
 
@@ -1483,12 +1530,13 @@ export async function finishTokenCreation({
   // --- Detect existing on-chain state (authoritative for what remains) ---
   let mintInfo;
   try {
-    mintInfo = await getMint(connection, mint, 'finalized', programId);
+    mintInfo = await getMint(connection, mint, finalized(), programId);
   } catch (e) {
     throwIfExecutionPaused(e);
     throw new Error(`finish-token: cannot read mint ${tokenMint} on-chain: ${e.message}`);
   }
-  status.supplyMinted = mintInfo.supply >= totalTokens;
+  if (![0n, totalTokens].includes(mintInfo.supply)) throw Object.assign(new Error('Verify the saved token supply before finishing.'), { code: 'EXECUTION_RECOVERY_REQUIRED' });
+  status.supplyMinted = mintInfo.supply === totalTokens;
   status.freezeAuthorityDisabled = mintInfo.freezeAuthority === null;
   status.mintAuthorityRenounced = mintInfo.mintAuthority === null;
   status.metadataPointerAuthorityRevoked = isToken2022
@@ -1499,7 +1547,7 @@ export async function finishTokenCreation({
   let metaAccount = null;
   let inlineMetadata = null;
   if (isToken2022) {
-    try { inlineMetadata = await getTokenMetadata(connection, mint, 'finalized', programId); } catch (error) { throwIfExecutionPaused(error); /* absent */ }
+    try { inlineMetadata = await getTokenMetadata(connection, mint, finalized(), programId); } catch (error) { throwIfExecutionPaused(error); /* absent */ }
     status.metadataExists = Boolean(inlineMetadata);
     status.updateAuthorityRevoked = Boolean(inlineMetadata && !inlineMetadata.updateAuthority);
   } else {
@@ -1544,12 +1592,8 @@ export async function finishTokenCreation({
     if (isToken2022) {
       await initializeTokenMetadataWithPriority({
         payer: tempWallet, mint, programId, name, symbol, uri: metadataUri, label: 'metadata',
+        ...sendOptions('initialize metadata', async (context) => Boolean(await getTokenMetadata(connection, mint, finalized(context), programId))),
       });
-      if (/^[a-f0-9]{64}$/i.test(String(metadataHash || ''))) {
-        await updateTokenMetadataFieldWithPriority({
-          payer: tempWallet, mint, programId, field: 'trebuchet:sha256', value: String(metadataHash).toLowerCase(), label: 'metadata commitment',
-        });
-      }
     } else {
       await landTxWithRetry({
         label: 'finish: metadata account',
@@ -1570,6 +1614,19 @@ export async function finishTokenCreation({
     progress({ stage: 'metadata_account_created', tokenMint, metadataUri });
   }
 
+  if (isToken2022 && /^[a-f0-9]{64}$/i.test(String(metadataHash || ''))) {
+    const commitmentDone = async (context) => {
+      const metadata = await getTokenMetadata(connection, mint, finalized(context), programId);
+      const value = metadata?.additionalMetadata.find(([field]) => field === 'trebuchet:sha256')?.[1];
+      if (value && value !== String(metadataHash).toLowerCase()) throw new Error('Verify the saved metadata commitment before finishing.');
+      return value === String(metadataHash).toLowerCase();
+    };
+    if (!(await commitmentDone())) await updateTokenMetadataFieldWithPriority({
+      payer: tempWallet, mint, programId, field: 'trebuchet:sha256', value: String(metadataHash).toLowerCase(), label: 'metadata commitment',
+      ...sendOptions('metadata commitment', commitmentDone),
+    });
+  }
+
   // --- 2. ATA + supply (hard idempotency guard: never double-mint) ---
   if (!status.supplyMinted) {
     const tokenAccount = await withRpcRetry(() => ensureAta({
@@ -1577,6 +1634,7 @@ export async function finishTokenCreation({
       mint,
       owner: tempWallet.publicKey,
       programId,
+      ...sendOptions('ensure supply account'),
     }));
     // A freshly-created ATA can be returned by one RPC node before the node
     // chosen for transaction simulation has observed the same finalized
@@ -1594,13 +1652,14 @@ export async function finishTokenCreation({
     const r = await landTxWithRetry({
       label: 'finish: mint supply',
       alreadyDone: async () => {
-        const info = await getMint(connection, mint, 'finalized', programId);
+        const info = await getMint(connection, mint, finalized(), programId);
         return info.supply >= totalTokens;
       },
       send: () => sendIxsWithPriority({
         payer: tempWallet,
         units: CU_MINT_OPS,
         label: 'finish: mint supply',
+        ...sendOptions('mint supply', async (context) => (await getMint(connection, mint, finalized(context), programId)).supply === totalTokens),
         instructions: [
           createMintToInstruction(
             mint,
@@ -1625,13 +1684,14 @@ export async function finishTokenCreation({
     const r = await landTxWithRetry({
       label: 'finish: renounce mint authority',
       alreadyDone: async () => {
-        const info = await getMint(connection, mint, 'finalized', programId);
+        const info = await getMint(connection, mint, finalized(), programId);
         return info.mintAuthority === null;
       },
       send: () => sendIxsWithPriority({
         payer: tempWallet,
         units: CU_MINT_OPS,
         label: 'finish: renounce mint authority',
+        ...sendOptions('renounce mint authority', async (context) => (await getMint(connection, mint, finalized(context), programId)).mintAuthority === null),
         instructions: [
           createSetAuthorityInstruction(
             mint,
@@ -1660,16 +1720,14 @@ export async function finishTokenCreation({
   } else if (!status.updateAuthorityRevoked && !sealedLaunch) {
     try {
       if (isToken2022) {
-        await tokenMetadataUpdateAuthority(
-          connection,
-          tempWallet,
-          mint,
-          tempWallet,
-          null,
-          [],
-          { commitment: 'finalized' },
-          programId,
-        );
+        await sendIxsWithPriority({
+          payer: tempWallet, label: 'finish: renounce metadata authority',
+          ...sendOptions('renounce metadata authority', async (context) => {
+            const metadata = await getTokenMetadata(connection, mint, finalized(context), programId);
+            return Boolean(metadata && !metadata.updateAuthority);
+          }),
+          instructions: [createTokenMetadataUpdateAuthorityInstruction({ programId, metadata: mint, oldAuthority: tempWallet.publicKey, newAuthority: null })],
+        });
       } else {
         const systemProgramAddress = umiPublicKey(SYSTEM_PROGRAM_ADDRESS);
         await landTxWithRetry({

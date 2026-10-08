@@ -417,6 +417,7 @@ export function createLaunchExecutionServices({
         vanitySuffix: normalizedVanitySuffix || null,
         vanityCAKeypair,
         vanityCAScalar,
+        journalEvents: launchJournal.activeForWallet(walletPublicKey)?.events || [],
         sealedLaunch: useSealedLaunch,
         mintFormat: normalizedMintFormat,
         keepMetadataAuthority: input.keepMetadataAuthority === 'true',

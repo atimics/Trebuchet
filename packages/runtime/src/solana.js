@@ -74,15 +74,14 @@ export function createSolanaSigner({ getSigners }) {
   };
 }
 
-export function createSolanaChain({ connection, network, expectedGenesisHash, beforeSend }) {
-  if (!connection || !['devnet', 'mainnet', 'localnet'].includes(network) || typeof expectedGenesisHash !== 'string' || !expectedGenesisHash) {
-    throw new TypeError('Supply a Solana connection, network, and expected genesis hash');
-  }
-  const checkNetwork = async () => {
-    if (await connection.getGenesisHash() !== expectedGenesisHash) {
-      throw Object.assign(new Error('The RPC is on a different network from the app. Match them on the Mode bar or in Settings, then try again'), { code: 'NETWORK_MISMATCH' });
-    }
-  };
+function validateSaved(transaction) {
+  const inspected = inspectSolanaTransaction(transaction.wire);
+  if (inspected.signature !== transaction.signature || inspected.blockhash !== transaction.blockhash
+    || !Number.isSafeInteger(transaction.lastValidBlockHeight) || transaction.lastValidBlockHeight < 0) throw invalid('Saved transaction identity requires recovery');
+  return inspected;
+}
+
+export async function readSolanaTransactionStatus(connection, transaction) {
   const readStatus = async (signature, minSlot = 0) => {
     const response = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
     if (!Number.isSafeInteger(response?.context?.slot) || response.context.slot < minSlot || !Array.isArray(response.value) || response.value.length !== 1) throw unavailable();
@@ -95,11 +94,30 @@ export function createSolanaChain({ connection, network, expectedGenesisHash, be
     state: status.confirmationStatus === 'finalized' ? (status.err === null ? 'confirmed' : 'failed') : 'pending',
     evidence: { slot: status.slot, commitment: status.confirmationStatus, error: status.err },
   });
-  const validateSaved = (transaction) => {
-    const inspected = inspectSolanaTransaction(transaction.wire);
-    if (inspected.signature !== transaction.signature || inspected.blockhash !== transaction.blockhash
-        || !Number.isSafeInteger(transaction.lastValidBlockHeight) || transaction.lastValidBlockHeight < 0) throw invalid('Saved transaction identity requires recovery');
-    return inspected;
+  validateSaved(transaction);
+  const first = await readStatus(transaction.signature);
+  if (first.status) return knownStatus(first);
+  const height = await connection.getBlockHeight('finalized');
+  if (!Number.isSafeInteger(height) || height < 0) throw unavailable();
+  if (height <= transaction.lastValidBlockHeight) return { state: 'rebroadcast', evidence: { slot: first.slot, finalizedBlockHeight: height } };
+  const validity = await finalizedBlockhashValidity(connection, transaction.blockhash, first.slot);
+  if (typeof validity?.value !== 'boolean' || !Number.isSafeInteger(validity?.context?.slot) || validity.context.slot < first.slot) throw unavailable();
+  // Re-read after expiry checks so a transaction that landed at the end of
+  // its valid window is adopted before a replacement can be built.
+  const afterExpiry = await readStatus(transaction.signature, validity.context.slot);
+  if (afterExpiry.status) return knownStatus(afterExpiry);
+  if (validity.value) return { state: 'rebroadcast', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height } };
+  return { state: 'expired', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height, blockhashValid: false } };
+}
+
+export function createSolanaChain({ connection, network, expectedGenesisHash, beforeSend }) {
+  if (!connection || !['devnet', 'mainnet', 'localnet'].includes(network) || typeof expectedGenesisHash !== 'string' || !expectedGenesisHash) {
+    throw new TypeError('Supply a Solana connection, network, and expected genesis hash');
+  }
+  const checkNetwork = async () => {
+    if (await connection.getGenesisHash() !== expectedGenesisHash) {
+      throw Object.assign(new Error('The RPC is on a different network from the app. Match them on the Mode bar or in Settings, then try again'), { code: 'NETWORK_MISMATCH' });
+    }
   };
   return {
     network,
@@ -107,19 +125,7 @@ export function createSolanaChain({ connection, network, expectedGenesisHash, be
     async readTransaction(transaction) {
       validateSaved(transaction);
       await checkNetwork();
-      const first = await readStatus(transaction.signature);
-      if (first.status) return knownStatus(first);
-      const height = await connection.getBlockHeight('finalized');
-      if (!Number.isSafeInteger(height) || height < 0) throw unavailable();
-      if (height <= transaction.lastValidBlockHeight) return { state: 'rebroadcast', evidence: { slot: first.slot, finalizedBlockHeight: height } };
-      const validity = await finalizedBlockhashValidity(connection, transaction.blockhash, first.slot);
-      if (typeof validity?.value !== 'boolean' || !Number.isSafeInteger(validity?.context?.slot) || validity.context.slot < first.slot) throw unavailable();
-      // Re-read after expiry checks so a transaction that landed at the end of
-      // its valid window is adopted before a replacement can be built.
-      const afterExpiry = await readStatus(transaction.signature, validity.context.slot);
-      if (afterExpiry.status) return knownStatus(afterExpiry);
-      if (validity.value) return { state: 'rebroadcast', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height } };
-      return { state: 'expired', evidence: { slot: afterExpiry.slot, finalizedBlockHeight: height, blockhashValid: false } };
+      return readSolanaTransactionStatus(connection, transaction);
     },
     async sendTransaction(transaction, context) {
       validateSaved(transaction);
