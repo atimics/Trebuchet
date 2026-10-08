@@ -13,8 +13,18 @@ async function refreshDestinations({ force = false } = {}) {
   const fresh = state.destinations.launchWallet === launchWallet
     && Date.now() - state.destinations.checkedAt < 15000;
   if (fresh && !force) return state.destinations;
+  if (destinationReads.has(launchWallet)) return destinationReads.get(launchWallet);
+  const pending = readDestinations(launchWallet).finally(() => { destinationReads.delete(launchWallet); });
+  destinationReads.set(launchWallet, pending);
+  return pending;
+}
+
+const destinationReads = new Map();
+
+async function readDestinations(launchWallet) {
   try {
     const result = await state.apiClient.listDestinations(launchWallet);
+    if ((selectedLaunchWalletPublicKey() || '') !== launchWallet) return state.destinations;
     const funders = (Array.isArray(result?.funders) ? result.funders : [])
       .map((entry) => ({ address: String(entry?.address || ''), sol: Number(entry?.sol || 0) }))
       .filter((entry) => entry.address && entry.sol > 0);
@@ -33,6 +43,7 @@ async function refreshDestinations({ force = false } = {}) {
       return state.destinations;
     }
   } catch (_error) {
+    if ((selectedLaunchWalletPublicKey() || '') !== launchWallet) return state.destinations;
     state.destinations = { ...state.destinations, launchWallet, checkedAt: Date.now() };
   }
   renderReturnWalletCard();

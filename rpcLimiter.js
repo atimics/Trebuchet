@@ -38,17 +38,24 @@ export function rpcMethods(body) {
   }
 }
 
-// A token bucket per key: `rate` tokens a second, refilled continuously; callers wait in order.
-export function acquire(key, { rate = PER_SECOND, now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// One token per key, refilled at `rate` tokens a second. Pace the first calls too:
+// six calls at startup plus five refills could exceed a provider's 10 calls per second.
+export function acquire(key, { rate = PER_SECOND, now = Date.now, wait = sleep } = {}) {
   let queue = queues.get(key);
   if (!queue) {
-    queue = { tokens: Math.max(1, rate), at: now(), tail: Promise.resolve() };
+    queue = { tokens: 1, at: now(), blockedUntil: 0, tail: Promise.resolve() };
     queues.set(key, queue);
   }
   const turn = queue.tail.then(async () => {
     for (;;) {
       const current = now();
-      queue.tokens = Math.min(Math.max(1, rate), queue.tokens + ((current - queue.at) / 1000) * rate);
+      if (current < queue.blockedUntil) {
+        await wait(queue.blockedUntil - current);
+        continue;
+      }
+      queue.tokens = Math.min(1, queue.tokens + (Math.max(0, current - queue.at) / 1000) * rate);
       queue.at = current;
       if (queue.tokens >= 1) { queue.tokens -= 1; return; }
       await wait(Math.ceil(((1 - queue.tokens) / rate) * 1000));
@@ -58,15 +65,44 @@ export function acquire(key, { rate = PER_SECOND, now = Date.now, wait = (ms) =>
   return turn;
 }
 
-export function installRpcLimiter(target = globalThis) {
+function pauseAfterRateLimit(host, response, now) {
+  if (response?.status !== 429) return;
+  const header = response.headers?.get?.('retry-after');
+  const seconds = header == null ? NaN : Number(header);
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now();
+  const queue = queues.get(host);
+  queue.blockedUntil = Math.max(queue.blockedUntil, now() + (Number.isFinite(delay) && delay > 0 ? delay : 1000));
+  queue.tokens = 0;
+  queue.at = now();
+}
+
+export function installRpcLimiter(target = globalThis, { now = Date.now, wait = sleep } = {}) {
   const original = target.fetch;
   if (typeof original !== 'function' || original.__rpcLimited) return;
+  const admissions = new Map();
   const limited = async function limitedFetch(input, init) {
     if (isJsonRpc(init)) {
       const host = hostOf(input);
       if (host) {
-        if (rpcMethods(init.body).some((method) => HEAVY_METHODS.has(method))) await acquire(`${host}#heavy`, { rate: HEAVY_PER_SECOND });
-        await acquire(host);
+        let result;
+        const turn = (admissions.get(host) || Promise.resolve()).then(async () => {
+          init?.signal?.throwIfAborted();
+          if (rpcMethods(init.body).some((method) => HEAVY_METHODS.has(method))) {
+            await acquire(`${host}#heavy`, { rate: HEAVY_PER_SECOND, now, wait });
+          }
+          await acquire(host, { now, wait });
+          init?.signal?.throwIfAborted();
+          // Reserve both rates at send time. Release the queue while the response is in flight.
+          result = Promise.resolve(original.call(this, input, init)).then((response) => {
+            pauseAfterRateLimit(host, response, now);
+            return response;
+          });
+        });
+        const tail = turn.catch(() => {});
+        admissions.set(host, tail);
+        tail.then(() => { if (admissions.get(host) === tail) admissions.delete(host); });
+        await turn;
+        return result;
       }
     }
     return original.call(this, input, init);
