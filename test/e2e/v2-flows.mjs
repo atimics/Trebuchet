@@ -96,6 +96,7 @@ try {
   await waitForServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.clock.install();
   const pageErrors = [];
   const consoleErrors = [];
   const nativeDialogs = [];
@@ -551,7 +552,6 @@ try {
   });
   await page.route('**/api/v2/execution-readiness', async (route) => route.fulfill({ json: { success: true,
     readiness: { status: 'ready', blockers: [], warnings: [], phases: [] } } }));
-  await page.clock.install();
   const stableQuoteReview = await page.evaluate(async (mint) => {
     state.demoActive = false; state.customPools = [{ id: 'quote-live', quoteMint: mint, quoteSymbol: 'SI', quoteDecimals: 6,
       supplyPercent: 5, ammConfigIndex: 1, sliceShares: '100', bootstrapMode: 'minimal', ladderMode: 'off', supportMode: 'off' }];
@@ -567,9 +567,12 @@ try {
     return { fingerprint: classicFundingEstimateFingerprint(), envelope: JSON.stringify(state.lastRunEnvelope),
       estimate: JSON.stringify(state.classicFundingEstimate) };
   }, liveQuoteMint);
-  await page.waitForFunction(() => state.quoteTokenInfo['quote-live'].info.priceUsd === '0.002');
-  await page.clock.runFor(30_001);
-  await page.waitForFunction(() => state.quoteTokenInfo['quote-live'].info.priceUsd === '0.001');
+  assert.equal(await page.evaluate(() => state.quoteTokenInfo['quote-live'].info.priceUsd), '0.002');
+  console.log('Quote price: first poll passed');
+  await page.clock.fastForward(30_001);
+  await page.evaluate(() => quotePriceInFlight);
+  assert.equal(await page.evaluate(() => state.quoteTokenInfo['quote-live'].info.priceUsd), '0.001');
+  console.log('Quote price: 30-second poll passed');
   assert.equal(pricePolls, 2);
   const refreshedReview = await page.evaluate(() => ({ fingerprint: classicFundingEstimateFingerprint(),
     envelope: JSON.stringify(state.lastRunEnvelope), estimate: JSON.stringify(state.classicFundingEstimate) }));
@@ -580,17 +583,18 @@ try {
   assert.equal(await page.evaluate(() => customQuoteInfoBadge(state.customPools[0]).label), 'Held in wallet');
   const pricePanel = await page.evaluate(() => renderCustomQuoteInfoPanel(state.customPools[0]));
   assert.match(pricePanel, /geckoterminal/); assert.match(pricePanel, /Price checked/); assert.match(pricePanel, /every 30 seconds/);
+  await page.clock.resume();
   await page.evaluate(async () => {
     state.coins.key = null; state.coins.detail = null; state.selectedVanityPublicKey = null; state.launchProof = null;
     state.createdTokenInfo = null; state.lastDemoLaunchRun = null; state.executionReadiness = null;
     $('#tokenName').value = 'Live quote test'; $('#tokenSymbol').value = 'QUOTE';
-    setView('launch'); setLaunchWorkspace('liquidity'); setPlanSlide('pairs'); renderAll();
+    state.classicFundingEstimate = stampClassicFundingEstimate(state.classicFundingEstimate, currentLaunchConfig());
+    setView('launch'); setLaunchWorkspace('fund'); setPlanSlide('cost'); renderAll();
     await refreshQuotePrices();
-    for (let node = $('#poolEditorPanel'); node; node = node.parentElement) if (node.tagName === 'DETAILS') node.open = true;
   });
-  await page.locator('.custom-pool-row .quote-info-panel').waitFor({ state: 'visible' });
-  await page.locator('.custom-pool-row .quote-info-panel').scrollIntoViewIfNeeded();
-  assert.match(await page.locator('.custom-pool-row .quote-info-panel').innerText(), /geckoterminal/);
+  await page.locator('.pair-token-checks').waitFor({ state: 'visible' });
+  assert.match(await page.locator('.pair-token-checks').innerText(), /SI.*geckoterminal/s);
+  await page.locator('.pair-token-checks').scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(configDir, 'quote-prices.png'), fullPage: true });
   console.log(`Quote price screenshot: ${path.join(configDir, 'quote-prices.png')}`);
 

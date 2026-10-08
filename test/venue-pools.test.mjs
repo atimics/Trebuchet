@@ -151,7 +151,22 @@ test('PumpSwap decodes the variable account size and prices actual reserves', as
   assert.equal(decodePumpSwapPool(pumpAccount().subarray(0, 211)).kind, 'reserve');
   assert.throws(() => decodePumpSwapPool(Buffer.alloc(301)), /Invalid/);
   const extended = pumpAccount(); putU128(extended, 245, 1n);
-  assert.throws(() => decodePumpSwapPool(extended), /virtual-reserve/);
+  assert.equal(decodePumpSwapPool(extended).virtualQuote, 1n);
+});
+
+test('PumpSwap prices signed virtual reserves while fees stay outside spendable depth', async () => {
+  const data = pumpAccount(); putU128(data, 245, BigInt.asUintN(128, -100_000_000n));
+  data.writeBigUInt64LE(60_000_000n, 271); data.writeBigUInt64LE(40_000_000n, 279);
+  const st = decodePumpSwapPool(data);
+  assert.equal(st.virtualQuote, -100_000_000n); assert.equal(st.quoteFees, 100_000_000n);
+  const vault = 1_000_000_000n;
+  const pool = venuePool({ venue: 'pump-swap', programId: VENUE_PROGRAMS.PUMP_SWAP,
+    state: { ...st, reserveA: 100_000_000_000n, reserveB: vault - st.quoteFees, priceReserveB: vault + st.virtualQuote } });
+  const result = await evaluatePool(pool, { mint: TOKEN, solUsd: new Decimal(100) });
+  assert.equal(result.priceUsd.toString(), '0.0009'); assert.equal(result.liquidityUsd.toString(), '180');
+  pool.state.priceReserveB = vault + 10_000_000_000n;
+  const boosted = await evaluatePool(pool, { mint: TOKEN, solUsd: new Decimal(100) });
+  assert.equal(boosted.priceUsd.toString(), '0.011'); assert.equal(boosted.liquidityUsd.toString(), '180');
 });
 
 test('Pump curve prices virtual reserves and counts real funds, then retires after migration', async () => {

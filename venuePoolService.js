@@ -62,11 +62,12 @@ const u128At = (data, offset) => data.readBigUInt64LE(offset) + (data.readBigUIn
 export function decodePumpSwapPool(data) {
   if (data.length < 211 || !data.subarray(0, 8).equals(PUMP_POOL_DISCRIMINATOR)) throw new Error('Invalid PumpSwap pool');
   const virtualQuote = data.length >= 261 ? BigInt.asIntN(128, u128At(data, 245)) : 0n;
-  // Extended virtual-reserve pools need their own curve rules. Price the regular AMM here.
-  if (virtualQuote !== 0n) throw new Error('PumpSwap virtual-reserve price requires a market quote');
+  // Official PumpSwap SDK 2.1.0: vault + signed virtual reserve sets price;
+  // vault - pending protocol/creator fees measures the spendable quote side.
   return {
     kind: 'reserve', mintA: pubkeyAt(data, 43), mintB: pubkeyAt(data, 75),
     vaultA: pubkeyAt(data, 139), vaultB: pubkeyAt(data, 171),
+    virtualQuote,
     quoteFees: data.length >= 287 ? data.readBigUInt64LE(271) + data.readBigUInt64LE(279) : 0n,
   };
 }
@@ -248,6 +249,12 @@ export async function fetchVenuePoolsByMints(connection, mint, anchor) {
     mintB: { address: pool.state.mintB, decimals: mintDecimals(extra.get(pool.state.mintB)?.data) },
     state: {
       ...pool.state,
+      ...(pool.state.virtualQuote !== undefined ? {
+        priceReserveB: (() => {
+          const raw = tokenAmount(extra.get(pool.state.vaultB)?.data);
+          return raw == null ? 0n : raw + pool.state.virtualQuote;
+        })(),
+      } : {}),
       reserveA: pool.state.reserveA ?? tokenAmount(extra.get(pool.state.vaultA)?.data),
       reserveB: pool.state.reserveB ?? (() => {
         const raw = tokenAmount(extra.get(pool.state.vaultB)?.data);
