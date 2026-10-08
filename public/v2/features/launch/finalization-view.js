@@ -478,6 +478,7 @@ function renderClassicBridge() {
   const fundingBalanceKnown = state.demoActive || (funding.hasWalletBalance && funding.walletBalanceFresh);
   const fundingSolReady = fundingBalanceKnown && Number(funding.missingSol || 0) <= 0.001;
   const quoteStatus = quoteAcquireStatus(config);
+  const missingPairCount = quoteStatus.walletFunding?.missingRoutes.length ?? routeCount;
   const manualSummary = manualPrefundSummary(quoteManualPrefundItems());
   const quoteFundingReady = quoteStatus.ready && (!manualQuoteCount || manualSummary.className === '');
   const fundingReady = Boolean(estimate && fundingSolReady && quoteFundingReady);
@@ -599,8 +600,8 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: routeCount
-              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
+            detail: missingPairCount
+              ? `${missingPairCount} pair token${missingPairCount === 1 ? '' : 's'} need more funds in the launch wallet.`
               : 'Send the pair tokens to the launch wallet, then check the balance.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',

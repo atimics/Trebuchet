@@ -54,9 +54,8 @@ const METADATA_PROGRAM_ID = new PublicKey(
 
 const GECKO_BASE = 'https://api.geckoterminal.com/api/v2/networks/solana';
 
-// GeckoTerminal's free API allows about 30 requests a minute. Requests wait their turn at one
-// every 2.1 s instead of bursting into 429s (a launch with eleven pair tokens sent them at once).
-const GECKO_SPACING_MS = 2100;
+// The public API advertises 10 calls/minute. Share the queue across price and metadata reads.
+const GECKO_SPACING_MS = 6100;
 let geckoQueue = Promise.resolve();
 let geckoLastAt = 0;
 export function geckoFetch(url, options, { now = Date.now, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), fetchImpl = (...args) => fetch(...args) } = {}) {
@@ -67,6 +66,48 @@ export function geckoFetch(url, options, { now = Date.now, wait = (ms) => new Pr
   });
   geckoQueue = turn.catch(() => {});
   return turn.then(() => fetchImpl(url, options));
+}
+
+// GeckoTerminal's documented multi-token price endpoint covers every indexed DEX.
+// One request per launch refresh leaves room for metadata reads in the free tier.
+const geckoPriceBatches = new Map();
+export function getGeckoTokenPrices(mints, { forceFresh = false } = {}) {
+  const key = [...new Set(mints)].sort().join(',');
+  const hit = geckoPriceBatches.get(key);
+  if (hit?.pending) return hit.pending;
+  if (!forceFresh && hit?.expiresAt > Date.now()) return Promise.resolve(hit.prices);
+  const entry = {};
+  geckoPriceBatches.set(key, entry);
+  entry.pending = fetchGeckoTokenPrices(mints).then((prices) => {
+    entry.prices = prices; entry.expiresAt = Date.now() + 10_000; entry.pending = null;
+    while (geckoPriceBatches.size > 128) geckoPriceBatches.delete(geckoPriceBatches.keys().next().value);
+    return prices;
+  });
+  return entry.pending;
+}
+
+async function fetchGeckoTokenPrices(mints) {
+  const prices = new Map();
+  const unique = [...new Set(mints)];
+  for (let index = 0; index < unique.length; index += 30) {
+    const batch = unique.slice(index, index + 30);
+    try {
+      const response = await geckoFetch(`${GECKO_BASE}/tokens/multi/${batch.join(',')}?include=top_pools`, {
+        headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) continue;
+      const body = await response.json();
+      for (const token of Array.isArray(body.data) ? body.data : []) {
+        const mint = token.attributes?.address;
+        if (!batch.includes(mint)) continue;
+        const ids = new Set((token.relationships?.top_pools?.data || []).map((pool) => pool.id));
+        const poolPrice = extractPriceFromGeckoPools(mint, { data: (body.included || []).filter((pool) => ids.has(pool.id)) });
+        const price = poolPrice || token.attributes?.price_usd;
+        if (Number.isFinite(Number(price)) && Number(price) > 0) prices.set(mint, poolPrice || new Decimal(price));
+      }
+    } catch { /* the pool readers and other price providers remain available */ }
+  }
+  return prices;
 }
 
 // DexScreener Solana token endpoint. Used as a final fallback after
@@ -946,8 +987,8 @@ async function fetchDisplayMetaFromGecko(mintAddress) {
 // We try sequentially (not in parallel) because the chained-fallback
 // pattern means we only need later sources when earlier ones fail.
 // A successful Jupiter response saves the Gecko round-trip entirely.
-async function resolvePriceUsd(mintAddress) {
-  const cached = readCache(mintAddress);
+async function resolvePriceUsd(mintAddress, { forceFresh = false, skipOnChainFallback = false } = {}) {
+  const cached = forceFresh ? null : readCache(mintAddress);
   if (cached?.priceUsd !== undefined) {
     return cached.priceUsd; // may be a Decimal or null (cached negative)
   }
@@ -956,18 +997,19 @@ async function resolvePriceUsd(mintAddress) {
   // time; without this, N simultaneous price lookups for one mint each fire
   // the full Jupiter → Gecko → DexScreener fallback chain.
   return singleflight('price:' + mintAddress, () =>
-    _resolvePriceUsdUncached(mintAddress),
+    _resolvePriceUsdUncached(mintAddress, { forceFresh, skipOnChainFallback }),
   );
 }
 
 // Actual fetch path for resolvePriceUsd. Assumes the cache was already checked
 // (and missed). Writes the result — including a null "negative" cache entry —
 // back to the cache before returning.
-async function _resolvePriceUsdUncached(mintAddress) {
+async function _resolvePriceUsdUncached(mintAddress, { forceFresh = false, skipOnChainFallback = false } = {}) {
   let price = null;
   let source = null;
 
   try {
+    if (forceFresh) heliusAssets.delete(mintAddress);
     price = await fetchPriceFromHelius(mintAddress);
     if (price != null) source = 'helius';
   } catch (e) {
@@ -1001,7 +1043,7 @@ async function _resolvePriceUsdUncached(mintAddress) {
     }
   }
 
-  if (price == null && onChainPriceFallback && !ON_CHAIN_ANCHOR_MINTS.has(mintAddress)) {
+  if (price == null && !skipOnChainFallback && onChainPriceFallback && !ON_CHAIN_ANCHOR_MINTS.has(mintAddress)) {
     try {
       const onChain = await onChainPriceFallback(mintAddress);
       if (onChain != null) {
@@ -1219,8 +1261,8 @@ export function cachedTokenDisplay(mintAddress) {
   };
 }
 
-export async function getUsdPrice(mintAddress) {
-  return resolvePriceUsd(mintAddress);
+export async function getUsdPrice(mintAddress, options) {
+  return resolvePriceUsd(mintAddress, options);
 }
 
 /**

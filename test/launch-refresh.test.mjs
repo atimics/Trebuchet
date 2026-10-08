@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import Decimal from 'decimal.js';
 import * as lp from '../lpService.js';
 import { restoreLaunchJournalArt } from '../coinService.js';
-import { buildV2ExecutionReadiness, v2FundingEstimateFingerprint } from '../v2LaunchPlan.js';
+import { buildV2ExecutionReadiness, v2FundingEstimateFingerprint, launchPlanConfigFingerprint } from '../v2LaunchPlan.js';
 
 const QUOTE = { address: '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr', symbol: 'SI', decimals: 6 };
 const ESTIMATED = '0.00334932548175887';
@@ -163,4 +163,65 @@ test('token completion clears cached zero-supply facts and reads the displayed c
   assert.equal(state.coins.detail, null);
   assert.deepEqual(calls, ['mint']);
   assert.equal(vm.runInContext('coinPageCache.has("mint")', context), false);
+});
+
+test('live prices leave the funding and run fingerprints stable while manual prices bind intent', () => {
+  const input = { token: { name: 'Token', symbol: 'TOK', supply: '1000000000' },
+    poolTopology: { pools: [{ quoteToken: QUOTE.address, quoteMint: QUOTE.address, quotePriceUsd: CURRENT,
+      quotePriceSource: 'geckoterminal', supplyPercent: 100 }] } };
+  const updated = structuredClone(input); updated.poolTopology.pools[0].quotePriceUsd = ESTIMATED;
+  updated.poolTopology.pools[0].quotePriceSource = 'on-chain:pump-swap/SOL';
+  assert.equal(v2FundingEstimateFingerprint(input), v2FundingEstimateFingerprint(updated));
+  assert.equal(launchPlanConfigFingerprint(input), launchPlanConfigFingerprint(updated));
+  input.poolTopology.pools[0].quoteUsdOverride = CURRENT;
+  updated.poolTopology.pools[0].quoteUsdOverride = ESTIMATED;
+  assert.notEqual(v2FundingEstimateFingerprint(input), v2FundingEstimateFingerprint(updated));
+  assert.notEqual(launchPlanConfigFingerprint(input), launchPlanConfigFingerprint(updated));
+});
+
+test('market refresh keeps native pool pricing above GeckoTerminal and reports its source', async () => {
+  const price = await lp.getQuoteTokenMarketPrice({ mint: QUOTE.address, solUsd: new Decimal(200), geckoPrice: ESTIMATED });
+  assert.equal(price.priceUsd, CURRENT); assert.equal(price.priceSource, 'on-chain:clmm/SOL');
+  assert.ok(Number.isFinite(Date.parse(price.priceCheckedAt)));
+  lp.setLaunchOnChainPriceForTests(async () => { throw Object.assign(new Error('none'), { code: 'NO_POOLS' }); });
+  const fallback = await lp.getQuoteTokenMarketPrice({ mint: QUOTE.address, solUsd: new Decimal(200), geckoPrice: ESTIMATED });
+  assert.equal(fallback.priceUsd, ESTIMATED); assert.equal(fallback.priceSource, 'geckoterminal');
+});
+
+test('a market spread finding remains visible when GeckoTerminal has a price', async () => {
+  lp.setLaunchOnChainPriceForTests(async () => { throw Object.assign(new Error('Pool prices disagree'), { code: 'POOL_SPREAD' }); });
+  await assert.rejects(lp.getQuoteTokenMarketPrice({ mint: QUOTE.address, solUsd: new Decimal(200), geckoPrice: ESTIMATED }), /Pool prices disagree/);
+});
+
+test('a verified wallet holding the summed quote amount can create pools without a buy route', () => {
+  const input = { token: { name: 'Token', symbol: 'TOK', supply: '1000000' }, poolTopology: {
+    targetMarketCapUsd: 25000, pools: [{ quoteToken: QUOTE.address, quoteMint: QUOTE.address, quoteSymbol: 'SI', supplyPercent: 100,
+      quoteCompatibility: { compatible: true, freezeAuthorityBlock: false, swapRoute: 'none' } }] } };
+  const estimate = { totalSol: 1, v2FundingFingerprint: v2FundingEstimateFingerprint(input),
+    autoSwapPlan: [{ quoteMint: QUOTE.address, minRaw: '100' }, { quoteMint: QUOTE.address, minRaw: '50' }], byQuote: { [QUOTE.address]: '10' } };
+  const context = { demoMode: false, walletPublicKey: 'wallet', walletAvailable: true, secretAvailable: true,
+    rpc: { activeUrl: 'https://rpc.example.com' }, fundingEstimate: estimate, requireCurrentFundingEstimate: true,
+    walletBalance: { sol: 10, tokens: { [QUOTE.address]: { amountRaw: '160' } } } };
+  const safety = () => buildV2ExecutionReadiness(input, context).blockers.filter((item) => item.id.startsWith('quote-token-safety'));
+  assert.equal(safety().length, 0);
+  context.walletBalance.tokens[QUOTE.address].amountRaw = '159'; assert.equal(safety().length, 1);
+  context.walletBalance.tokens[QUOTE.address].amountRaw = '160';
+  input.poolTopology.pools[0].quoteCompatibility.freezeAuthorityBlock = true;
+  assert.match(safety()[0].detail, /freeze-authority/);
+});
+
+test('GeckoTerminal supplies the same deep-market reference to funding and LP creation', async () => {
+  lp.setSdkFactoryForTests(async () => ({ ...SDK, connection: {} }));
+  lp.setLaunchOnChainPriceForTests(async () => { throw Object.assign(new Error('none'), { code: 'NO_POOLS' }); });
+  lp.setLaunchProbeForTests(async () => { throw new Error('The market already priced this quote'); });
+  const market = new Decimal(CURRENT); market.liquidityUsd = new Decimal(10000);
+  const marketPrices = async () => new Map([[QUOTE.address, market]]);
+  // The explicit reader isolates this fixture from network calls.
+  const refreshed = await lp.estimateRequiredFunding({ allocations: [allocation],
+    onChainPrice: (options) => lp.getQuoteTokenReferencePrice({ ...options, marketPrices }) });
+  assert.equal(refreshed.resolvedPrices[0].quoteUsd, CURRENT); assert.equal(refreshed.resolvedPrices[0].source, 'geckoterminal');
+  const creation = await lp.resolveQuoteUsdForCreate({ quoteToken: QUOTE,
+    alloc: { quoteUsdOverride: refreshed.resolvedPrices[0].quoteUsd }, solUsd: new Decimal(200),
+    raydium: { ...SDK, connection: {} }, marketPrices });
+  assert.equal(creation.source, 'geckoterminal'); assert.equal(creation.quoteUsd.toString(), CURRENT); assert.equal(creation.driftPct, 0);
 });

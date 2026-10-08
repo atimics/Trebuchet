@@ -48,6 +48,8 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Symbol', info.symbol || pool.quoteSymbol || '-'],
     ['Decimals', info.decimals ?? '-'],
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
+    ['Price source', info.priceSource || 'Awaiting market'],
+    ['Price checked', info.priceCheckedAt ? formatDate(info.priceCheckedAt) : 'Awaiting refresh'],
     ['Route', { raydium: 'Raydium', jupiter: 'Jupiter', none: 'none' }[info.swapRoute] || 'unknown'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
@@ -61,6 +63,8 @@ function renderCustomQuoteInfoPanel(pool) {
       ${facts.length ? `<div class="quote-info-facts">
         ${facts.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
       </div>` : ''}
+      <small>Prices refresh every 30 seconds. Pool creation checks the market again.</small>
+      ${info?.priceError || info?.priceWarning ? `<small class="warn">${escapeHtml(info.priceError || info.priceWarning)}</small>` : ''}
       <button class="pill-button" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(pool.id)}" ${canCheck ? '' : 'disabled'}>
         ${customQuoteInfoRecord(pool)?.loading ? 'Checking' : 'Verify quote'}
       </button>

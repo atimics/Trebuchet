@@ -58,7 +58,7 @@ test('concurrent price reads share one pool scan in either mint order', async ()
   const c = fetchVenuePoolsByMints(connection, 'MintC', 'MintD');
   release();
   await Promise.all([a, b, c]);
-  assert.equal(scans, 6, 'three venues in two mint orders');
+  assert.equal(scans, 8, 'four venues in two mint orders');
 });
 
 test('a pair token whose check failed waits a minute before the automatic re-check', () => {
@@ -69,7 +69,7 @@ test('a pair token whose check failed waits a minute before the automatic re-che
     { id: 'just-failed', quoteMint: 'M3' }, { id: 'failed-long-ago', quoteMint: 'M4' }, { id: 'checking', quoteMint: 'M5' },
   ];
   const records = {
-    ok: { info: { symbol: 'OK' } },
+    ok: { info: { symbol: 'OK', compatible: true, freezeAuthorityBlock: false, swapRoute: 'jupiter' } },
     'just-failed': { error: '429', checkedAt: new Date(now - 10_000).toISOString() },
     'failed-long-ago': { error: '429', checkedAt: new Date(now - 61_000).toISOString() },
     checking: { loading: true },

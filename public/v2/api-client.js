@@ -892,13 +892,13 @@
       return data.hub;
     }
 
-    async function getQuoteTokenInfo(quoteToken) {
+    async function getQuoteTokenInfo(quoteToken, { forceFresh = false } = {}) {
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
       const data = await request(QUOTE_TOKEN_INFO_PATH, {
         timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
-        body: { quoteToken: token },
+        body: { quoteToken: token, forceFresh },
       });
       if (!data?.success || !data.info) {
         throw new V2ApiError(data?.error || 'Quote-token info response missing info.', { code: 'BAD_QUOTE_TOKEN_INFO' });
@@ -1272,6 +1272,13 @@
       listPositionWithdrawals,
       getClmmFeeTiers,
       getQuoteTokenInfo,
+      async getQuoteTokenPrices(mints, { forceFresh = false } = {}) {
+        const data = await request('/api/quote-token-prices', {
+          timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { mints, forceFresh },
+        });
+        if (!data?.success || !Array.isArray(data.prices)) throw new V2ApiError(data?.error || 'Price response is awaiting a retry');
+        return data.prices;
+      },
       listFlywheelHubs,
       getTokenLogos,
       resolveFlywheelHub,

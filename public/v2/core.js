@@ -1007,6 +1007,11 @@ var TrebuchetCore = (() => {
   function launchPlanConfigFingerprint(input = {}) {
     const token = input?.token || {};
     const topology = input?.poolTopology || {};
+    const stableTopology = { ...topology };
+    if (Array.isArray(topology.pools)) stableTopology.pools = topology.pools.map((pool) => {
+      const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+      return intent;
+    });
     return JSON.stringify(stableFundingFingerprintValue({
       experience: input?.experience || null,
       token: {
@@ -1022,7 +1027,7 @@ var TrebuchetCore = (() => {
       launchSol: Number.isFinite(Number(input?.launchSol)) ? Number(input.launchSol) : null,
       mode: input?.mode || null,
       vanity: input?.vanity || null,
-      poolTopology: topology,
+      poolTopology: stableTopology,
       funding: {
         launchSol: Number.isFinite(Number(input?.funding?.launchSol ?? input?.launchSol)) ? Number(input.funding?.launchSol ?? input.launchSol) : null,
         targetMarketCapUsd: Number.isFinite(Number(input?.funding?.targetMarketCapUsd ?? topology.targetMarketCapUsd)) ? Number(input?.funding?.targetMarketCapUsd ?? topology.targetMarketCapUsd) : null
@@ -1037,7 +1042,12 @@ var TrebuchetCore = (() => {
     const topology = normalizePoolTopology(rawTopology);
     const token = input.token && typeof input.token === "object" ? input.token : {};
     return {
-      allocations: stableFundingFingerprintValue(classicAllocations(topology)),
+      allocations: stableFundingFingerprintValue(classicAllocations(topology).map((allocation, index) => {
+        const pool = rawTopology.pools?.[index] || {};
+        if (pool.quoteUsdOverride != null || pool.priceEnteredByUser === true) return allocation;
+        const { quoteUsdOverride: _livePrice, ...intent } = allocation;
+        return intent;
+      })),
       targetMarketCapUsd: Number(topology.targetMarketCapUsd || 0),
       publishLaunchReport: topology.report?.publish !== false,
       token: {
@@ -1473,7 +1483,7 @@ var TrebuchetCore = (() => {
     const token = String(pool.quoteToken || "").trim();
     return KNOWN_CLASSIC_QUOTE_MINTS.has(mint) || KNOWN_CLASSIC_QUOTE_MINTS.has(token);
   }
-  function quoteTokenSafetyIssues(pools = []) {
+  function quoteTokenSafetyIssues(pools = [], heldQuotes = /* @__PURE__ */ new Set()) {
     const issues = [];
     pools.forEach((pool, index) => {
       if (Number(pool.supplyPercent || 0) <= 0) return;
@@ -1516,7 +1526,8 @@ var TrebuchetCore = (() => {
         });
       }
       const swapRoute = String(info.swapRoute || "unknown").toLowerCase();
-      if (swapRoute === "none") {
+      const held = heldQuotes.has(quoteRef);
+      if (swapRoute === "none" && !held) {
         issues.push({
           index,
           state: "danger",
@@ -1524,7 +1535,7 @@ var TrebuchetCore = (() => {
           detail: `Pool ${index + 1} (${label}) quote token cannot be bought with SOL: neither Raydium nor Jupiter has a route.`
         });
       }
-      if (info.compatible == null || info.freezeAuthorityBlock == null || !["raydium", "jupiter", "none"].includes(swapRoute)) {
+      if (info.compatible == null || info.freezeAuthorityBlock == null || !held && !["raydium", "jupiter", "none"].includes(swapRoute)) {
         issues.push({
           index,
           state: "warn",
@@ -2459,24 +2470,6 @@ var TrebuchetCore = (() => {
         detail: issue.detail
       });
     });
-    quoteTokenSafetyIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
-      if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
-        addBlocker({
-          id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-          phase: "liquidity",
-          title: "Quote token safety",
-          detail: issue.detail
-        });
-        return;
-      }
-      warnings.push(readinessIssue({
-        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-        phase: "liquidity",
-        title: "Quote token safety",
-        detail: issue.detail,
-        severity: "warning"
-      }));
-    });
     feeKeyRecipientIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
       addBlocker({
         id: `invalid-fee-key-recipient-${issue.poolIndex + 1}-${issue.sliceIndex + 1}-${issueIndex + 1}`,
@@ -2519,6 +2512,36 @@ var TrebuchetCore = (() => {
     );
     const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
     const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
+    const heldQuotes = /* @__PURE__ */ new Set();
+    if (fundingEstimateMatchesInput && context.walletBalance) {
+      const requirements = /* @__PURE__ */ new Map();
+      Object.entries(fundingEstimate?.byQuote || {}).forEach(([mint, raw]) => addRawRequirement(requirements, mint, raw));
+      (fundingEstimate?.autoSwapPlan || []).forEach((row) => addRawRequirement(requirements, row.quoteMint, row.minRaw || row.targetRaw));
+      for (const [mint, raw] of requirements) if (walletTokenRawAmount(context.walletBalance, mint) >= raw) heldQuotes.add(mint);
+    }
+    const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools, heldQuotes);
+    setPlanGuardrail(plan, "classic-quote-safety", {
+      state: quoteSafety.some((issue) => issue.state === "danger") ? "danger" : quoteSafety.length ? "warn" : "pass",
+      detail: quoteSafety[0]?.detail || "Pair-token safety checks passed and funding is covered."
+    });
+    quoteSafety.forEach((issue, issueIndex) => {
+      if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
+        addBlocker({
+          id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+          phase: "liquidity",
+          title: "Quote token safety",
+          detail: issue.detail
+        });
+        return;
+      }
+      warnings.push(readinessIssue({
+        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+        phase: "liquidity",
+        title: "Quote token safety",
+        detail: issue.detail,
+        severity: "warning"
+      }));
+    });
     const executionAllocations = allocations.map((allocation, index) => {
       if (allocation.priceEnteredByUser === true) return allocation;
       const rows = Array.isArray(fundingEstimate?.resolvedPrices) ? fundingEstimate.resolvedPrices : [];

@@ -1,11 +1,15 @@
-async function checkExecutionReadiness({ retried = false } = {}) {
-  await autoVerifyQuoteTokens();
-  const config = currentLaunchConfig();
-  const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
+async function checkExecutionReadiness({ retried = false, forceFresh = false } = {}) {
+  if (state.executionChecking) return;
   state.executionChecking = true;
   renderClassicBridge();
 
   try {
+    if (forceFresh) {
+      await Promise.all([autoVerifyQuoteTokens({ forceFresh: true }), refreshManualPrefundBalance({ quiet: true })]);
+      await refreshQuotePrices({ forceFresh: true });
+    } else await autoVerifyQuoteTokens();
+    const config = currentLaunchConfig();
+    const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
       state.executionReadiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,

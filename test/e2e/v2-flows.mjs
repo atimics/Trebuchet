@@ -530,6 +530,70 @@ try {
   await page.screenshot({ path: path.join(configDir, 'image-recovery.png'), fullPage: true });
   console.log(`Recovery image screenshot: ${path.join(configDir, 'image-recovery.png')}`);
 
+  // The live launch screen polls quote prices, keeps its review, and uses held pair tokens.
+  const demoPrices = await page.evaluate(() => state.apiClient.getQuoteTokenPrices([DEFAULT_SOL_MINT]));
+  assert.equal(demoPrices[0].priceSource, 'demo-ledger');
+  const liveQuoteMint = Keypair.generate().publicKey.toBase58();
+  let pricePolls = 0; let safetyChecks = 0; let balanceChecks = 0;
+  await page.route('**/api/quote-token-prices', async (route) => {
+    pricePolls++;
+    await route.fulfill({ json: { success: true, prices: [{ mint: liveQuoteMint,
+      priceUsd: pricePolls === 1 ? '0.002' : '0.001', priceSource: 'geckoterminal', priceCheckedAt: new Date().toISOString() }] } });
+  });
+  await page.route('**/api/quote-token-info', async (route) => {
+    safetyChecks++; assert.equal(route.request().postDataJSON().forceFresh, true);
+    await route.fulfill({ json: { success: true, info: { address: liveQuoteMint, symbol: 'SI', decimals: 6,
+      priceUsd: '0.001', compatible: true, freezeAuthorityBlock: false, mintAuthorityWarning: false, swapRoute: 'none' } } });
+  });
+  await page.route('**/api/check-balance-detailed', async (route) => {
+    balanceChecks++;
+    await route.fulfill({ json: { success: true, balance: { sol: 10, tokens: { [liveQuoteMint]: { amountRaw: '100000', decimals: 6 } } } } });
+  });
+  await page.route('**/api/v2/execution-readiness', async (route) => route.fulfill({ json: { success: true,
+    readiness: { status: 'ready', blockers: [], warnings: [], phases: [] } } }));
+  await page.clock.install();
+  const stableQuoteReview = await page.evaluate(async (mint) => {
+    state.demoActive = false; state.customPools = [{ id: 'quote-live', quoteMint: mint, quoteSymbol: 'SI', quoteDecimals: 6,
+      supplyPercent: 5, ammConfigIndex: 1, sliceShares: '100', bootstrapMode: 'minimal', ladderMode: 'off', supportMode: 'off' }];
+    state.quoteTokenInfo = { 'quote-live': { query: mint, info: { symbol: 'SI', decimals: 6, priceUsd: '0.003' }, checkedAt: new Date().toISOString() } };
+    state.activeView = 'launch'; document.body.dataset.activeView = 'launch';
+    state.manualPrefund = { walletPublicKey: selectedLaunchWalletPublicKey(), lastUpdatedAt: new Date().toISOString(),
+      balance: { sol: 10, tokens: { [mint]: { amountRaw: '100000', decimals: 6 } } } };
+    const config = currentLaunchConfig();
+    state.classicFundingEstimate = stampClassicFundingEstimate({ totalSol: 1, byQuote: {},
+      autoSwapPlan: [{ quoteMint: mint, allocationIndex: config.poolTopology.pools.findIndex((pool) => pool.quoteMint === mint), minRaw: '100000', targetRaw: '120000' }] }, config);
+    state.lastRunEnvelope = { id: 'price-review', status: 'armed' };
+    await refreshQuotePrices();
+    return { fingerprint: classicFundingEstimateFingerprint(), envelope: JSON.stringify(state.lastRunEnvelope),
+      estimate: JSON.stringify(state.classicFundingEstimate) };
+  }, liveQuoteMint);
+  await page.waitForFunction(() => state.quoteTokenInfo['quote-live'].info.priceUsd === '0.002');
+  await page.clock.runFor(30_001);
+  await page.waitForFunction(() => state.quoteTokenInfo['quote-live'].info.priceUsd === '0.001');
+  assert.equal(pricePolls, 2);
+  const refreshedReview = await page.evaluate(() => ({ fingerprint: classicFundingEstimateFingerprint(),
+    envelope: JSON.stringify(state.lastRunEnvelope), estimate: JSON.stringify(state.classicFundingEstimate) }));
+  assert.deepEqual(refreshedReview, stableQuoteReview, 'Price polling changed the approved budget or run review');
+  await page.evaluate(() => checkExecutionReadiness({ forceFresh: true }));
+  assert.equal(safetyChecks, 1); assert.ok(balanceChecks >= 1);
+  assert.equal(await page.evaluate(() => quoteAcquireStatus().ready), true);
+  assert.equal(await page.evaluate(() => customQuoteInfoBadge(state.customPools[0]).label), 'Held in wallet');
+  const pricePanel = await page.evaluate(() => renderCustomQuoteInfoPanel(state.customPools[0]));
+  assert.match(pricePanel, /geckoterminal/); assert.match(pricePanel, /Price checked/); assert.match(pricePanel, /every 30 seconds/);
+  await page.evaluate(async () => {
+    state.coins.key = null; state.coins.detail = null; state.selectedVanityPublicKey = null; state.launchProof = null;
+    state.createdTokenInfo = null; state.lastDemoLaunchRun = null; state.executionReadiness = null;
+    $('#tokenName').value = 'Live quote test'; $('#tokenSymbol').value = 'QUOTE';
+    setView('launch'); setLaunchWorkspace('liquidity'); setPlanSlide('pairs'); renderAll();
+    await refreshQuotePrices();
+    for (let node = $('#poolEditorPanel'); node; node = node.parentElement) if (node.tagName === 'DETAILS') node.open = true;
+  });
+  await page.locator('.custom-pool-row .quote-info-panel').waitFor({ state: 'visible' });
+  await page.locator('.custom-pool-row .quote-info-panel').scrollIntoViewIfNeeded();
+  assert.match(await page.locator('.custom-pool-row .quote-info-panel').innerText(), /geckoterminal/);
+  await page.screenshot({ path: path.join(configDir, 'quote-prices.png'), fullPage: true });
+  console.log(`Quote price screenshot: ${path.join(configDir, 'quote-prices.png')}`);
+
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 

@@ -153,7 +153,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
-import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
+import { getTokenMetadata, getUsdPrice, getGeckoTokenPrices, setOnChainPriceFallback } from './tokenInfoService.js';
 import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { fetchVenuePoolsByMints } from './venuePoolService.js';
@@ -3731,6 +3731,7 @@ export async function resolveQuoteUsdForCreate({
   // Optional. When present, the on-chain pool read runs FIRST (see below).
   // Preflight and creation both have one; unit callers may omit it.
   raydium = null,
+  marketPrices = null,
 }) {
   let quoteUsd;
   let source;
@@ -3792,6 +3793,12 @@ export async function resolveQuoteUsdForCreate({
       }
     }
 
+    if (!quoteUsd && raydium?.connection) {
+      const market = (await (marketPrices ? marketPrices() : getGeckoTokenPrices([quoteToken.address], { forceFresh: true }))).get(quoteToken.address);
+      if (market?.gt(0) && Number(market.liquidityUsd) >= MIN_QUOTE_LIQUIDITY_USD) {
+        quoteUsd = market; source = 'geckoterminal';
+      }
+    }
     if (quoteUsd) {
       // Resolved on-chain; skip the probe and aggregator entirely.
     } else try {
@@ -4165,6 +4172,7 @@ export async function preflightCreatePoolsAndPositions({
     console.warn(`preflight: SDK unavailable for on-chain pricing (${e.message}); using fallback sources`);
   }
 
+  const marketPrices = allocationMarketPrices(allocations);
   const resolvedPrices = [];
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
@@ -4179,6 +4187,7 @@ export async function preflightCreatePoolsAndPositions({
         alloc,
         solUsd,
         raydium,
+        marketPrices,
       });
 
       // initialPrice = quote-per-launched = launchedTokenUsd / quoteUsd.
@@ -4959,6 +4968,7 @@ export async function createPoolsAndPositions({
     err.partialResults = priorResults;
     throw err;
   }
+  const marketPrices = allocationMarketPrices(allocations);
   console.log(`SOL/USD used for support sizing: $${solUsdForSupport.toString()}`);
 
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
@@ -4981,7 +4991,7 @@ export async function createPoolsAndPositions({
           const cached = quoteUsdByMint.get(quoteToken.address);
           if (cached) quoteUsd = cached.quoteUsd;
           else {
-            const resolved = await resolveQuoteUsdForCreate({ quoteToken, alloc, solUsd: solUsdForSupport, raydium });
+            const resolved = await resolveQuoteUsdForCreate({ quoteToken, alloc, solUsd: solUsdForSupport, raydium, marketPrices });
             quoteUsd = resolved.quoteUsd;
             quoteUsdByMint.set(quoteToken.address, { quoteUsd, source: resolved.source });
           }
@@ -5141,6 +5151,7 @@ export async function createPoolsAndPositions({
             alloc,
             solUsd: solUsdForSupport,
             raydium,
+            marketPrices,
           });
           quoteUsd = resolved.quoteUsd;
           quoteUsdSource = resolved.source;
@@ -5897,6 +5908,9 @@ export function onChainPriceDeps(raydium) {
       // spread among the deepest).
       const r = await raydium.api.fetchPoolByMints({
         mint1: m1, mint2: m2, sort: 'liquidity', order: 'desc',
+      }).catch((error) => {
+        console.warn(`on-chain price: Raydium index lookup failed: ${error.message}`);
+        return [];
       });
       const raydiumPools = Array.isArray(r) ? r : (r && Array.isArray(r.data) ? r.data : []);
       // Orca and Meteora pools for the same pair, found and read on-chain.
@@ -5963,6 +5977,40 @@ export async function getQuoteTokenOnChainPrice({ mint, solUsd }) {
     if (process.env.TREBUCHET_DEBUG_TOKEN_INFO) console.warn(`on-chain price for ${mint}: ${e?.message || e}`);
     return null;
   }
+}
+
+export async function getQuoteTokenMarketPrice({ mint, solUsd, geckoPrice = null }) {
+  if (mint === WSOL_MINT) {
+    if (!solUsd?.gt(0)) throw new Error('SOL price is awaiting a market quote');
+    return { mint, priceUsd: solUsd.toString(), priceSource: 'market:SOL', priceCheckedAt: new Date().toISOString() };
+  }
+  const pool = await getQuoteTokenOnChainPrice({ mint, solUsd });
+  if (pool?.spreadError) throw new Error(pool.spreadError);
+  const price = pool?.priceUsd || geckoPrice || await getUsdPrice(mint, { forceFresh: true, skipOnChainFallback: true });
+  if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) throw new Error('Price is awaiting an active market');
+  return {
+    mint, priceUsd: price.toString(), priceSource: pool ? `on-chain:${pool.kind}/${pool.anchorSymbol}` : geckoPrice ? 'geckoterminal' : 'market:oracle',
+    priceCheckedAt: new Date().toISOString(), poolId: pool?.poolId || null,
+    liquidityUsd: (pool?.liquidityUsd || geckoPrice?.liquidityUsd)?.toString() || null,
+  };
+}
+
+// The funding estimate and LP creation share the same market order and depth floor.
+export async function getQuoteTokenReferencePrice({ mint, solUsd, marketPrices = null }) {
+  const pool = await getQuoteTokenOnChainPrice({ mint, solUsd });
+  if (pool?.priceUsd || pool?.spreadError) return pool;
+  const sdk = await readOnlySdk();
+  if (!sdk.connection) return null;
+  const market = (await (marketPrices ? marketPrices() : getGeckoTokenPrices([mint], { forceFresh: true }))).get(mint);
+  if (!market?.gt(0) || Number(market.liquidityUsd) < MIN_QUOTE_LIQUIDITY_USD || !Number.isFinite(Number(market.liquidityUsd))) return null;
+  return { priceUsd: market, liquidityUsd: market.liquidityUsd, source: 'geckoterminal' };
+}
+
+function allocationMarketPrices(allocations) {
+  let pending = null;
+  const mints = allocations.map((allocation) => KNOWN_QUOTES[String(allocation.quoteToken).toUpperCase()]?.address || allocation.quoteToken)
+    .filter((mint) => { try { return new PublicKey(mint).toBase58() === mint; } catch { return false; } });
+  return () => pending ||= getGeckoTokenPrices([WSOL_MINT, ...mints], { forceFresh: true });
 }
 // Token prices fall back to the token's own on-chain pools when every price
 // API misses, using the same rules as the launch (see tokenInfoService).
@@ -6167,7 +6215,8 @@ export async function estimateRequiredFunding({
   // Offline callers supply the pool reader when they need it. Live estimates
   // use the same fresh pool selection as preflight and pool creation.
   const readPoolPrice = onChainPrice || ((priceOracle || __estPriceOracleForTests)
-    ? async () => null : getQuoteTokenOnChainPrice);
+    ? async () => null : getQuoteTokenReferencePrice);
+  const marketPrices = allocationMarketPrices(allocations);
   const solBreakdown = [];
   const quoteBreakdown = [];
   const byQuote = {};
@@ -6296,7 +6345,7 @@ export async function estimateRequiredFunding({
       } else {
         let poolPrice = null;
         try {
-          poolPrice = await readPoolPrice({ mint: quoteAddr, solUsd });
+          poolPrice = await readPoolPrice({ mint: quoteAddr, solUsd, marketPrices });
         } catch (error) {
           if (error.code === 'POOL_SPREAD') throw error;
           console.warn(`estimateRequiredFunding: pool price read failed for ${quoteAddr}: ${error.message}`);
@@ -6306,7 +6355,7 @@ export async function estimateRequiredFunding({
         }
         if (poolPrice?.priceUsd?.isFinite() && poolPrice.priceUsd.gt(0)) {
           quoteUsd = poolPrice.priceUsd;
-          quoteUsdSource = `on-chain:${poolPrice.anchorSymbol}`;
+          quoteUsdSource = poolPrice.source || `on-chain:${poolPrice.anchorSymbol}`;
         }
       }
       if (!quoteUsd && route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {

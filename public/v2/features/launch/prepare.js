@@ -326,29 +326,33 @@ let quoteVerifyInFlight = null;
 // A pair token is checked automatically once; a check that failed is tried again after a minute,
 // not on every readiness check (each one scans the chain for the token's pools).
 const PAIR_TOKEN_RECHECK_MS = 60 * 1000;
-function pairTokensNeedingCheck(now = Date.now()) {
+function pairTokensNeedingCheck(now = Date.now(), forceFresh = false) {
   return state.customPools.filter((pool) => {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading || record.info) return false;
+    if (record.loading) return false;
+    if (forceFresh) return true;
+    const info = record.info;
+    if (info?.compatible != null && info.freezeAuthorityBlock != null && ['raydium', 'jupiter', 'none'].includes(info.swapRoute)) return false;
     const failedAt = Date.parse(record.checkedAt || '');
     return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
 }
 
-function autoVerifyQuoteTokens() {
-  if (quoteVerifyInFlight) return quoteVerifyInFlight;
+function autoVerifyQuoteTokens({ forceFresh = false } = {}) {
+  if (quoteVerifyInFlight) return forceFresh ? quoteVerifyInFlight.then(() => autoVerifyQuoteTokens({ forceFresh: true })) : quoteVerifyInFlight;
   if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) return Promise.resolve();
-  const pending = pairTokensNeedingCheck();
+  const pending = pairTokensNeedingCheck(Date.now(), forceFresh);
   if (!pending.length) return Promise.resolve();
   quoteVerifyInFlight = (async () => {
     for (const pool of pending) {
-      await resolveCustomQuoteToken(pool.id, { quiet: true }).catch(() => null);
+      await resolveCustomQuoteToken(pool.id, { quiet: true, forceFresh }).catch(() => null);
     }
   })().finally(() => {
     quoteVerifyInFlight = null;
     renderAll();
+    refreshQuotePrices().catch(() => null);
   });
   return quoteVerifyInFlight;
 }
@@ -361,7 +365,7 @@ function renderPairTokenChecks() {
     const badge = customQuoteInfoBadge(pool);
     const info = customQuoteResolvedInfo(pool);
     const symbol = info?.symbol || pool.quoteSymbol || shortAddress(pool.quoteMint);
-    return { symbol, badge, route: info?.swapRoute || null };
+    return { symbol, badge, route: info?.swapRoute || null, info };
   });
   const problems = rows.filter((row) => row.badge.className === 'danger');
   const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
@@ -370,15 +374,16 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+      : `Pair-token safety checks passed${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
+      <ul>${rows.map(({ symbol, info }) => `<li><strong>${escapeHtml(symbol)}</strong> ${info?.priceUsd ? `$${escapeHtml(Number(info.priceUsd).toPrecision(6))}` : 'Awaiting price'} · ${escapeHtml(info?.priceSource || 'Awaiting market')}${info?.priceCheckedAt ? ` · ${escapeHtml(new Date(info.priceCheckedAt).toLocaleTimeString())}` : ''}${info?.priceError ? ` · ${escapeHtml(info.priceError)}` : ''}</li>`).join('')}</ul>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }
 
-async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
+async function resolveCustomQuoteToken(poolId, { quiet = false, forceFresh = true } = {}) {
   const say = quiet ? () => {} : notify;
   const pool = state.customPools.find((item) => item.id === poolId);
   if (!pool) {
@@ -396,10 +401,12 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
 
+  const previousIdentity = `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`;
+  const previousInfo = customQuoteResolvedInfo(pool);
   state.quoteTokenInfo[poolId] = {
     query,
     loading: true,
-    info: null,
+    info: previousInfo,
     error: null,
     checkedAt: null,
   };
@@ -407,7 +414,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
   renderSupplyEditor();
 
   try {
-    const info = await state.apiClient.getQuoteTokenInfo(query);
+    const info = await state.apiClient.getQuoteTokenInfo(query, { forceFresh });
     if (!state.customPools.includes(pool) || customQuoteLookupValue(pool) !== query) return null;
     if (info?.demo && pool.quoteSymbol && pool.quoteSymbol !== 'QUOTE') info.symbol = pool.quoteSymbol;
     if (info?.address) pool.quoteMint = info.address;
@@ -420,7 +427,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       error: null,
       checkedAt: new Date().toISOString(),
     };
-    invalidateClassicOutputs();
+    if (previousIdentity !== `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`) invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
@@ -438,6 +445,45 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     say(state.quoteTokenInfo[poolId].error);
     return null;
   }
+}
+
+const QUOTE_PRICE_POLL_MS = 30_000;
+let quotePriceTimer = null;
+let quotePriceInFlight = null;
+function refreshQuotePrices({ forceFresh = false } = {}) {
+  if (quotePriceInFlight) return quotePriceInFlight;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenPrices || state.demoActive) return Promise.resolve();
+  const mints = [...new Set(state.customPools.map((pool) => String(pool.quoteMint || '').trim()).filter(Boolean))];
+  if (!mints.length) return Promise.resolve();
+  quotePriceInFlight = (async () => {
+    for (let index = 0; index < mints.length; index += 16) {
+      const batch = mints.slice(index, index + 16);
+      let prices;
+      try { prices = await state.apiClient.getQuoteTokenPrices(batch, { forceFresh }); }
+      catch (error) { prices = batch.map((mint) => ({ mint, error: error.message || 'Price refresh needs a retry' })); }
+      for (const pool of state.customPools) {
+        const price = prices.find((item) => item.mint === pool.quoteMint);
+        const record = customQuoteInfoRecord(pool);
+        if (!price || !record?.info || record.loading) continue;
+        record.info.priceError = price.error || null;
+        if (!price.error && Number.isFinite(Number(price.priceUsd)) && Number(price.priceUsd) > 0) {
+          Object.assign(record.info, { priceUsd: price.priceUsd, priceSource: price.priceSource,
+            priceCheckedAt: price.priceCheckedAt, pricePoolId: price.poolId || null, priceWarning: null });
+        }
+      }
+    }
+    // Live prices are reference data. The approved funding budget keeps its own snapshot.
+    renderPoolEditorPanel();
+    renderClassicBridge();
+  })().finally(() => { quotePriceInFlight = null; });
+  return quotePriceInFlight;
+}
+
+function startQuotePricePolling() {
+  if (quotePriceTimer) return;
+  quotePriceTimer = window.setInterval(() => {
+    if (state.activeView === 'launch' && !document.hidden) refreshQuotePrices().catch(() => null);
+  }, QUOTE_PRICE_POLL_MS);
 }
 
 // Return wallet. Launch assets only go to a proven wallet: the funder of the

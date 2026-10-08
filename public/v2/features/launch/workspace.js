@@ -148,6 +148,7 @@ function setView(view) {
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
   if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
+  if (view === 'launch') refreshQuotePrices().catch(() => null);
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -635,7 +636,10 @@ function phaseTabValue(id, runValue) {
     case 'record': return state.launchProof ? 'Saved' : 'Not ready';
     case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'acquire': {
+      const funding = quoteWalletFundingStatus();
+      return funding.ready ? 'Held in wallet' : funding.checked ? `${funding.missingRoutes.length} to fund` : 'Check balance';
+    }
     case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }

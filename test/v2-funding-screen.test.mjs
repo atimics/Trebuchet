@@ -71,7 +71,7 @@ function harness() {
   };
   const names = [
     'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
-    'quoteAcquireResultMatchesRoute', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
+    'quoteAcquireResultMatchesRoute', 'quoteWalletFundingStatus', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
     'findQuoteRouteForPool', 'findManualPrefundForPool', 'quotePoolGuidanceItems',
     'renderQuotePoolGuidance', 'renderQuoteAcquirePanel', 'reviewQuoteAcquireJob', 'startQuoteAcquire',
   ];
@@ -193,4 +193,42 @@ test('verified active pairs remain acquirable and inactive pairs leave no block'
   const markup = app.renderQuoteAcquirePanel();
   assert.match(markup, /data-action="start-quote-acquire" >Acquire/);
   assert.equal(app.quoteAcquireBadge().label, 'Ready');
+});
+
+function putHeldBalance(app, raw = '100') {
+  app.state.manualPrefund = { walletPublicKey: 'Wallet111', lastUpdatedAt: new Date().toISOString(),
+    balance: { tokens: { UsdcMint: { amountRaw: raw }, Usd1Mint: { amountRaw: raw } } } };
+}
+
+test('a fresh wallet balance funds pair tokens without a purchase receipt', () => {
+  const app = harness(); putHeldBalance(app);
+  assert.equal(app.quoteAcquireStatus().ready, true);
+  assert.equal(app.quoteAcquireStatus().walletFunding.missingRoutes.length, 0);
+  assert.match(app.renderQuoteAcquirePanel(), /holds enough pair tokens/);
+});
+
+test('a held balance sums pools using the same mint and includes manual deposits', () => {
+  const app = harness(); putHeldBalance(app, '150');
+  const routes = app.quoteAcquireRoutes(); routes[1].quoteMint = 'UsdcMint';
+  assert.equal(app.quoteAcquireStatus().ready, false);
+  app.state.manualPrefund.balance.tokens.UsdcMint.amountRaw = '200';
+  assert.equal(app.quoteAcquireStatus().ready, true);
+  app.state.classicFundingEstimate.byQuote = { UsdcMint: '1' };
+  assert.equal(app.quoteAcquireStatus().ready, false);
+});
+
+test('a fresh shortage takes priority over an earlier purchase receipt', () => {
+  const app = harness(); putHeldBalance(app, '99');
+  app.state.quoteAcquire.job = { status: 'done', v2QuoteAcquireFingerprint: 'current', completed: 2,
+    results: app.quoteAcquireRoutes().map((route) => ({ success: true, quoteMint: route.quoteMint })) };
+  assert.equal(app.quoteAcquireStatus().successEvidence, true);
+  assert.equal(app.quoteAcquireStatus().ready, false);
+});
+
+test('balances from another wallet or an older check require a fresh check', () => {
+  const app = harness(); putHeldBalance(app);
+  app.state.manualPrefund.walletPublicKey = 'AnotherWallet';
+  assert.equal(app.quoteAcquireStatus().ready, false);
+  putHeldBalance(app); app.state.manualPrefund.lastUpdatedAt = new Date(Date.now() - 61_000).toISOString();
+  assert.equal(app.quoteAcquireStatus().ready, false);
 });

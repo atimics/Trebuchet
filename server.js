@@ -57,12 +57,14 @@ import {
   KNOWN_QUOTES,
   KNOWN_SAFE_QUOTES,
   getQuoteTokenOnChainPrice,
+  getQuoteTokenMarketPrice,
   previewSolSupport,
   findSolClmmPoolForToken,
   listTokenMarkets,
   listCoinPositions,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
+import { getGeckoTokenPrices } from './tokenInfoService.js';
 
 import { probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
 import { estimateAirdropExecutionCostSol } from './lpConstants.js';
@@ -7003,6 +7005,43 @@ const onChainPriceCache = new Map();
 const ON_CHAIN_PRICE_TTL_MS = 60 * 1000;
 const ON_CHAIN_PRICE_MISS_TTL_MS = 60 * 1000;
 
+// Share current price reads across editor tabs. Each 30-second poll reads fresh state.
+const quotePriceReads = new Map();
+app.post('/api/quote-token-prices', async (req, res) => {
+  try {
+    if (!Array.isArray(req.body?.mints)) throw new Error('Provide quote mints as a list');
+    const mints = [...new Set(req.body.mints)];
+    if (!mints.length || mints.length > 16) throw new Error('Provide between 1 and 16 quote mints');
+    for (const mint of mints) {
+      if (typeof mint !== 'string') throw new Error('Each quote mint must be an address');
+      new PublicKey(mint);
+    }
+    const geckoPrices = isDemoMode() ? new Map() : await getGeckoTokenPrices([WSOL_MINT_ADDRESS, ...mints], { forceFresh: req.body.forceFresh === true });
+    const solUsd = isDemoMode() ? new Decimal(200) : geckoPrices.has(WSOL_MINT_ADDRESS)
+      ? new Decimal(geckoPrices.get(WSOL_MINT_ADDRESS)) : await getUsdPrice(WSOL_MINT_ADDRESS, { forceFresh: true });
+    const prices = [];
+    for (const mint of mints) {
+      if (isDemoMode()) {
+        prices.push({ mint, priceUsd: mint === WSOL_MINT_ADDRESS ? '200' : '1', priceSource: 'demo-ledger', priceCheckedAt: new Date().toISOString() });
+        continue;
+      }
+      const key = `${getRpcUrl()}|${mint}`;
+      let read = quotePriceReads.get(key);
+      if (!read?.pending && (!read || read.expiresAt <= Date.now() || req.body?.forceFresh === true)) {
+        read = {};
+        quotePriceReads.set(key, read);
+        read.pending = getQuoteTokenMarketPrice({ mint, solUsd, geckoPrice: geckoPrices.get(mint) }).then((result) => result, (error) => ({ mint, error: error.message })).then((result) => {
+          read.result = result; read.expiresAt = Date.now() + 10_000; read.pending = null;
+          return result;
+        });
+      }
+      prices.push(await (read.pending || read.result));
+    }
+    while (quotePriceReads.size > 128) quotePriceReads.delete(quotePriceReads.keys().next().value);
+    res.json({ success: true, prices });
+  } catch (error) { res.status(400).json({ success: false, error: error.message }); }
+});
+
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
 // quote tokens (SOL/USDC/USDT) we use built-in constants. For arbitrary
@@ -7014,7 +7053,7 @@ app.post('/api/quote-token-info', async (req, res) => {
   // reads, authority audits, Raydium probes, and pool-price discovery.
   if (isDemoMode()) return demoChainService.handleQuoteTokenInfo(req, res);
   try {
-    const { quoteToken } = req.body;
+    const { quoteToken, forceFresh = false } = req.body;
     if (!quoteToken) throw new Error('quoteToken required');
 
     if (isDemoMode()) {
@@ -7135,7 +7174,7 @@ app.post('/api/quote-token-info', async (req, res) => {
         const ocKey = `${getRpcUrl()}|${quoteToken}`;
         const ocHit = onChainPriceCache.get(ocKey);
         let oc;
-        if (ocHit && ocHit.expiresAt > Date.now()) {
+        if (!forceFresh && ocHit && ocHit.expiresAt > Date.now()) {
           oc = ocHit.result;
         } else {
           const solUsdForDisplay = await getUsdPrice(WSOL_MINT_ADDRESS);
@@ -7170,7 +7209,7 @@ app.post('/api/quote-token-info', async (req, res) => {
       // is immutable-ish on-chain. Authorities CAN be revoked but never
       // re-added, and a token that has had its authorities revoked at
       // some point won't suddenly have them again. So caching is safe.
-      const cachedCompat = compatCache.get(quoteToken);
+      const cachedCompat = forceFresh ? null : compatCache.get(quoteToken);
       if (cachedCompat) {
         infoOut.compatible = cachedCompat.compatible;
         infoOut.isToken2022 = cachedCompat.isToken2022;
@@ -7266,7 +7305,7 @@ app.post('/api/quote-token-info', async (req, res) => {
         infoOut.swapRoute = 'raydium';
       } else if (needsProbe) {
         // Cache lookup with TTL check.
-        const cachedProbe = step2ProbeCache.get(infoOut.address);
+        const cachedProbe = forceFresh ? null : step2ProbeCache.get(infoOut.address);
         const now = Date.now();
         if (cachedProbe && cachedProbe.expiresAt > now) {
           // Translate the cache verdict ('tradeable' | 'no-route') into
@@ -7275,14 +7314,14 @@ app.post('/api/quote-token-info', async (req, res) => {
             // No Raydium route, but the auto-buy routes it through Jupiter.
             infoOut.raydiumTradeable = 'no';
             infoOut.swapRoute = 'jupiter';
-            if (cachedProbe.priceUsd) {
+            if (cachedProbe.priceUsd && !infoOut.pricePoolId && !infoOut.priceWarning) {
               infoOut.priceUsd = cachedProbe.priceUsd;
               infoOut.priceSource = 'jupiter-probe (cached)';
             }
           } else if (cachedProbe.verdict === 'tradeable') {
             infoOut.raydiumTradeable = 'yes';
             infoOut.swapRoute = 'raydium';
-            if (cachedProbe.priceUsd) {
+            if (cachedProbe.priceUsd && !infoOut.pricePoolId && !infoOut.priceWarning) {
               // Prefer the probe-derived price over the aggregator price.
               // The probe IS the price the pool will be created at later;
               // showing it here means the user sees the same number
@@ -7330,8 +7369,10 @@ app.post('/api/quote-token-info', async (req, res) => {
               });
               infoOut.raydiumTradeable = 'yes';
               infoOut.swapRoute = 'raydium';
-              infoOut.priceUsd = priceStr;
-              infoOut.priceSource = 'raydium-probe';
+              if (!infoOut.pricePoolId && !infoOut.priceWarning) {
+                infoOut.priceUsd = priceStr;
+                infoOut.priceSource = 'raydium-probe';
+              }
             } catch (probeErr) {
               const code = probeErr.code || 'UNKNOWN';
               // Raydium has no route: the auto-buy falls back to Jupiter
@@ -7353,8 +7394,10 @@ app.post('/api/quote-token-info', async (req, res) => {
                 });
                 infoOut.raydiumTradeable = 'no';
                 infoOut.swapRoute = 'jupiter';
-                infoOut.priceUsd = priceStr;
-                infoOut.priceSource = 'jupiter-probe';
+                if (!infoOut.pricePoolId && !infoOut.priceWarning) {
+                  infoOut.priceUsd = priceStr;
+                  infoOut.priceSource = 'jupiter-probe';
+                }
               } else if (code === 'NO_ROUTE') {
                 // Cache the verdict — the user typing the same mint
                 // 10 times in a row shouldn't probe 10 times.
@@ -7371,7 +7414,7 @@ app.post('/api/quote-token-info', async (req, res) => {
                 // techLine renders correctly. If priceUsd is null
                 // here (no aggregator either), the frontend's
                 // no-price warning takes over.
-                if (infoOut.priceUsd != null) {
+                if (infoOut.priceUsd != null && !infoOut.pricePoolId && !infoOut.priceWarning) {
                   infoOut.priceSource = 'oracle';
                 }
               } else {

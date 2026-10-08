@@ -111,17 +111,18 @@ function customQuoteInfoBadge(pool = {}) {
   // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
   // there), so only "no route anywhere" blocks.
   const swapRoute = info.swapRoute || 'unknown'; // decided once, by the server's check
-  if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
-  if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
+  const held = typeof quoteWalletFundingStatus === 'function' && quoteWalletFundingStatus().heldMints.has(pool.quoteMint);
+  if (swapRoute === 'none' && !held) return { label: 'Deposit tokens', className: 'danger', detail: 'Deposit enough pair tokens into the launch wallet, then check the balance.' };
+  if (info.compatible == null || (!held && swapRoute === 'unknown') || info.freezeAuthorityBlock == null) {
     return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
   }
   if (info.mintAuthorityWarning === true) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
   return {
-    label: 'Verified',
+    label: held ? 'Held in wallet' : 'Verified',
     className: '',
-    detail: `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
+    detail: held ? 'The token safety check passed and the launch wallet holds the required amount.' : `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
   };
 }
 

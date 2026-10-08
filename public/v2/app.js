@@ -4546,17 +4546,18 @@ function customQuoteInfoBadge(pool = {}) {
   // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
   // there), so only "no route anywhere" blocks.
   const swapRoute = info.swapRoute || 'unknown'; // decided once, by the server's check
-  if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
-  if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
+  const held = typeof quoteWalletFundingStatus === 'function' && quoteWalletFundingStatus().heldMints.has(pool.quoteMint);
+  if (swapRoute === 'none' && !held) return { label: 'Deposit tokens', className: 'danger', detail: 'Deposit enough pair tokens into the launch wallet, then check the balance.' };
+  if (info.compatible == null || (!held && swapRoute === 'unknown') || info.freezeAuthorityBlock == null) {
     return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
   }
   if (info.mintAuthorityWarning === true) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
   return {
-    label: 'Verified',
+    label: held ? 'Held in wallet' : 'Verified',
     className: '',
-    detail: `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
+    detail: held ? 'The token safety check passed and the launch wallet holds the required amount.' : `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
   };
 }
 
@@ -5756,6 +5757,7 @@ function setView(view) {
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
   if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
+  if (view === 'launch') refreshQuotePrices().catch(() => null);
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -6243,7 +6245,10 @@ function phaseTabValue(id, runValue) {
     case 'record': return state.launchProof ? 'Saved' : 'Not ready';
     case 'recover': return 'Resume or refund';
     case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
+    case 'acquire': {
+      const funding = quoteWalletFundingStatus();
+      return funding.ready ? 'Held in wallet' : funding.checked ? `${funding.missingRoutes.length} to fund` : 'Check balance';
+    }
     case 'prefund': return `${quoteAcquireManualCount()} to send`;
     default: return runValue || supply;
   }
@@ -7733,6 +7738,8 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Symbol', info.symbol || pool.quoteSymbol || '-'],
     ['Decimals', info.decimals ?? '-'],
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
+    ['Price source', info.priceSource || 'Awaiting market'],
+    ['Price checked', info.priceCheckedAt ? formatDate(info.priceCheckedAt) : 'Awaiting refresh'],
     ['Route', { raydium: 'Raydium', jupiter: 'Jupiter', none: 'none' }[info.swapRoute] || 'unknown'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
@@ -7746,6 +7753,8 @@ function renderCustomQuoteInfoPanel(pool) {
       ${facts.length ? `<div class="quote-info-facts">
         ${facts.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
       </div>` : ''}
+      <small>Prices refresh every 30 seconds. Pool creation checks the market again.</small>
+      ${info?.priceError || info?.priceWarning ? `<small class="warn">${escapeHtml(info.priceError || info.priceWarning)}</small>` : ''}
       <button class="pill-button" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(pool.id)}" ${canCheck ? '' : 'disabled'}>
         ${customQuoteInfoRecord(pool)?.loading ? 'Checking' : 'Verify quote'}
       </button>
@@ -13116,6 +13125,29 @@ function quoteAcquireSuccessEvidence(routes, job) {
   return routes.every((route) => results.some((result) => quoteAcquireResultMatchesRoute(result, route)));
 }
 
+function quoteWalletFundingStatus(routes = quoteAcquireRoutes()) {
+  const saved = state.manualPrefund || {};
+  const age = Date.now() - Date.parse(saved.lastUpdatedAt || '');
+  const checked = Boolean(saved.balance && saved.walletPublicKey === selectedLaunchWalletPublicKey()
+    && Number.isFinite(age) && age >= 0 && age <= 60_000 && !saved.error);
+  const requirements = new Map();
+  const add = (mint, value) => {
+    if (!mint) return;
+    const text = String(value ?? '');
+    const raw = /^\d+$/.test(text) ? BigInt(text) : null;
+    requirements.set(mint, raw == null ? null : requirements.get(mint) === null ? null : (requirements.get(mint) || 0n) + raw);
+  };
+  routes.forEach((route) => add(route.quoteMint, route.minRaw || route.targetRaw));
+  Object.entries(state.classicFundingEstimate?.byQuote || {}).forEach(([mint, raw]) => add(mint, raw));
+  const heldMints = new Set();
+  if (checked) for (const [mint, required] of requirements) {
+    const raw = String(saved.balance.tokens?.[mint]?.amountRaw ?? '0');
+    if (required != null && required > 0n && /^\d+$/.test(raw) && BigInt(raw) >= required) heldMints.add(mint);
+  }
+  return { checked, heldMints, missingRoutes: routes.filter((route) => !heldMints.has(route.quoteMint)),
+    ready: checked && routes.every((route) => heldMints.has(route.quoteMint)) };
+}
+
 function quoteAcquireStatus(config = currentLaunchConfig()) {
   const routes = quoteAcquireRoutes();
   const progress = quoteAcquireProgress();
@@ -13129,13 +13161,14 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
   ).trim();
   const stale = Boolean(routes.length && hasJob && (!actualFingerprint || actualFingerprint !== expectedFingerprint));
   const successEvidence = quoteAcquireSuccessEvidence(routes, job);
-  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || Boolean(
+  const walletFunding = quoteWalletFundingStatus(routes);
+  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || walletFunding.ready || (!walletFunding.checked && Boolean(
     job?.status === 'done'
     && !stale
     && successEvidence
     && Number(progress.completed || 0) >= Number(progress.total || routes.length)
     && Number(progress.failed || 0) === 0
-  ));
+  )));
   return {
     routes,
     progress,
@@ -13143,6 +13176,7 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     actualFingerprint,
     stale,
     successEvidence,
+    walletFunding,
     ready,
   };
 }
@@ -13190,11 +13224,11 @@ function formatRawTokenAmount(value, decimals = 0) {
 }
 
 function manualPrefundBalanceSnapshotStatus(walletPublicKey = selectedLaunchWalletPublicKey()) {
-  const balance = state.manualPrefund.balance && typeof state.manualPrefund.balance === 'object'
+  const balance = state.manualPrefund?.balance && typeof state.manualPrefund.balance === 'object'
     ? state.manualPrefund.balance
     : null;
-  const snapshotWalletPublicKey = state.manualPrefund.walletPublicKey || null;
-  const checkedAt = state.manualPrefund.lastUpdatedAt || null;
+  const snapshotWalletPublicKey = state.manualPrefund?.walletPublicKey || null;
+  const checkedAt = state.manualPrefund?.lastUpdatedAt || null;
   const checkedAtMs = Date.parse(checkedAt || '');
   const ageMs = Number.isFinite(checkedAtMs) ? Date.now() - checkedAtMs : Infinity;
   const fresh = Boolean(balance && Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= WALLET_BALANCE_FRESH_MS);
@@ -13649,6 +13683,8 @@ function renderQuoteAcquirePanel() {
     ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
+    : acquireStatus.walletFunding.ready
+      ? 'The launch wallet holds enough pair tokens for these pools.'
     : acquireStatus.stale
       ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
@@ -13662,7 +13698,8 @@ function renderQuoteAcquirePanel() {
     && Boolean(selectedLaunchWalletPublicKey())
     && (routes.length > 0 || savedAction)
     && blocked.length === 0
-    && !state.quoteAcquire.running;
+    && !state.quoteAcquire.running
+    && !acquireStatus.walletFunding.ready;
   const startLabel = state.quoteAcquire.running
     ? 'Acquiring'
     : blocked.length ? 'Resolve pair block'
@@ -14319,6 +14356,7 @@ function renderClassicBridge() {
   const fundingBalanceKnown = state.demoActive || (funding.hasWalletBalance && funding.walletBalanceFresh);
   const fundingSolReady = fundingBalanceKnown && Number(funding.missingSol || 0) <= 0.001;
   const quoteStatus = quoteAcquireStatus(config);
+  const missingPairCount = quoteStatus.walletFunding?.missingRoutes.length ?? routeCount;
   const manualSummary = manualPrefundSummary(quoteManualPrefundItems());
   const quoteFundingReady = quoteStatus.ready && (!manualQuoteCount || manualSummary.className === '');
   const fundingReady = Boolean(estimate && fundingSolReady && quoteFundingReady);
@@ -14440,8 +14478,8 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: routeCount
-              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
+            detail: missingPairCount
+              ? `${missingPairCount} pair token${missingPairCount === 1 ? '' : 's'} need more funds in the launch wallet.`
               : 'Send the pair tokens to the launch wallet, then check the balance.',
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
@@ -20487,29 +20525,33 @@ let quoteVerifyInFlight = null;
 // A pair token is checked automatically once; a check that failed is tried again after a minute,
 // not on every readiness check (each one scans the chain for the token's pools).
 const PAIR_TOKEN_RECHECK_MS = 60 * 1000;
-function pairTokensNeedingCheck(now = Date.now()) {
+function pairTokensNeedingCheck(now = Date.now(), forceFresh = false) {
   return state.customPools.filter((pool) => {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading || record.info) return false;
+    if (record.loading) return false;
+    if (forceFresh) return true;
+    const info = record.info;
+    if (info?.compatible != null && info.freezeAuthorityBlock != null && ['raydium', 'jupiter', 'none'].includes(info.swapRoute)) return false;
     const failedAt = Date.parse(record.checkedAt || '');
     return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
 }
 
-function autoVerifyQuoteTokens() {
-  if (quoteVerifyInFlight) return quoteVerifyInFlight;
+function autoVerifyQuoteTokens({ forceFresh = false } = {}) {
+  if (quoteVerifyInFlight) return forceFresh ? quoteVerifyInFlight.then(() => autoVerifyQuoteTokens({ forceFresh: true })) : quoteVerifyInFlight;
   if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) return Promise.resolve();
-  const pending = pairTokensNeedingCheck();
+  const pending = pairTokensNeedingCheck(Date.now(), forceFresh);
   if (!pending.length) return Promise.resolve();
   quoteVerifyInFlight = (async () => {
     for (const pool of pending) {
-      await resolveCustomQuoteToken(pool.id, { quiet: true }).catch(() => null);
+      await resolveCustomQuoteToken(pool.id, { quiet: true, forceFresh }).catch(() => null);
     }
   })().finally(() => {
     quoteVerifyInFlight = null;
     renderAll();
+    refreshQuotePrices().catch(() => null);
   });
   return quoteVerifyInFlight;
 }
@@ -20522,7 +20564,7 @@ function renderPairTokenChecks() {
     const badge = customQuoteInfoBadge(pool);
     const info = customQuoteResolvedInfo(pool);
     const symbol = info?.symbol || pool.quoteSymbol || shortAddress(pool.quoteMint);
-    return { symbol, badge, route: info?.swapRoute || null };
+    return { symbol, badge, route: info?.swapRoute || null, info };
   });
   const problems = rows.filter((row) => row.badge.className === 'danger');
   const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
@@ -20531,15 +20573,16 @@ function renderPairTokenChecks() {
     ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
     : checking
       ? 'Checking pair tokens…'
-      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+      : `Pair-token safety checks passed${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
+      <ul>${rows.map(({ symbol, info }) => `<li><strong>${escapeHtml(symbol)}</strong> ${info?.priceUsd ? `$${escapeHtml(Number(info.priceUsd).toPrecision(6))}` : 'Awaiting price'} · ${escapeHtml(info?.priceSource || 'Awaiting market')}${info?.priceCheckedAt ? ` · ${escapeHtml(new Date(info.priceCheckedAt).toLocaleTimeString())}` : ''}${info?.priceError ? ` · ${escapeHtml(info.priceError)}` : ''}</li>`).join('')}</ul>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }
 
-async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
+async function resolveCustomQuoteToken(poolId, { quiet = false, forceFresh = true } = {}) {
   const say = quiet ? () => {} : notify;
   const pool = state.customPools.find((item) => item.id === poolId);
   if (!pool) {
@@ -20557,10 +20600,12 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
 
+  const previousIdentity = `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`;
+  const previousInfo = customQuoteResolvedInfo(pool);
   state.quoteTokenInfo[poolId] = {
     query,
     loading: true,
-    info: null,
+    info: previousInfo,
     error: null,
     checkedAt: null,
   };
@@ -20568,7 +20613,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
   renderSupplyEditor();
 
   try {
-    const info = await state.apiClient.getQuoteTokenInfo(query);
+    const info = await state.apiClient.getQuoteTokenInfo(query, { forceFresh });
     if (!state.customPools.includes(pool) || customQuoteLookupValue(pool) !== query) return null;
     if (info?.demo && pool.quoteSymbol && pool.quoteSymbol !== 'QUOTE') info.symbol = pool.quoteSymbol;
     if (info?.address) pool.quoteMint = info.address;
@@ -20581,7 +20626,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       error: null,
       checkedAt: new Date().toISOString(),
     };
-    invalidateClassicOutputs();
+    if (previousIdentity !== `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`) invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
@@ -20599,6 +20644,45 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     say(state.quoteTokenInfo[poolId].error);
     return null;
   }
+}
+
+const QUOTE_PRICE_POLL_MS = 30_000;
+let quotePriceTimer = null;
+let quotePriceInFlight = null;
+function refreshQuotePrices({ forceFresh = false } = {}) {
+  if (quotePriceInFlight) return quotePriceInFlight;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenPrices || state.demoActive) return Promise.resolve();
+  const mints = [...new Set(state.customPools.map((pool) => String(pool.quoteMint || '').trim()).filter(Boolean))];
+  if (!mints.length) return Promise.resolve();
+  quotePriceInFlight = (async () => {
+    for (let index = 0; index < mints.length; index += 16) {
+      const batch = mints.slice(index, index + 16);
+      let prices;
+      try { prices = await state.apiClient.getQuoteTokenPrices(batch, { forceFresh }); }
+      catch (error) { prices = batch.map((mint) => ({ mint, error: error.message || 'Price refresh needs a retry' })); }
+      for (const pool of state.customPools) {
+        const price = prices.find((item) => item.mint === pool.quoteMint);
+        const record = customQuoteInfoRecord(pool);
+        if (!price || !record?.info || record.loading) continue;
+        record.info.priceError = price.error || null;
+        if (!price.error && Number.isFinite(Number(price.priceUsd)) && Number(price.priceUsd) > 0) {
+          Object.assign(record.info, { priceUsd: price.priceUsd, priceSource: price.priceSource,
+            priceCheckedAt: price.priceCheckedAt, pricePoolId: price.poolId || null, priceWarning: null });
+        }
+      }
+    }
+    // Live prices are reference data. The approved funding budget keeps its own snapshot.
+    renderPoolEditorPanel();
+    renderClassicBridge();
+  })().finally(() => { quotePriceInFlight = null; });
+  return quotePriceInFlight;
+}
+
+function startQuotePricePolling() {
+  if (quotePriceTimer) return;
+  quotePriceTimer = window.setInterval(() => {
+    if (state.activeView === 'launch' && !document.hidden) refreshQuotePrices().catch(() => null);
+  }, QUOTE_PRICE_POLL_MS);
 }
 
 // Return wallet. Launch assets only go to a proven wallet: the funder of the
@@ -22107,14 +22191,18 @@ async function cancelSavedSupportJob(jobId) {
   } finally { await refreshSavedSupportJobs(); renderAll(); }
 }
 
-async function checkExecutionReadiness({ retried = false } = {}) {
-  await autoVerifyQuoteTokens();
-  const config = currentLaunchConfig();
-  const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
+async function checkExecutionReadiness({ retried = false, forceFresh = false } = {}) {
+  if (state.executionChecking) return;
   state.executionChecking = true;
   renderClassicBridge();
 
   try {
+    if (forceFresh) {
+      await Promise.all([autoVerifyQuoteTokens({ forceFresh: true }), refreshManualPrefundBalance({ quiet: true })]);
+      await refreshQuotePrices({ forceFresh: true });
+    } else await autoVerifyQuoteTokens();
+    const config = currentLaunchConfig();
+    const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
       state.executionReadiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,
@@ -24178,7 +24266,7 @@ function handleClick(event) {
   }
 
   if (action === 'check-readiness') {
-    checkExecutionReadiness();
+    checkExecutionReadiness({ forceFresh: true });
     return;
   }
 
@@ -25065,6 +25153,7 @@ initializeSolflareWallet();
 setView('coins');
 renderAll();
 startLiveOpsPolling();
+startQuotePricePolling();
 bootLocalApi().catch((error) => {
   console.warn('v2 local API bootstrap failed:', error);
   applyBootState({
