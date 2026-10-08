@@ -7784,7 +7784,8 @@ test('Meteora is a venue for any pool inside the launch, not a separate Lean lau
   assert.match(js, /function applyPoolSwitch\(action, control\)/);
   assert.match(js, /\['raydium', 'Raydium'/);
   assert.match(js, /\['meteora-damm-v2', 'Meteora'/);
-  assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{ feeBps:/);
+  assert.match(js, /venue: 'meteora-damm-v2',\n\s+damm: \{\n\s+feeBps:/);
+  assert.match(js, /feeModel: choice\.damm\?\.feeModel \|\| 'fixed'/);
   assert.match(js, /meteora,\$\{pool\.damm\?\.feeBps \|\| 25\}/);
 });
 

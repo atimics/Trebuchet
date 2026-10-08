@@ -126,6 +126,7 @@ import {
   DAMM_V2_POOL_RENT_LAMPORTS,
   DAMM_V2_POOL_TX_FEE_LAMPORTS,
   DAMM_V2_PRIORITY_FEE_LAMPORTS,
+  normalizeDammFeePlan,
 } from '@trebuchet/core/damm-v2-plan';
 import {
   computeBootstrapTicks,
@@ -160,6 +161,7 @@ import { normalizeDistribution } from './lpDistribution.js';
 import {
   FALLBACK_FEE_TIERS,
   normalizeFeeTierList,
+  isDynamicFeeConfig,
 } from './lpFeeTiers.js';
 import {
   classifyToken2022Extensions,
@@ -950,6 +952,21 @@ export async function getClmmFeeTiers() {
     cachedFeeTiers = FALLBACK_FEE_TIERS;
     return cachedFeeTiers;
   }
+}
+
+// Synchronous access to the process-lifetime fee-tier cache (the last fetched
+// or fallback list, or null before the first fetch). The funding estimator
+// uses it so a live config's real tickSpacing is honored for a selected index
+// — including newer / dynamic configs that are NOT in FALLBACK_FEE_TIERS,
+// where guessing the fallback's spacing would misprice tick-array rent.
+export function cachedClmmFeeTiers() {
+  return cachedFeeTiers;
+}
+
+// Test seam for the funding estimator's tick-spacing path (same pattern as
+// setSdkFactoryForTests): lets a test seed the cache instead of fetching.
+export function setCachedClmmFeeTiersForTests(list) {
+  cachedFeeTiers = Array.isArray(list) && list.length ? list.slice() : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -4341,6 +4358,15 @@ async function createMeteoraPoolForAllocation({
   const quoteMint = new PublicKey(quote.address);
   const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
   const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
+  // The full fee schedule: fixed by default; ramp/marketcap/dynamic with their
+  // explicit params. The plan and report carry the schedule, not just a bps.
+  const feePlan = normalizeDammFeePlan({
+    model: alloc.damm?.feeModel,
+    bps: feeBps,
+    ramp: alloc.damm?.ramp,
+    dynamic: alloc.damm?.dynamic,
+    marketcap: alloc.damm?.marketcap,
+  });
   const mint = new PublicKey(tokenMint);
   let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
   progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
@@ -4373,6 +4399,7 @@ async function createMeteoraPoolForAllocation({
       startingMarketCapLamports: params.poolMcapLamports,
       rangeMultiple,
       feeBps,
+      feePlan,
       quoteMint,
       onProgress: (event) => progress({ ...event, allocationIndex: allocIdx }),
     });
@@ -4386,7 +4413,7 @@ async function createMeteoraPoolForAllocation({
     quoteAddress: quote.address,
     supplyPercent: alloc.supplyPercent,
     poolId: created.pool,
-    damm: { feeBps, rangeMultiple, position: created.position, verification: created.verification || null, adopted: created.adopted },
+    damm: { feeBps, rangeMultiple, feePlan, position: created.position, verification: created.verification || null, adopted: created.adopted },
     // One position, locked for good when the pool is made. Its NFT is the Fee Key.
     mainPositions: [{
       sliceIndex: 0,
@@ -5380,6 +5407,13 @@ export async function createPoolsAndPositions({
         fundOwner: '',
         description: '',
       };
+      if (isDynamicFeeConfig(baseCfg)) {
+        console.log(
+          `AmmConfig index ${cfgIdx} is a DYNAMIC fee config: the pool charges its baseline ` +
+          `${(Number(baseCfg.tradeFeeRate) || 0) / 10000}% plus more under volatility. ` +
+          'The funding estimate and fee-key income must be read as ranges, not fixed rates.',
+        );
+      }
 
       // 6g. Phase 1: create the pool, open the wide main position(s)
       //     according to distribution, and open the ladder bands if
@@ -5975,9 +6009,14 @@ function _estDiscoverRaydiumRoute(opts) {
   return __estRouteDiscoveryForTests ? __estRouteDiscoveryForTests(opts) : discoverSwapRoute(opts);
 }
 
-function resolveTickSpacingForConfig(ammConfigIndex) {
+export function resolveTickSpacingForConfig(ammConfigIndex) {
   const idx = ammConfigIndex ?? DEFAULT_AMM_CONFIG_INDEX;
-  const tier = FALLBACK_FEE_TIERS.find((t) => t.index === idx)
+  // Prefer the live config list (warmed by the fee-tier fetch) so a selected
+  // index — including newer / dynamic configs not in the fallback — prices its
+  // tick-array rent with its real spacing, never the default's.
+  const live = cachedClmmFeeTiers();
+  const tier = (Array.isArray(live) ? live.find((t) => t.index === idx) : null)
+    || FALLBACK_FEE_TIERS.find((t) => t.index === idx)
     || FALLBACK_FEE_TIERS.find((t) => t.index === DEFAULT_AMM_CONFIG_INDEX);
   return tier.tickSpacing;
 }
