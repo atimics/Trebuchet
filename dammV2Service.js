@@ -124,26 +124,34 @@ export function buildPoolFees({ model = 'fixed', bps, ramp = {}, dynamic = {}, m
     feeTimeSchedulerParam: { startingFeeBps: start, endingFeeBps: start, numberOfPeriod: 0, totalDuration: 0 },
   });
   switch (model) {
-    case 'ramp':
+    case 'ramp': {
+      const end = Number(ramp.endBps) || start;
+      // A ramp that doesn't actually decrease is just a fixed fee; the SDK
+      // rejects a scheduler whose start and end are equal.
+      if (end >= start) return { baseFee: getBaseFeeParams(flat()), dynamicFee: null };
+      const duration = Number(ramp.durationSec) || 30 * 24 * 3600;
       return {
         baseFee: getBaseFeeParams({
           baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
           feeTimeSchedulerParam: {
             startingFeeBps: start,
-            endingFeeBps: Number(ramp.endBps) ?? start,
+            endingFeeBps: end,
             numberOfPeriod: 1,
-            totalDuration: Number(ramp.durationSec) || 30 * 24 * 3600,
+            totalDuration: duration,
           },
         }),
         dynamicFee: null,
       };
-    case 'marketcap':
+    }
+    case 'marketcap': {
+      const end = Number(marketcap.endBps) || start;
+      if (end >= start) return { baseFee: getBaseFeeParams(flat()), dynamicFee: null };
       return {
         baseFee: getBaseFeeParams({
           baseFeeMode: BaseFeeMode.FeeMarketCapSchedulerLinear,
           feeMarketCapSchedulerParam: {
             startingFeeBps: start,
-            endingFeeBps: Number(marketcap.endBps) ?? start,
+            endingFeeBps: end,
             numberOfPeriod: 1,
             priceMultiple: Number(marketcap.priceMultiple) || 10,
             schedulerExpirationDuration: Number(marketcap.expirationSec) || 30 * 24 * 3600,
@@ -151,6 +159,7 @@ export function buildPoolFees({ model = 'fixed', bps, ramp = {}, dynamic = {}, m
         }),
         dynamicFee: null,
       };
+    }
     case 'dynamic':
       return {
         baseFee: getBaseFeeParams(flat()),
