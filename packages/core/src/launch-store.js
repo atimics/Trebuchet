@@ -51,6 +51,7 @@ const PRESERVE_WHEN_ABSENT_TOP_LEVEL = ['walletPublicKey'];
 const PRESERVE_WHEN_ABSENT_VANITY = ['selectedPublicKey'];
 const PRESERVE_WHEN_ABSENT_POOL = [
   'quoteUsdOverride',
+  'priceEnteredByUser',
   'quoteDecimalsOverride',
   'quotePriceSource',
   'quoteCompatibility',

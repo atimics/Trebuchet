@@ -4008,7 +4008,7 @@ export async function resolveQuoteUsdForCreate({
         throw new Error(
           `Price drift detected for ${symbolHint}: ` +
           `funding-estimate showed $${override.toString()} but current ` +
-          `Raydium price is $${quoteUsd.toString()} (${Math.abs(driftPct).toFixed(2)}% ` +
+          `market price is $${quoteUsd.toString()} (${Math.abs(driftPct).toFixed(2)}% ` +
           `difference, threshold is ` +
           `${((PRICE_DRIFT_THRESHOLD - 1) * 100).toFixed(0)}%). ` +
           `Refresh the funding estimate on Step 3 to recompute, then ` +
@@ -6160,9 +6160,14 @@ export async function estimateRequiredFunding({
   // callers omit these and use the real price/route services.
   priceOracle = null,
   routeDiscovery = null,
+  onChainPrice = null,
 }) {
   const lookupPrice = priceOracle || _estGetUsdPrice;
   const discoverRoute = routeDiscovery || _estDiscoverRaydiumRoute;
+  // Offline callers supply the pool reader when they need it. Live estimates
+  // use the same fresh pool selection as preflight and pool creation.
+  const readPoolPrice = onChainPrice || ((priceOracle || __estPriceOracleForTests)
+    ? async () => null : getQuoteTokenOnChainPrice);
   const solBreakdown = [];
   const quoteBreakdown = [];
   const byQuote = {};
@@ -6178,6 +6183,7 @@ export async function estimateRequiredFunding({
   // where source is one of:
   //   'sol'           — SOL pool, used the SOL/USD oracle
   //   'user-override' — user typed a value in customize mode
+  //   'on-chain:*'   — a qualifying pool supplied the spot price
   //   'raydium-probe' — Trade API gave us an effective price
   //   'oracle'        — aggregator (Gecko/DexScreener) priced it
   //   'unresolved'    — funding-estimate couldn't get a price
@@ -6260,6 +6266,73 @@ export async function estimateRequiredFunding({
           : 6);
 
     const poolLabel = `Pool ${poolIdx + 1} (${quoteSymbol})`;
+
+    let route = null, quoteUsd = null, quoteUsdSource = null;
+    if (!isSol) {
+      // Try Raydium Trade API for route discovery. The probe quote also
+      // gives us the effective price (USD per whole quote token), which
+      // matters for low-volume tokens whose USD oracles often have no
+      // data. If the Trade API can route the swap at all, the route is
+      // viable and we get a usable price in the same call.
+      try {
+        route = await discoverRoute({
+          quoteMint: quoteAddr,
+          quoteDecimals,
+          solUsd,
+        });
+      } catch (e) {
+        console.warn(
+          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
+        );
+      }
+
+      // A hand-set price keeps its intent. Automatic prices are refreshed
+      // from pools first, as they are at creation. An earlier automatic
+      // quoteUsdOverride is a drift reference for creation, so refresh it here.
+      const manualPrice = userEnteredPrice(a);
+      if (manualPrice) {
+        quoteUsd = manualPrice;
+        quoteUsdSource = 'user-override';
+      } else {
+        let poolPrice = null;
+        try {
+          poolPrice = await readPoolPrice({ mint: quoteAddr, solUsd });
+        } catch (error) {
+          if (error.code === 'POOL_SPREAD') throw error;
+          console.warn(`estimateRequiredFunding: pool price read failed for ${quoteAddr}: ${error.message}`);
+        }
+        if (poolPrice?.spreadError) {
+          throw Object.assign(new Error(poolPrice.spreadError), { code: 'POOL_SPREAD' });
+        }
+        if (poolPrice?.priceUsd?.isFinite() && poolPrice.priceUsd.gt(0)) {
+          quoteUsd = poolPrice.priceUsd;
+          quoteUsdSource = `on-chain:${poolPrice.anchorSymbol}`;
+        }
+      }
+      if (!quoteUsd && route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
+        quoteUsd = route.effectiveQuoteUsd;
+        quoteUsdSource = 'raydium-probe';
+      } else if (!quoteUsd) {
+        try {
+          quoteUsd = await lookupPrice(quoteAddr);
+          if (quoteUsd && quoteUsd.gt(0)) {
+            quoteUsdSource = 'oracle';
+          } else {
+            quoteUsd = null;
+            quoteUsdSource = 'unresolved';
+          }
+        } catch (e) {
+          quoteUsd = null;
+          quoteUsdSource = 'unresolved';
+        }
+      }
+    }
+    resolvedPrices.push({
+      allocationIndex: poolIdx,
+      quoteMint: quoteAddr,
+      quoteUsd: isSol ? solUsd.toString() : quoteUsd?.toString() || null,
+      source: isSol ? 'sol' : quoteUsdSource,
+    });
 
     // A Meteora pool: its pool and position rent, and the transaction. No tick arrays, no bootstrap,
     // no quote: the position holds only the new token.
@@ -6408,16 +6481,6 @@ export async function estimateRequiredFunding({
     // sitting in the same wallet at LP-creation time. We surface support
     // as its own breakdown line so the user sees what each piece costs.
     if (isSol) {
-      // SOL pool: the canonical quote-USD is just the SOL/USD price we
-      // resolved at the top of the function. Record it now so the
-      // frontend has a complete picture regardless of pool composition.
-      resolvedPrices.push({
-        allocationIndex: poolIdx,
-        quoteMint: WSOL_MINT,
-        quoteUsd: solUsd.toString(),
-        source: 'sol',
-      });
-
       // (1) SOL pool — quote-side is just SOL.
       // For minimal mode we keep the historical dust constant (0.001 SOL,
       // which comfortably covers the 1-whole-token bootstrap's actual need).
@@ -6450,62 +6513,6 @@ export async function estimateRequiredFunding({
         );
       }
     } else {
-      // Try Raydium Trade API for route discovery. The probe quote also
-      // gives us the effective price (USD per whole quote token), which
-      // matters for low-volume tokens whose USD oracles often have no
-      // data. If the Trade API can route the swap at all, the route is
-      // viable and we get a usable price in the same call.
-      let route = null;
-      try {
-        route = await discoverRoute({
-          quoteMint: quoteAddr,
-          quoteDecimals,
-          solUsd,
-        });
-      } catch (e) {
-        console.warn(
-          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
-        );
-      }
-
-      // Resolve a USD price for the quote token. Priority:
-      //   1. Explicit override on the allocation config
-      //   2. Effective price from Trade API probe (covers low-volume tokens)
-      //   3. Standard USD oracle fallback (Coingecko/Jupiter)
-      // Used for sizing both the auto-swap and manual-prefund branches.
-      let quoteUsd = null;
-      let quoteUsdSource = null;
-      if (a.quoteUsdOverride !== undefined && a.quoteUsdOverride !== null) {
-        quoteUsd = new Decimal(a.quoteUsdOverride);
-        quoteUsdSource = 'user-override';
-      } else if (route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
-        quoteUsd = route.effectiveQuoteUsd;
-        quoteUsdSource = 'raydium-probe';
-      } else {
-        try {
-          quoteUsd = await lookupPrice(quoteAddr);
-          if (quoteUsd && quoteUsd.gt(0)) {
-            quoteUsdSource = 'oracle';
-          } else {
-            quoteUsd = null;
-            quoteUsdSource = 'unresolved';
-          }
-        } catch (e) {
-          quoteUsd = null;
-          quoteUsdSource = 'unresolved';
-        }
-      }
-
-      // Record the canonical quote-USD for this allocation so the
-      // frontend can show the same number everywhere (Step 2 display,
-      // Step 3 cost preview, Step 5 pool creation).
-      resolvedPrices.push({
-        allocationIndex: poolIdx,
-        quoteMint: quoteAddr,
-        quoteUsd: quoteUsd ? quoteUsd.toString() : null,
-        source: quoteUsdSource,
-      });
-
       // Pick the acquire/prefund target USD. For minimal mode:
       //   auto-swap target = $2 (oversize the $1 actual need by 2x so a
       //                          partial fill still meets the need)

@@ -5511,14 +5511,14 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   // with a saved launch, the same way it appears after an upload.
   if (token.logo && typeof token.logo === 'object' && token.logo.dataUrl) {
     state.tokenLogo = {
-      dataUrl: token.logo.dataUrl,
-      mime: token.logo.mime || 'image/png',
+      ...token.logo,
+      mimeType: token.logo.mimeType || token.logo.mime || /^data:([^;]+)/.exec(token.logo.dataUrl)?.[1] || 'image/png',
       name: token.logo.name || 'logo',
-      animated: token.logo.animated === true,
+      animated: token.logo.animated === true || /^data:image\/gif;/.test(token.logo.dataUrl),
     };
     state.launchIdentity = null;
     // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
-    if (!journal?.token?.metadataUri) {
+    if (!journal?.token?.metadataUri && !journal?.token?.onChainMetadataUri) {
       fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
     }
   }
@@ -9534,6 +9534,9 @@ function mergeLaunchConfigSnapshot(existing = null, incoming = null, existingPro
     token: { ...(base.token || {}) },
     poolTopology: { ...(base.poolTopology || {}) },
   };
+  if (!merged.token.logo?.dataUrl && incoming?.token?.logo?.dataUrl) {
+    merged.token.logo = { ...(merged.token.logo || {}), ...incoming.token.logo };
+  }
   const incomingDestination = String(
     incomingProof?.transfer?.destinationWallet
     || incomingProof?.destinationWallet
@@ -9648,7 +9651,12 @@ function mergeLaunchProofEvidence(existing, incoming) {
 function rememberLaunchProof(readinessOrProof) {
   const rawProof = readinessOrProof?.proof || readinessOrProof;
   if (rawProof && typeof rawProof === 'object') {
+    const previousToken = state.launchProof?.token;
     state.launchProof = mergeLaunchProofEvidence(state.launchProof, rawProof);
+    const token = state.launchProof?.token;
+    if (token?.mint && token.mintAuthorityRenounced === true
+        && (previousToken?.mint !== token.mint || previousToken?.mintAuthorityRenounced !== true)
+        && typeof refreshCoinAfterExecution === 'function') refreshCoinAfterExecution(token.mint);
     const proofConfig = proofConfigForFingerprint(state.launchProof, currentLaunchConfig());
     state.lastReportPublish = reportPublishIsProofCurrent(state.launchProof?.reportPublish, state.launchProof, proofConfig)
       ? state.launchProof.reportPublish
@@ -15459,6 +15467,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       supplyPercent: pool.supplyPercent,
       ammConfigIndex: pool.ammConfigIndex,
       quoteUsdOverride,
+      ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
       quoteDecimalsOverride,
       quoteSymbolOverride: pool.quoteSymbol,
       distribution: pool.distribution,
@@ -17869,7 +17878,8 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
 function invalidateClassicOutputs() {
   state.classicFundingEstimate = null;
   state.executionReadiness = null;
-  clearLaunchProof();
+  state.lastRunEnvelope = null;
+  if (!liveLaunchInProgress()) clearLaunchProof();
   state.lastReportPublish = null;
   state.lastAirdropResult = null;
   resetQuoteAcquireState();
@@ -20454,6 +20464,7 @@ async function runClassicFundingEstimate() {
         await state.apiClient.estimateClassicFunding(fundingRequest),
         config,
       );
+      state.lastRunEnvelope = null;
       resetQuoteAcquireState();
       resetManualPrefundState();
       renderAll();
@@ -20940,6 +20951,13 @@ function openCoin(key) {
 const coinPageCache = new Map();
 function rememberCoinPage(mint, patch) {
   coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
+}
+
+function refreshCoinAfterExecution(mint) {
+  coinPageCache.delete(mint);
+  if (state.coins.key !== `mint:${mint}`) return;
+  state.coins = { ...state.coins, detail: null, detailError: null };
+  loadCoinDetail(mint).catch(() => null);
 }
 
 // The coin's airdrop: what each wallet received, and what the chain says it holds now.

@@ -40,6 +40,7 @@ const VALID_RECOVERY_ENDPOINTS = new Set([
 ]);
 const DEFAULT_SOL_MINT = 'So11111111111111111111111111111111111111112';
 const DEFAULT_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const DEFAULT_USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 const DEFAULT_MEME_FLYWHEEL_MINT = 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r';
 const DEFAULT_RESERVE_FLYWHEEL_MINT = 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj';
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
@@ -607,6 +608,7 @@ function normalizePoolTopology(input = {}) {
       quoteSymbol,
       ...(quoteDecimalsOverride !== undefined ? { quoteDecimalsOverride } : {}),
       ...(quoteUsdOverride !== undefined ? { quoteUsdOverride } : {}),
+      ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
       ...(pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {}),
       ...(quoteCompatibility ? { quoteCompatibility } : {}),
       ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
@@ -793,6 +795,7 @@ function classicAllocations(poolTopology) {
     supplyPercent: pool.supplyPercent,
     ammConfigIndex: pool.ammConfigIndex,
     quoteUsdOverride: pool.quoteUsdOverride,
+    ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
     quoteDecimalsOverride: pool.quoteDecimalsOverride,
     quoteSymbolOverride: pool.quoteSymbol,
     ...(pool.startPricePremiumPct !== undefined ? { startPricePremiumPct: pool.startPricePremiumPct } : {}),
@@ -814,7 +817,7 @@ function poolQuoteIdentity(pool = {}) {
   const upper = raw.toUpperCase();
   if (raw === DEFAULT_SOL_MINT || upper === 'SOL') return 'SOL';
   if (raw === DEFAULT_USDC_MINT || upper === 'USDC') return 'USDC';
-  if (upper === 'USDT') return 'USDT';
+  if (raw === DEFAULT_USDT_MINT || upper === 'USDT') return 'USDT';
   if (!mint && symbol && token && symbol.toUpperCase() === token.toUpperCase()) {
     return symbol.toUpperCase();
   }
@@ -2036,6 +2039,16 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
   );
   const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
   const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
+  // The estimate records the price the operator funded. Carry that fresh
+  // reference into both LP checks, matched to its pool index and quote mint.
+  const executionAllocations = allocations.map((allocation, index) => {
+    if (allocation.priceEnteredByUser === true) return allocation;
+    const rows = Array.isArray(fundingEstimate?.resolvedPrices) ? fundingEstimate.resolvedPrices : [];
+    const price = rows.find((row) => row?.allocationIndex === index
+      && poolQuoteIdentity({ quoteToken: row.quoteMint }) === poolQuoteIdentity(allocation));
+    const quoteUsd = optionalPositiveNumber(price?.quoteUsd);
+    return quoteUsd === undefined ? allocation : { ...allocation, quoteUsdOverride: String(price.quoteUsd) };
+  });
   const rpcPosture = rpcPostureStatus(context);
   setPlanGuardrail(plan, 'rpc-posture', {
     title: rpcPosture.title,
@@ -2235,7 +2248,7 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     tokenDecimals: plan.token.decimals,
     tokenTotalSupply: plan.token.supply,
     targetMarketCapUsd,
-    allocations,
+    allocations: executionAllocations,
     lockPositions: true,
     airdrop: executableAirdrop,
   };
@@ -2371,7 +2384,7 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
         tokenDecimals: plan.token.decimals,
         tokenTotalSupply: plan.token.supply,
         targetMarketCapUsd,
-        allocations,
+        allocations: executionAllocations,
       },
       createLp: createLpPayload,
       resumeLaunch: {

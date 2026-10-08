@@ -768,6 +768,7 @@ var TrebuchetCore = (() => {
   ]);
   var DEFAULT_SOL_MINT = "So11111111111111111111111111111111111111112";
   var DEFAULT_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  var DEFAULT_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
   var DEFAULT_MEME_FLYWHEEL_MINT = "HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r";
   var DEFAULT_RESERVE_FLYWHEEL_MINT = "J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj";
   var CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
@@ -1240,6 +1241,7 @@ var TrebuchetCore = (() => {
         quoteSymbol,
         ...quoteDecimalsOverride !== void 0 ? { quoteDecimalsOverride } : {},
         ...quoteUsdOverride !== void 0 ? { quoteUsdOverride } : {},
+        ...pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {},
         ...pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {},
         ...quoteCompatibility ? { quoteCompatibility } : {},
         ...startPricePremiumPct !== void 0 ? { startPricePremiumPct } : {},
@@ -1408,6 +1410,7 @@ var TrebuchetCore = (() => {
       supplyPercent: pool.supplyPercent,
       ammConfigIndex: pool.ammConfigIndex,
       quoteUsdOverride: pool.quoteUsdOverride,
+      ...pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {},
       quoteDecimalsOverride: pool.quoteDecimalsOverride,
       quoteSymbolOverride: pool.quoteSymbol,
       ...pool.startPricePremiumPct !== void 0 ? { startPricePremiumPct: pool.startPricePremiumPct } : {},
@@ -1428,7 +1431,7 @@ var TrebuchetCore = (() => {
     const upper = raw.toUpperCase();
     if (raw === DEFAULT_SOL_MINT || upper === "SOL") return "SOL";
     if (raw === DEFAULT_USDC_MINT || upper === "USDC") return "USDC";
-    if (upper === "USDT") return "USDT";
+    if (raw === DEFAULT_USDT_MINT || upper === "USDT") return "USDT";
     if (!mint && symbol && token && symbol.toUpperCase() === token.toUpperCase()) {
       return symbol.toUpperCase();
     }
@@ -2516,6 +2519,13 @@ var TrebuchetCore = (() => {
     );
     const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
     const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
+    const executionAllocations = allocations.map((allocation, index) => {
+      if (allocation.priceEnteredByUser === true) return allocation;
+      const rows = Array.isArray(fundingEstimate?.resolvedPrices) ? fundingEstimate.resolvedPrices : [];
+      const price = rows.find((row) => row?.allocationIndex === index && poolQuoteIdentity({ quoteToken: row.quoteMint }) === poolQuoteIdentity(allocation));
+      const quoteUsd = optionalPositiveNumber(price?.quoteUsd);
+      return quoteUsd === void 0 ? allocation : { ...allocation, quoteUsdOverride: String(price.quoteUsd) };
+    });
     const rpcPosture = rpcPostureStatus(context);
     setPlanGuardrail(plan, "rpc-posture", {
       title: rpcPosture.title,
@@ -2697,7 +2707,7 @@ var TrebuchetCore = (() => {
       tokenDecimals: plan.token.decimals,
       tokenTotalSupply: plan.token.supply,
       targetMarketCapUsd,
-      allocations,
+      allocations: executionAllocations,
       lockPositions: true,
       airdrop: executableAirdrop
     };
@@ -2800,7 +2810,7 @@ var TrebuchetCore = (() => {
           tokenDecimals: plan.token.decimals,
           tokenTotalSupply: plan.token.supply,
           targetMarketCapUsd,
-          allocations
+          allocations: executionAllocations
         },
         createLp: createLpPayload,
         resumeLaunch: {

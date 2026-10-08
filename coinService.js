@@ -18,6 +18,29 @@ function journalMint(journal) {
   return String(journal?.token?.mint || journal?.token?.tokenMint || '').trim();
 }
 
+// Return local art with a recovery view. The durable journal keeps its compact
+// logo record; the saved draft and sealed identity keep the complete image.
+export function restoreLaunchJournalArt(journal, { launches = [], sealedIdentity = null } = {}) {
+  const config = journal?.launchConfig;
+  if (!config?.token || config.token.logo?.dataUrl) return journal;
+  const mint = journalMint(journal);
+  const token = config.token;
+  const saved = launches.find((entry) => {
+    const draft = entry.config;
+    const sameLaunch = (mint && draft?.vanity?.selectedPublicKey === mint)
+      || (journal.walletPublicKey && draft?.walletPublicKey === journal.walletPublicKey);
+    return sameLaunch && lower(draft?.token?.name) === lower(token.name)
+      && lower(draft?.token?.symbol) === lower(token.symbol);
+  });
+  const sealedLogo = journal.token?.sealedLaunch === true && sealedIdentity?.mint === mint
+    && sealedIdentity.logoDataUrl;
+  const dataUrl = sealedLogo || saved?.config?.token?.logo?.dataUrl;
+  if (typeof dataUrl !== 'string' || !/^data:image\/(png|jpeg|gif);base64,/.test(dataUrl)) return journal;
+  return { ...journal, launchConfig: { ...config, token: { ...token, logo: {
+    ...(saved?.config?.token?.logo || token.logo || {}), dataUrl,
+  } } } };
+}
+
 // What the launch record claims. The app says "Live" only once the chain
 // agrees (see coinChainStatus in the client), never from the record alone.
 function journalStatus(journal) {

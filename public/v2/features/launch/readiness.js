@@ -172,6 +172,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       supplyPercent: pool.supplyPercent,
       ammConfigIndex: pool.ammConfigIndex,
       quoteUsdOverride,
+      ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
       quoteDecimalsOverride,
       quoteSymbolOverride: pool.quoteSymbol,
       distribution: pool.distribution,

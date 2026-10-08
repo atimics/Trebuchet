@@ -103,7 +103,7 @@ import { createLaunchReportUmi, publishLaunchReport } from './launchReportServic
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
 import * as coinStore from './coinStore.js';
-import { mergeCoins, validMint, readMintAccount } from './coinService.js';
+import { mergeCoins, validMint, readMintAccount, restoreLaunchJournalArt } from './coinService.js';
 import { readTokenMarketEvidence, readHolderSample, readPoolEvidence, fetchSellQuote, marketEvidenceError } from './tokenMarketEvidence.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
@@ -3318,6 +3318,11 @@ app.delete('/api/v2/coins/:mint', (req, res) => {
 // What is true about a coin launched here, fact by fact, checked against the chain
 // where the chain can answer. A step's record is a claim: "done" needs the
 // chain to agree; a record the chain contradicts is a mismatch, not a tick.
+function recoveryJournalWithArt(journal) {
+  return restoreLaunchJournalArt(journal, { launches: launchStore.list(),
+    sealedIdentity: getSealedIdentity(journal?.token?.mint) });
+}
+
 function coinCreationSteps(journal, { account = null, markets = null, launchWalletLamports = null } = {}) {
   const combine = (recorded, chain) => {
     if (chain === 'done') return 'done';
@@ -3385,7 +3390,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     // plan (older records did not), and this app holds the wallet's key.
     hasPlan: Boolean(journal?.launchConfig && typeof journal.launchConfig === 'object'),
     walletManaged: Boolean(walletEntry),
-    journal: journalWithoutEvents,
+    journal: recoveryJournalWithArt(journalWithoutEvents),
     steps,
     // A step the chain can't check (liquidity locks) holds once it is recorded, as the coin's status says.
     nextStep: steps.find((step) => !['done', 'recorded'].includes(step.state))?.id || null,
@@ -3844,6 +3849,8 @@ function v2ExecutionProofFromContext(context = {}, readiness = {}) {
   const plan = readiness?.plan || null;
   const tokenInfo = context.createdTokenInfo || journal?.token || null;
   const tokenMint = tokenInfo?.mint || context.tokenMint || readiness?.tokenMint || null;
+  const recoveryConfig = recoveryJournalWithArt({ walletPublicKey: journal?.walletPublicKey || readiness?.walletPublicKey,
+    token: { ...tokenInfo, mint: tokenMint }, launchConfig: v2LaunchConfigSnapshotFromPlan(plan, journal) }).launchConfig;
   const lpResults = Array.isArray(journal?.lp?.results)
     ? journal.lp.results
     : Array.isArray(journal?.lp?.priorResults)
@@ -3987,7 +3994,7 @@ function v2ExecutionProofFromContext(context = {}, readiness = {}) {
     reportPublish,
     transfer,
     destinationWallet,
-    launchConfig: v2LaunchConfigSnapshotFromPlan(plan, journal),
+    launchConfig: recoveryConfig,
     canPublishReport: reportableExecutionProof,
     canRunAirdrop: Boolean(tokenMint && plannedRecipients.length > 0),
     canRetryAirdrop: failedAirdrop.length > 0,
@@ -7999,7 +8006,7 @@ app.get('/api/launch-journals', (req, res) => {
     const includeCompleted = req.query.includeCompleted === '1';
     const includeArchived = req.query.includeArchived === '1';
     const journals = launchJournal.list({ includeCompleted, includeArchived });
-    res.json({ success: true, journals });
+    res.json({ success: true, journals: journals.map(recoveryJournalWithArt) });
   } catch (error) {
     console.error('Error listing launch journals:', error);
     res.status(500).json({ success: false, error: error.message });

@@ -303,6 +303,7 @@ async function runClassicFundingEstimate() {
         await state.apiClient.estimateClassicFunding(fundingRequest),
         config,
       );
+      state.lastRunEnvelope = null;
       resetQuoteAcquireState();
       resetManualPrefundState();
       renderAll();

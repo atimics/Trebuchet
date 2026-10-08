@@ -480,6 +480,56 @@ try {
   assert.equal(new Set(pairIds.repaired).size, pairIds.repaired.length, `restore kept a repeated id: ${pairIds.repaired}`);
   await page.evaluate(() => { state.customPools = []; renderAll(); });
 
+  // Recover local art, then replace it after minting. The launch stays open
+  // even when its reserved mint is already in the coin list.
+  const recoveryArt = `data:image/png;base64,${readFileSync(path.join(root, 'public', 'release-assets', 'frames', 'f01.png')).toString('base64')}`;
+  await page.evaluate(({ mint, art }) => {
+    const config = JSON.parse(JSON.stringify(currentLaunchConfig()));
+    config.token.name = 'Recovered Launch';
+    config.token.symbol = 'RECOVER';
+    config.token.sealedLaunch = true;
+    config.token.logo = { name: 'recovered.png', dataUrl: art };
+    config.vanity = { ...config.vanity, selectedPublicKey: mint };
+    state.demoActive = false;
+    state.prefs.demoMode = false;
+    state.lastDemoLaunchRun = null;
+    state.tokenLogo = null;
+    state.coins.key = null;
+    state.coins.detail = null;
+    state.coins.list.push({ key: `mint:${mint}`, kind: 'onchain', launchedHere: true,
+      mint, name: config.token.name, symbol: config.token.symbol });
+    restoreLaunchConfigFromJournal({ id: 'image-recovery-fixture', launchConfig: config,
+      token: { mint, sealedLaunch: true, onChainMetadataUri: 'https://example.test/sealed.json' } });
+    state.launchProof = { source: 'launch-journal', stage: 'token_created', walletPublicKey: selectedLaunchWalletPublicKey(),
+      token: { mint, mintAuthorityRenounced: true, freezeAuthorityDisabled: true, sealedLaunch: true },
+      liquidity: { results: [] }, launchConfig: config };
+    state.lastRunEnvelope = { id: 'earlier-budget' };
+    state.activeView = 'launch';
+    state.launchWorkspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+    renderAll();
+  }, { mint: evidenceMint, art: recoveryArt });
+  await page.waitForFunction(() => document.querySelector('#tokenLogoPreview img')?.naturalWidth > 0);
+  await page.setInputFiles('#tokenLogoFile', { name: 'reattached.png', mimeType: 'image/png',
+    buffer: readFileSync(path.join(root, 'public', 'release-assets', 'frames', 'f01.png')) });
+  try {
+    await page.waitForFunction(() => state.tokenLogo?.name === 'reattached.png' && state.lastRunEnvelope === null);
+  } catch (error) {
+    console.log('Recovery image state:', await page.evaluate(() => ({ name: state.tokenLogo?.name,
+      error: state.tokenLogoError, envelope: state.lastRunEnvelope, coin: state.coins.key,
+      mint: proofTokenMint(state.launchProof), mode: document.body.dataset.coinMode })));
+    throw error;
+  }
+  assert.equal(await page.evaluate(() => proofTokenMint(state.launchProof)), evidenceMint);
+  assert.equal(await page.evaluate(() => state.launchProof.token.mintAuthorityRenounced), true);
+  assert.equal(await page.evaluate(() => liveLaunchInProgress()), true);
+  assert.equal(await page.getAttribute('body', 'data-coin-mode'), 'create');
+  assert.equal(await page.evaluate(() => state.launchWorkspace), 'mint');
+  await page.setViewportSize({ width: 1046, height: 650 });
+  await page.waitForFunction(() => document.querySelectorAll('#toastStack .toast').length === 0);
+  await page.screenshot({ path: path.join(configDir, 'image-recovery.png'), fullPage: true });
+  console.log(`Recovery image screenshot: ${path.join(configDir, 'image-recovery.png')}`);
+
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');
 

@@ -166,6 +166,13 @@ function rememberCoinPage(mint, patch) {
   coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
 }
 
+function refreshCoinAfterExecution(mint) {
+  coinPageCache.delete(mint);
+  if (state.coins.key !== `mint:${mint}`) return;
+  state.coins = { ...state.coins, detail: null, detailError: null };
+  loadCoinDetail(mint).catch(() => null);
+}
+
 // The coin's airdrop: what each wallet received, and what the chain says it holds now.
 async function loadCoinAirdrop(mint) {
   if (!state.apiClient?.getCoinAirdrop) return;
