@@ -27,8 +27,9 @@ export function restoreLaunchJournalArt(journal, { launches = [], sealedIdentity
   const token = config.token;
   const saved = launches.find((entry) => {
     const draft = entry.config;
-    const sameLaunch = (mint && draft?.vanity?.selectedPublicKey === mint)
-      || (journal.walletPublicKey && draft?.walletPublicKey === journal.walletPublicKey);
+    const savedMint = draft?.vanity?.selectedPublicKey;
+    const sameLaunch = mint && savedMint ? savedMint === mint
+      : journal.walletPublicKey && draft?.walletPublicKey === journal.walletPublicKey;
     return sameLaunch && lower(draft?.token?.name) === lower(token.name)
       && lower(draft?.token?.symbol) === lower(token.symbol);
   });

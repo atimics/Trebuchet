@@ -118,6 +118,8 @@ test('saved draft art is restored only for the matching wallet or mint and ident
   const saved = { config: { walletPublicKey: 'wallet', token: { name: 'Token', symbol: 'TOK', logo: { dataUrl: art } } } };
   assert.equal(restoreLaunchJournalArt(journal, { launches: [saved] }).launchConfig.token.logo.dataUrl, art);
   assert.equal(restoreLaunchJournalArt(journal, { launches: [{ config: { ...saved.config, walletPublicKey: 'another' } }] }), journal);
+  assert.equal(restoreLaunchJournalArt(journal, { launches: [{ config: { ...saved.config,
+    vanity: { selectedPublicKey: 'another' } } }] }), journal);
   assert.equal(restoreLaunchJournalArt(journal, { sealedIdentity: { mint: 'another', logoDataUrl: art } }), journal);
 });
 
