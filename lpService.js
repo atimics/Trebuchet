@@ -126,6 +126,7 @@ import {
   DAMM_V2_POOL_RENT_LAMPORTS,
   DAMM_V2_POOL_TX_FEE_LAMPORTS,
   DAMM_V2_PRIORITY_FEE_LAMPORTS,
+  normalizeDammFeePlan,
 } from '@trebuchet/core/damm-v2-plan';
 import {
   computeBootstrapTicks,
@@ -4341,6 +4342,15 @@ async function createMeteoraPoolForAllocation({
   const quoteMint = new PublicKey(quote.address);
   const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
   const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
+  // The full fee schedule: fixed by default; ramp/marketcap/dynamic with their
+  // explicit params. The plan and report carry the schedule, not just a bps.
+  const feePlan = normalizeDammFeePlan({
+    model: alloc.damm?.feeModel,
+    bps: feeBps,
+    ramp: alloc.damm?.ramp,
+    dynamic: alloc.damm?.dynamic,
+    marketcap: alloc.damm?.marketcap,
+  });
   const mint = new PublicKey(tokenMint);
   let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
   progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
@@ -4373,6 +4383,7 @@ async function createMeteoraPoolForAllocation({
       startingMarketCapLamports: params.poolMcapLamports,
       rangeMultiple,
       feeBps,
+      feePlan,
       quoteMint,
       onProgress: (event) => progress({ ...event, allocationIndex: allocIdx }),
     });
@@ -4386,7 +4397,7 @@ async function createMeteoraPoolForAllocation({
     quoteAddress: quote.address,
     supplyPercent: alloc.supplyPercent,
     poolId: created.pool,
-    damm: { feeBps, rangeMultiple, position: created.position, verification: created.verification || null, adopted: created.adopted },
+    damm: { feeBps, rangeMultiple, feePlan, position: created.position, verification: created.verification || null, adopted: created.adopted },
     // One position, locked for good when the pool is made. Its NFT is the Fee Key.
     mainPositions: [{
       sliceIndex: 0,
@@ -5380,6 +5391,13 @@ export async function createPoolsAndPositions({
         fundOwner: '',
         description: '',
       };
+      if (isDynamicFeeConfig(baseCfg)) {
+        console.log(
+          `AmmConfig index ${cfgIdx} is a DYNAMIC fee config: the pool charges its baseline ` +
+          `${(Number(baseCfg.tradeFeeRate) || 0) / 10000}% plus more under volatility. ` +
+          'The funding estimate and fee-key income must be read as ranges, not fixed rates.',
+        );
+      }
 
       // 6g. Phase 1: create the pool, open the wide main position(s)
       //     according to distribution, and open the ladder bands if

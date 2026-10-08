@@ -15,6 +15,10 @@ import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import { autoResumingLaunchServices } from './autoResume.js';
+import * as claimer from '@trebuchet/claimer';
+import { decideCrank, normalizeFlywheelSchedule } from '@trebuchet/core/flywheel-schedule';
+import * as claimerDamm from '@trebuchet/claimer/venues/damm';
+import { createExecutionConnection } from './rpcConnection.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
 import { createRuntimeControl } from '@trebuchet/runtime/control';
@@ -6643,6 +6647,125 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
   } catch (error) {
     console.error('Error fetching CLMM fee tiers:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Claims and flywheel (desktop host of @trebuchet/claimer).
+//
+// The claimer is the shared core for fee claiming/routing; these routes are
+// the desktop surface. Routes below are read/policy only and never sign.
+// Fee-claim EXECUTION (signing) intentionally answers 501 NOT_WIRED until the
+// armed-wallet slice lands — the same honest gate the sealed runner uses for
+// launches (503 NOT_READY). See docs/lp-engineering-v2.md §3.
+// ---------------------------------------------------------------------------
+
+const claimerStore = () => claimer.openCrankCollections(process.env.TREBUCHET_CONFIG_DIR || __dirname);
+
+// GET /api/v2/flywheel/schedule?scopeId=... — the saved schedule, or null.
+app.get('/api/v2/flywheel/schedule', (req, res) => {
+  const { store, schedules } = claimerStore();
+  try {
+    const scopeId = String(req.query.scopeId || '').trim();
+    res.json({ success: true, schedule: claimer.loadSchedule(schedules.load(), scopeId || 'default') });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    store.close();
+  }
+});
+
+// POST /api/v2/flywheel/schedule — validate (normalizeFlywheelSchedule) then
+// persist. A schedule that fails validation is rejected with the reason.
+app.post('/api/v2/flywheel/schedule', (req, res) => {
+  const { store, schedules } = claimerStore();
+  try {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {});
+    const scopeId = String(body.scopeId || 'default').trim();
+    const normalized = normalizeFlywheelSchedule(body.schedule);
+    const saved = { ...normalized, scopeId };
+    claimer.saveSchedule(schedules.load(), schedules.save, saved);
+    res.json({ success: true, schedule: claimer.loadSchedule(schedules.load(), scopeId) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message, valid: false });
+  } finally {
+    store.close();
+  }
+});
+
+// POST /api/v2/flywheel/decision — run decideCrank against a saved schedule
+// (or one supplied in the body) with observed state. Read-only; the keeper
+// enforces the returned ceilings at the signer, never on this route.
+app.post('/api/v2/flywheel/decision', (req, res) => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {});
+  const scopeId = String(body.scopeId || 'default').trim();
+  let schedule = body.schedule;
+  if (!schedule) {
+    const { store, schedules } = claimerStore();
+    try {
+      schedule = claimer.loadSchedule(schedules.load(), scopeId);
+    } finally {
+      store.close();
+    }
+    if (!schedule) return res.status(400).json({ success: false, error: 'No saved schedule; pass one in the body or save one first.' });
+  }
+  const state = body.state && typeof body.state === 'object' ? body.state : {};
+  res.json({ success: true, decision: decideCrank({ schedule, state }) });
+});
+
+// GET /api/v2/claims/inventory?walletPublicKey=... — the claimable positions a
+// wallet holds, read from the chain where it is cheap and safe (Meteora DAMM
+// v2 listPositions). CLMM lock inventory arrives with the journal wiring.
+// Best-effort: an RPC or network failure returns an honest { error } and
+// empty rows rather than a guessed inventory.
+app.get('/api/v2/claims/inventory', async (req, res) => {
+  const walletPublicKey = String(req.query.walletPublicKey || '').trim();
+  const network = String(req.query.network || getNetwork()).trim();
+  const rpcUrl = getRpcUrl();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(walletPublicKey)) {
+    return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+  }
+  const connection = createExecutionConnection();
+  try {
+    const positions = await claimerDamm.listPositions({ connection, owner: walletPublicKey }).catch(() => []);
+    const rows = positions.map((row) => ({
+      venue: 'meteora-damm-v2',
+      poolId: row.pool,
+      positionId: row.position,
+      positionNftMint: row.positionNft,
+      feeKeyMint: row.positionNft,
+      owner: walletPublicKey,
+      locked: row.permanentlyLocked,
+      unclaimedQuoteLamports: String(row.unclaimedQuoteLamports || '0'),
+    }));
+    const plan = claimer.buildInventoryPlan(rows);
+    res.json({
+      success: true,
+      network,
+      rpcUrl: typeof rpcUrl === 'string' ? rpcUrl.replace(/\?.*/, '') : null,
+      count: plan.count,
+      rows: plan.rows,
+    });
+  } catch (error) {
+    res.status(200).json({ success: false, error: `Inventory unavailable: ${error.message}`, count: 0, rows: [] });
+  }
+});
+
+// POST /api/v2/claims/execute — reviews a claim (buildClaimPlan) and answers
+// 501 NOT_WIRED: signing execution is the next claimer slice. The gate keeps
+// the route honest instead of pretending a signed claim exists.
+app.post('/api/v2/claims/execute', (req, res) => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {});
+  try {
+    const plan = claimer.buildClaimPlan(body.claim || body);
+    res.status(501).json({
+      success: false,
+      code: 'NOT_WIRED',
+      plan,
+      message: 'Claim execution is not wired yet: the armed-wallet claim slice (docs/lp-engineering-v2.md §3.5) must land first. The plan above is valid and ready to review.',
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
   }
 });
 

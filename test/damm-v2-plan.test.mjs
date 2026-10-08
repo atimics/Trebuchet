@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DAMM_V2_DEFAULTS, DAMM_V2_POOL_RENT_LAMPORTS, DAMM_V2_VENUE, compareLaunchVenues, dammV2CostModel, dammV2DepthTable,
-  dammV2Facts, dammV2Pricing, normalizeDammV2Config,
+  dammV2Facts, dammV2Pricing, normalizeDammV2Config, normalizeDammFeePlan,
 } from '@trebuchet/core/damm-v2-plan';
 import { buildV2LaunchPlan } from '@trebuchet/core/launch-plan';
 
@@ -101,4 +101,51 @@ test('the review facts state the lock, the SOL-only fees and who holds the Fee K
   assert.match(facts[2], /The launch wallet holds the Fee Key/);
   const dest = dammV2Facts(normalizeDammV2Config({ ...GOOD, destination: 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j' }));
   assert.match(dest[2], /The destination wallet holds the Fee Key/);
+});
+
+// ---------------------------------------------------------------------------
+// Meteora DAMM v2 fee schedules: fixed, ramp, dynamic, marketcap.
+// ---------------------------------------------------------------------------
+
+test('fee plan defaults to a flat fixed fee', () => {
+  assert.deepEqual(normalizeDammFeePlan({}), { model: 'fixed', bps: 25 });
+});
+
+test('fee plan accepts an explicit fixed rate', () => {
+  assert.deepEqual(normalizeDammFeePlan({ model: 'fixed', bps: 100 }), { model: 'fixed', bps: 100 });
+});
+
+test('ramp decays to its end fee over the duration, with explicit defaults', () => {
+  assert.deepEqual(
+    normalizeDammFeePlan({ model: 'ramp', bps: 100, ramp: { endBps: 25, durationSec: 30 * 86400 } }),
+    { model: 'ramp', bps: 100, ramp: { endBps: 25, durationSec: 30 * 86400 } },
+  );
+  assert.deepEqual(normalizeDammFeePlan({ model: 'ramp', bps: 50 }), { model: 'ramp', bps: 50, ramp: { endBps: 50, durationSec: 30 * 86400 } });
+});
+
+test('ramp end fee must not exceed the start fee', () => {
+  assert.throws(() => normalizeDammFeePlan({ model: 'ramp', bps: 25, ramp: { endBps: 100 } }), /must decay/);
+});
+
+test('dynamic fee carries a bounded volatility swing over the base', () => {
+  assert.deepEqual(
+    normalizeDammFeePlan({ model: 'dynamic', bps: 25 }),
+    { model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 500 } },
+  );
+  assert.deepEqual(
+    normalizeDammFeePlan({ model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 100 } }),
+    { model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 100 } },
+  );
+  assert.throws(() => normalizeDammFeePlan({ model: 'dynamic', bps: 25, dynamic: { maxPriceChangeBps: 9_000_000 } }), /between 1 and 5,000/);
+});
+
+test('marketcap scheduler decays over a price multiple then expires', () => {
+  const plan = normalizeDammFeePlan({ model: 'marketcap', bps: 50, marketcap: { endBps: 10, priceMultiple: 100, expirationSec: 60 * 86400 } });
+  assert.deepEqual(plan, { model: 'marketcap', bps: 50, marketcap: { endBps: 10, priceMultiple: 100, expirationSec: 60 * 86400 } });
+  assert.throws(() => normalizeDammFeePlan({ model: 'marketcap', bps: 50, marketcap: { endBps: 100 } }), /must decay/);
+});
+
+test('unknown fee models fall back to fixed, out-of-range rates throw', () => {
+  assert.equal(normalizeDammFeePlan({ model: 'quantum' }).model, 'fixed');
+  assert.throws(() => normalizeDammFeePlan({ bps: 100_000 }), /between 1 and 1,000/);
 });

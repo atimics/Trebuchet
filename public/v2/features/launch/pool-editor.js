@@ -129,6 +129,7 @@ function feeTierInfo(index) {
     step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
     rank: tiers.indexOf(tier),
     count: tiers.length,
+    dynamic: tier.feeModel === 'dynamic',
   };
 }
 
@@ -150,7 +151,7 @@ function poolVenueFor(row) {
   if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
   if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
   const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
-  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange, feeModel: pool?.dammFeeModel, ramp: pool?.dammRamp } };
 }
 
 function rowIsMeteora(row) {
@@ -166,7 +167,13 @@ function setPoolVenueChoice(rowKey, patch) {
   }
   if (rowKey === 'quote') {
     if (patch.venue) state.quotePoolVenue = patch.venue;
-    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    state.quotePoolDamm = {
+      ...state.quotePoolDamm,
+      ...(patch.feeBps ? { feeBps: patch.feeBps } : {}),
+      ...(patch.feeModel ? { feeModel: patch.feeModel } : {}),
+      ...(patch.ramp ? { ramp: { endBps: patch.ramp.endBps, durationSec: state.quotePoolDamm?.ramp?.durationSec || 30 * 24 * 3600 } } : {}),
+      ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}),
+    };
     if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
     return;
   }
@@ -174,6 +181,8 @@ function setPoolVenueChoice(rowKey, patch) {
   if (!pool) return;
   if (patch.venue) pool.venue = patch.venue;
   if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.feeModel) pool.dammFeeModel = patch.feeModel;
+  if (patch.ramp) pool.dammRamp = { endBps: patch.ramp.endBps, durationSec: pool.dammRamp?.durationSec || 30 * 24 * 3600 };
   if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
   if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
 }
@@ -195,14 +204,27 @@ function rowSwitchesHtml(row) {
   let fee;
   if (meteora) {
     const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
-    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    const model = poolVenueFor(row).damm?.feeModel || 'fixed';
+    fee = toggleGroupHtml({
+      label: `${row.label} fee model`, action: 'set-pool-fee-model', rowKey: row.key, selected: model,
+      options: [
+        ['fixed', 'Fixed', 'The fee never changes.'],
+        ['ramp', 'Ramp', 'Starts at the shown fee and decays to the ramp end fee over 30 days.'],
+        ['dynamic', 'Dynamic', 'The shown fee is the base; the pool charges more when the price moves fast.'],
+      ],
+    });
+    fee += toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    if (model === 'ramp') {
+      const end = Number(poolVenueFor(row).damm?.ramp?.endBps) || 25;
+      fee += toggleGroupHtml({ label: `${row.label} ramp end fee`, action: 'set-pool-ramp-end', rowKey: row.key, selected: end, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    }
   } else {
     const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
     const selected = Math.floor(Number(rowTierIndex(row)));
     const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
     fee = toggleGroupHtml({
       label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
-      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%${tier.feeModel === 'dynamic' ? ' · dynamic (base)' : ''}`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
         .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
     });
   }
@@ -1310,8 +1332,10 @@ function applyPoolSwitch(action, control) {
   const value = control.dataset.value;
   const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
     : action === 'set-pool-fee' ? { feeBps: Number(value) }
-      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
-        : { tierIndex: Math.floor(Number(value)) };
+      : action === 'set-pool-fee-model' ? { feeModel: value }
+        : action === 'set-pool-ramp-end' ? { ramp: { endBps: Number(value) } }
+          : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+            : { tierIndex: Math.floor(Number(value)) };
   setPoolVenueChoice(control.dataset.rowKey, patch);
   invalidateClassicOutputs();
   refreshClassicPreview();
