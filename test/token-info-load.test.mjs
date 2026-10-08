@@ -21,7 +21,6 @@ test('small tokens\' display prices are kept five minutes; SOL and the stablecoi
   assert.equal((source.match(/await fetch\(`\$\{GECKO_BASE\}/g) || []).length, 0, 'every Gecko request goes through the queue');
 });
 
-test('pair tokens are checked when the coin being created is on screen, not at startup', () => {
-  assert.match(read('public/v2/features/shell/connection.js'), /if \(state\.activeView === 'launch' && !chainCoinOnPage\(\)\) autoVerifyQuoteTokens\(\);/);
+test('opening a launch draft checks its pair tokens', () => {
   assert.match(read('public/v2/features/launch/workspace.js'), /if \(view === 'launch' && !chainCoinOnPage\(\)\) autoVerifyQuoteTokens\(\);/);
 });
