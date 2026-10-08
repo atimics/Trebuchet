@@ -6,21 +6,21 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
-test('the token bucket lets a burst through, then spaces requests to the rate', async () => {
+test('requests are paced from startup and stay within a rolling second', async () => {
   const { acquire } = await import(`../rpcLimiter.js?bucket=${Date.now()}`);
   let clock = 0;
   const waits = [];
   const options = { now: () => clock, wait: async (ms) => { waits.push(ms); clock += ms; } };
   for (let i = 0; i < 8; i += 1) await acquire('burst.example', { ...options, rate: 8 });
-  assert.equal(clock, 0, 'eight go at once');
+  assert.equal(clock, 875, 'requests are spaced from the first call');
   await acquire('burst.example', { ...options, rate: 8 });
   await acquire('burst.example', { ...options, rate: 8 });
-  assert.equal(clock, 250, 'then one every 125 ms');
+  assert.equal(clock, 1125, 'one every 125 ms');
   await acquire('other.example', { ...options, rate: 8 });
-  assert.equal(clock, 250, 'each host has its own budget');
+  assert.equal(clock, 1125, 'each host has its own budget');
   await acquire('heavy.example#heavy', { ...options, rate: 1 });
   await acquire('heavy.example#heavy', { ...options, rate: 1 });
-  assert.equal(clock, 1250, 'a heavy method waits a second between calls');
+  assert.equal(clock, 2125, 'a heavy method waits a second between calls');
 });
 
 test('heavy methods are recognised in single and batched requests', async () => {
@@ -58,7 +58,52 @@ test('web3.js loaded after the limiter sends its RPC calls through it', () => {
   assert.equal(run.status, 0, run.stderr);
   const { calls, ms } = JSON.parse(run.stdout.trim().split('\n').pop());
   assert.equal(calls, 16);
-  assert.ok(ms >= 900, `16 calls at 8 a second take about a second, not ${ms} ms`);
+  assert.ok(ms >= 1700, `16 paced calls at 8 a second took ${ms} ms`);
+});
+
+function limitedTarget(installRpcLimiter, host, respond) {
+  let clock = 0;
+  const sends = [];
+  const target = { fetch: async (url, init) => {
+    sends.push({ host: new URL(url).host, at: clock, method: JSON.parse(init.body).method });
+    return respond?.(sends.length) || new Response('{}');
+  } };
+  installRpcLimiter(target, { now: () => clock, wait: async (ms) => { clock += ms; } });
+  return { sends, call: (method = 'getSlot', options = {}) => target.fetch(`https://${host}`, {
+    method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', method, id: 1 }), ...options,
+  }), target };
+}
+
+test('a 429 pauses queued calls to that host using Retry-After', async () => {
+  const { installRpcLimiter } = await import('../rpcLimiter.js');
+  for (const [index, retryAfter] of ['3', new Date(3000).toUTCString(), 'invalid'].entries()) {
+    const h = limitedTarget(installRpcLimiter, `cooldown-${index}.example`,
+      (n) => n === 1 ? new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } }) : new Response('{}'));
+    assert.equal((await h.call()).status, 429);
+    await Promise.all([h.call(), h.call()]);
+    assert.ok(h.sends[1].at >= (retryAfter === 'invalid' ? 1000 : 3000));
+    assert.ok(h.sends[2].at - h.sends[1].at >= 166);
+  }
+});
+
+test('heavy methods keep their spacing while sharing the general queue', async () => {
+  const { installRpcLimiter } = await import('../rpcLimiter.js');
+  const h = limitedTarget(installRpcLimiter, 'mixed-methods.example');
+  await Promise.all([h.call('getProgramAccounts'), ...Array.from({ length: 9 }, () => h.call()), h.call('getProgramAccounts')]);
+  const heavy = h.sends.filter((send) => send.method === 'getProgramAccounts');
+  assert.equal(heavy.length, 2);
+  assert.ok(heavy[1].at - heavy[0].at >= 1000);
+  assert.ok(h.sends.every((send, index) => index === 0 || send.at - h.sends[index - 1].at >= 166));
+});
+
+test('a cancelled queued read releases the queue for the next read', async () => {
+  const { installRpcLimiter } = await import('../rpcLimiter.js');
+  const h = limitedTarget(installRpcLimiter, 'cancelled.example');
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(h.call('getSlot', { signal: controller.signal }), { name: 'AbortError' });
+  await h.call();
+  assert.equal(h.sends.length, 1);
 });
 
 test('the limiter loads before anything that loads web3.js', () => {

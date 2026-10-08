@@ -129,8 +129,9 @@ async function findVenuePools(connection, venue, first, second) {
  */
 // Which pools exist for a pair changes rarely, and finding them is a scan of every pool account
 // (getProgramAccounts, the heaviest RPC call). Keep a complete scan for 10 minutes; reserves are
-// still read fresh on every call. A scan where a lookup failed is not kept.
+// still read fresh on every call. Partial scans wait a minute before retrying.
 const POOL_DISCOVERY_TTL_MS = 10 * 60 * 1000;
+const POOL_DISCOVERY_RETRY_MS = 60 * 1000;
 const poolDiscoveryCache = new Map();
 
 export function clearPoolDiscoveryCache() {
@@ -138,25 +139,33 @@ export function clearPoolDiscoveryCache() {
 }
 
 async function discoverVenuePools(connection, mint, anchor) {
-  const key = `${connection.rpcEndpoint || ''}|${mint}|${anchor}`;
+  const key = `${connection.rpcEndpoint || ''}|${[mint, anchor].sort().join('|')}`;
   const hit = poolDiscoveryCache.get(key);
+  if (hit?.pending) return hit.pending;
   if (hit && hit.expiresAt > Date.now()) return hit.pools;
-  const lookups = VENUES.flatMap((venue) => [
-    findVenuePools(connection, venue, mint, anchor),
-    findVenuePools(connection, venue, anchor, mint),
-  ]);
-  const settled = await Promise.allSettled(lookups);
-  const pools = [];
-  let complete = true;
-  settled.forEach((result) => {
-    if (result.status === 'fulfilled') pools.push(...result.value);
-    else {
-      complete = false;
-      console.warn(`venue pools: lookup failed: ${result.reason?.message || result.reason}`);
+  const entry = {};
+  poolDiscoveryCache.set(key, entry);
+  entry.pending = (async () => {
+    const lookups = VENUES.flatMap((venue) => [
+      findVenuePools(connection, venue, mint, anchor),
+      findVenuePools(connection, venue, anchor, mint),
+    ]);
+    const settled = await Promise.allSettled(lookups);
+    const pools = [];
+    let complete = true;
+    settled.forEach((result) => {
+      if (result.status === 'fulfilled') pools.push(...result.value);
+      else {
+        complete = false;
+        console.warn(`venue pools: lookup failed: ${result.reason?.message || result.reason}`);
+      }
+    });
+    if (poolDiscoveryCache.get(key) === entry) {
+      poolDiscoveryCache.set(key, { pools, expiresAt: Date.now() + (complete ? POOL_DISCOVERY_TTL_MS : POOL_DISCOVERY_RETRY_MS) });
     }
-  });
-  if (complete) poolDiscoveryCache.set(key, { pools, expiresAt: Date.now() + POOL_DISCOVERY_TTL_MS });
-  return pools;
+    return pools;
+  })();
+  return entry.pending;
 }
 
 export async function fetchVenuePoolsByMints(connection, mint, anchor) {
