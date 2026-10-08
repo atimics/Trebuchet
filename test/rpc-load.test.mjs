@@ -25,7 +25,9 @@ test('a pair\'s pools are scanned once per 10 minutes, not on every price read',
   assert.equal(scans, first * 2, 'another RPC is scanned on its own');
 });
 
-test('a scan where a lookup failed (a 429) is not kept, so the next read tries again', async () => {
+test('a failed scan waits a minute, then a fresh read can recover', async (t) => {
+  let now = 100_000;
+  t.mock.method(Date, 'now', () => now);
   clearPoolDiscoveryCache();
   let scans = 0;
   const connection = {
@@ -36,7 +38,27 @@ test('a scan where a lookup failed (a 429) is not kept, so the next read tries a
   await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
   const first = scans;
   await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
+  assert.equal(scans, first, 'repeated reads share the cooldown');
+  now += 60_001;
+  await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
   assert.equal(scans, first * 2);
+});
+
+test('concurrent price reads share one pool scan in either mint order', async () => {
+  clearPoolDiscoveryCache();
+  let scans = 0;
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const connection = {
+    rpcEndpoint: 'rpc-concurrent',
+    getProgramAccounts: async () => { scans += 1; await pending; return []; },
+  };
+  const a = fetchVenuePoolsByMints(connection, 'MintC', 'MintD');
+  const b = fetchVenuePoolsByMints(connection, 'MintD', 'MintC');
+  const c = fetchVenuePoolsByMints(connection, 'MintC', 'MintD');
+  release();
+  await Promise.all([a, b, c]);
+  assert.equal(scans, 6, 'three venues in two mint orders');
 });
 
 test('a pair token whose check failed waits a minute before the automatic re-check', () => {
