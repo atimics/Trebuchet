@@ -85,6 +85,7 @@ import {
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
 import { cachedTokenDisplay } from './tokenInfoService.js';
+import { tokenCardFromMarkets } from './tokenCard.js';
 import { installRpcTrace } from './rpcTrace.js';
 
 if (process.env.TREBUCHET_RPC_TRACE === '1') installRpcTrace();
@@ -3443,6 +3444,47 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
+});
+
+// The token card: a coin's price and how its liquidity splits across its pools. It opens on hover,
+// so a read is kept a minute and concurrent hovers share one read.
+const TOKEN_CARD_MAX_AGE_MS = 60_000;
+const tokenCardCache = new Map();
+function readTokenCard(mint) {
+  const cached = tokenCardCache.get(mint);
+  if (cached && (cached.pending || Date.now() - cached.at < TOKEN_CARD_MAX_AGE_MS)) return cached.pending || Promise.resolve(cached.value);
+  const pending = (async () => {
+    const record = coinStore.get(mint);
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const [listed, solUsd] = await Promise.all([
+      listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }),
+      getUsdPrice(WSOL_MINT_ADDRESS).then((price) => (price ? Number(price) : null)).catch(() => null),
+    ]);
+    const markets = withRecordedQuoteSymbols(listed, journals);
+    const latest = journals.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
+    return {
+      ...tokenCardFromMarkets(markets, { solUsd }),
+      mint,
+      symbol: markets.tokenSymbol || record?.symbol || latest?.launchConfig?.token?.symbol || cachedTokenDisplay(mint).symbol || null,
+      name: record?.name || latest?.launchConfig?.token?.name || null,
+      image: record?.image || null,
+      at: new Date().toISOString(),
+    };
+  })().then((value) => { tokenCardCache.set(mint, { at: Date.now(), value }); return value; })
+    .catch((error) => { tokenCardCache.delete(mint); throw error; });
+  tokenCardCache.set(mint, { ...(cached || {}), pending });
+  if (tokenCardCache.size > 200) tokenCardCache.delete(tokenCardCache.keys().next().value);
+  return pending;
+}
+
+app.get('/api/v2/coins/:mint/card', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    if (isDemoMode()) return res.json({ success: true, card: { ...tokenCardFromMarkets({ pools: [] }), mint, symbol: null, name: null, image: null } });
+    res.json({ success: true, card: await readTokenCard(mint) });
+  } catch (error) { sendErrorResponse(res, error, 502); }
 });
 
 // Public market evidence and estimates use finalized account reads.

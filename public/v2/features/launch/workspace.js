@@ -147,6 +147,7 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
+  if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -528,7 +529,7 @@ function renderLaunchNextRail(facts, next, workspace) {
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
             : '<div class="rail-balance"><b>Not checked</b></div>'}
-      ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
+      ${tokens.map(([tokenMint, token]) => `<div class="rail-row"><span>${tokenSymbolHtml(tokenMint, token.symbol)}</span><b>${escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
     </section>`;
 
   // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch

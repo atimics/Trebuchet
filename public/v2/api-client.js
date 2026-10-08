@@ -764,6 +764,10 @@
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/airdrop`, { timeoutMs: 90_000 });
     }
 
+    async function getTokenCard(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/card`, { timeoutMs: 60_000 });
+    }
+
     async function getCoinEvidence(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/evidence`, { timeoutMs: 180_000 });
     }
@@ -1260,6 +1264,7 @@
       calibrateVanity,
       listAirdropLists,
       getCoinEvidence,
+      getTokenCard,
       getSellQuote,
       listCoinPositions,
       withdrawPosition,

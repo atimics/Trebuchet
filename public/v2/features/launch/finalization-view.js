@@ -537,8 +537,12 @@ function renderClassicBridge() {
       )
     );
   const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence(currentLaunchProof()?.transfer);
+  const completedJournal = completedLaunchJournal();
+  // A finished launch is closed even when some planned pools never opened: nothing resumes it.
+  const liquidityClosed = !liquidityComplete && Boolean(completedJournal);
+  const openedPoolCount = Math.min(poolCount, launchProofPoolIds(currentLaunchProof()).length);
   const practiceComplete = Boolean(state.demoActive && state.lastDemoLaunchRun);
-  const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete ? `
+  const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete && !completedJournal ? `
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
       <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
@@ -556,7 +560,6 @@ function renderClassicBridge() {
   const revealCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/reveal-sealed-metadata';
   const finishCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/transfer-assets';
   const finishReturn = returnWalletStatus();
-  const completedJournal = completedLaunchJournal();
   const finishDestinationReady = finishReturn.kind !== 'unverified'
     && Boolean(finishReturn.address)
     && finishReturn.address !== walletPublicKey;
@@ -818,7 +821,7 @@ function renderClassicBridge() {
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
         </div>
-        ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
+        ${state.demoActive || liquidityComplete || liquidityClosed ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="plan-preview is-liquidity">
         <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolsMapForPlan(topology.pools)}</div>
@@ -828,17 +831,18 @@ function renderClassicBridge() {
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
           <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}${(() => { const bids = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? (pool.support.layers?.length || 1) : 0), 0); return bids ? ` <i>+ ${bids} support</i>` : ''; })()}</dd></div>
-          <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
+          <div><dt>Locked</dt><dd class="${liquidityComplete || liquidityClosed ? 'is-ok' : ''}">${liquidityComplete || liquidityClosed ? 'Yes' : 'At creation'}</dd></div>
         </dl>
       </div>
       ${readinessPanel({
-        title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
+        title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked'
+          : liquidityClosed ? `${openedPoolCount} of ${poolCount} pool${poolCount === 1 ? '' : 's'} opened and locked` : 'Create and lock liquidity',
         detail: metadataRevealPending
           ? ''
-          : liquidityComplete ? '' : 'Takes a few minutes. Keep Trebuchet open.',
+          : liquidityComplete ? '' : liquidityClosed ? 'The launch finished without the others.' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
-        complete: liquidityComplete && !metadataRevealPending,
+        complete: (liquidityComplete || liquidityClosed) && !metadataRevealPending,
         endpoint: metadataRevealPending ? '/api/reveal-sealed-metadata' : readiness?.nextEndpoint === '/api/resume-launch' ? '/api/resume-launch' : '/api/create-lp',
         primary: true,
       })}
