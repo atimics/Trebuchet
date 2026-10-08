@@ -15,7 +15,8 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
+import { createSplitSecret, scalarPublicKey } from '@trebuchet/core/split-key';
 
 // Point the launch journal at a throwaway dir BEFORE importing it, so the test
 // never pollutes the repo's launchJournals.json.
@@ -380,6 +381,42 @@ test('createTokenWithMetaplex: metadata names the mint that will be created', as
     totalSupply: '1000000',
   }), /stop-after-upload/);
   assert.match(captured.mint, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+});
+
+test('imported mint records preserve the mint address through metadata upload', async () => {
+  const vanity = Keypair.generate();
+  const { secretScalar } = createSplitSecret();
+  const scalarAddress = new PublicKey(scalarPublicKey(secretScalar)).toBase58();
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  let uploadedMint;
+  tokenService.setUploaderForTests(async ({ mint }) => {
+    uploadedMint = mint;
+    throw new Error('stop-after-upload');
+  });
+  for (const [key, address] of [
+    [{ secretKey: Array.from(vanity.secretKey) }, vanity.publicKey.toBase58()],
+    [JSON.stringify({ secretKey: Array.from(vanity.secretKey) }), vanity.publicKey.toBase58()],
+    [{ keyType: 'scalar', scalar: Array.from(secretScalar) }, scalarAddress],
+  ]) {
+    await assert.rejects(tokenService.createTokenWithMetaplex({
+      tempWalletSecretKey: SECRET_KEY, name: 'Import', symbol: 'IMP', totalSupply: '1', vanityCAKeypair: key,
+    }), /stop-after-upload/);
+    assert.equal(uploadedMint, address);
+  }
+});
+
+test('malformed imported mint keys stop before metadata upload', async () => {
+  tokenService.setUmiFactoryForTests(() => makeFakeUmi());
+  let uploads = 0;
+  tokenService.setUploaderForTests(() => { uploads++; throw new Error('upload reached'); });
+  const invalidByte = [...SECRET_KEY];
+  invalidByte[0] += 256;
+  for (const key of [SECRET_KEY.slice(0, 32), [], { secretKey: SECRET_KEY.slice(0, 63) }, invalidByte, { scalar: new Array(32).fill(0) }]) {
+    await assert.rejects(tokenService.createTokenWithMetaplex({
+      tempWalletSecretKey: SECRET_KEY, name: 'Import', symbol: 'IMP', totalSupply: '1', vanityCAKeypair: key,
+    }), { code: 'INVALID_VANITY_KEY' });
+  }
+  assert.equal(uploads, 0);
 });
 
 test('createTokenWithMetaplex: connection DI seam defaults to real factory after reset (production unchanged)', () => {

@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Keypair } from '@solana/web3.js';
 
 import * as secretStore from '../secretStore.js';
 
@@ -50,7 +51,9 @@ async function quiet(fn) {
 const vanityFile = (dir) => path.join(dir, 'vanityCAs.json');
 const splitFile = (dir) => path.join(dir, 'splitJobs.json');
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
-const pk = (n) => `Vanity${String(n).padStart(2, '0')}`.padEnd(40, '1');
+const key = (n) => Keypair.fromSeed(new Uint8Array(32).fill(n));
+const pk = (n) => key(n).publicKey.toBase58();
+const secret = (n) => Array.from(key(n).secretKey);
 
 // Writes `count` entries under key k1, then switches to key k2 so they cannot be decrypted.
 async function seedUnderKeyOne(t, count) {
@@ -58,7 +61,7 @@ async function seedUnderKeyOne(t, count) {
   secretStore.lockSecretPin();
   secretStore.setSafeStorage(keyedSafeStorage('k1'));
   const store = await importFresh('vanityCaStore.js', dir);
-  for (let i = 0; i < count; i += 1) store.add({ publicKey: pk(i), secretKey: [i, i + 1, i + 2] });
+  for (let i = 0; i < count; i += 1) store.add({ publicKey: pk(i), secretKey: secret(i) });
   const originals = new Map(readJson(vanityFile(dir)).map((r) => [r.publicKey, r.secretKeyEnc]));
   assert.equal(originals.size, count);
   secretStore.setSafeStorage(keyedSafeStorage('k2'));
@@ -74,7 +77,7 @@ test('vanity: add and remove under a wrong data key keep other entries ciphertex
     const { dir, store, originals } = await seedUnderKeyOne(t, 4);
     assert.equal(store.listMetadata().every((m) => m.decryptionFailed), true);
 
-    store.add({ publicKey: 'NewEntry'.padEnd(40, '1'), secretKey: [9, 9, 9] });
+    store.add({ publicKey: pk(200), secretKey: secret(200) });
     for (const [key, enc] of originals) assert.equal(encOf(dir, key), enc);
 
     store.remove(pk(1));
@@ -83,12 +86,12 @@ test('vanity: add and remove under a wrong data key keep other entries ciphertex
     assert.equal(readJson(vanityFile(dir)).length, 4);
 
     // The new entry is readable under k2, the old ones are still "unreadable" but present.
-    assert.deepEqual(store.get('NewEntry'.padEnd(40, '1')).secretKey, [9, 9, 9]);
+    assert.deepEqual(store.get(pk(200)).secretKey, secret(200));
     assert.equal(store.listMetadata().find((m) => m.publicKey === pk(0)).decryptionFailed, true);
 
     // Back under k1 the original secrets still open.
     secretStore.setSafeStorage(keyedSafeStorage('k1'));
-    assert.deepEqual(store.get(pk(0)).secretKey, [0, 1, 2]);
+    assert.deepEqual(store.get(pk(0)).secretKey, secret(0));
   });
 });
 
@@ -100,8 +103,8 @@ test('vanity: a locked Recovery PIN does not cost any entry its ciphertext', asy
     secretStore.setupSecretPin('2468');
     t.after(() => secretStore.lockSecretPin());
     const store = await importFresh('vanityCaStore.js', dir);
-    store.add({ publicKey: pk(1), secretKey: [1, 2, 3] });
-    store.add({ publicKey: pk(2), secretKey: [4, 5, 6] });
+    store.add({ publicKey: pk(1), secretKey: secret(1) });
+    store.add({ publicKey: pk(2), secretKey: secret(2) });
     const before = readJson(vanityFile(dir));
     assert.match(before[0].secretKeyEnc, /^pin:/);
 
@@ -144,7 +147,7 @@ test('vanity: random add/remove/list under a wrong key never shrinks untouched c
       const op = rand(4);
       if (op === 0) {
         added += 1;
-        store.add({ publicKey: `Added${added}`.padEnd(40, '1'), secretKey: [added] });
+        store.add({ publicKey: pk(100 + added), secretKey: secret(100 + added) });
       } else if (op === 1 && untouched.size > 0) {
         const keys = [...untouched.keys()];
         const victim = keys[rand(keys.length)];
@@ -168,7 +171,7 @@ test('vanity: a truncated or garbage file fails clearly and its bytes are unchan
       secretStore.setSafeStorage(null);
       writeFileSync(vanityFile(dir), bytes);
       const store = await importFresh('vanityCaStore.js', dir);
-      assert.throws(() => store.add({ publicKey: pk(1), secretKey: [1] }), /damaged/);
+      assert.throws(() => store.add({ publicKey: pk(1), secretKey: secret(1) }), /damaged/);
       assert.throws(() => store.remove(pk(1)), /damaged/);
       assert.throws(() => store.list(), /damaged/);
       assert.throws(() => store.listMetadata(), /damaged/);
@@ -186,10 +189,10 @@ test('vanity: .bak holds the previous good file, and writes keep mode 0600 with 
     secretStore.lockSecretPin();
     secretStore.setSafeStorage(null);
     const store = await importFresh('vanityCaStore.js', dir);
-    store.add({ publicKey: pk(1), secretKey: [1] });
+    store.add({ publicKey: pk(1), secretKey: secret(1) });
     assert.equal(existsSync(`${vanityFile(dir)}.bak`), false); // nothing to back up yet
     const afterFirst = readFileSync(vanityFile(dir), 'utf8');
-    store.add({ publicKey: pk(2), secretKey: [2] });
+    store.add({ publicKey: pk(2), secretKey: secret(2) });
     assert.equal(readFileSync(`${vanityFile(dir)}.bak`, 'utf8'), afterFirst);
     const afterSecond = readFileSync(vanityFile(dir), 'utf8');
     store.remove(pk(1));

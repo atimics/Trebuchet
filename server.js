@@ -88,6 +88,7 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
+import { readVanityMintKey } from './vanityMintKey.js';
 import { cachedTokenDisplay } from './tokenInfoService.js';
 import { tokenCardFromMarkets } from './tokenCard.js';
 import { installRpcTrace } from './rpcTrace.js';
@@ -2212,20 +2213,12 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
     // Two key shapes: a 64-byte secretKey, or the 32-byte scalar a split-key
     // grind produces (a + k). Either way the public key is derived here, never
     // taken from the request.
-    const scalar = req.body?.scalar;
-    const scalarBytes = Array.isArray(scalar) ? Uint8Array.from(scalar) : null;
-    const secret = req.body?.secretKey;
-    const bytes = Array.isArray(secret) ? Uint8Array.from(secret) : null;
-    if (scalarBytes) {
-      if (scalarBytes.length !== 32) {
-        return res.status(400).json({ success: false, error: 'scalar must be a 32-byte array' });
-      }
-    } else if (!bytes || bytes.length !== 64) {
-      return res.status(400).json({ success: false, error: 'secretKey must be a 64-byte array' });
-    }
-    const publicKey = scalarBytes
-      ? new PublicKey(scalarPublicKey(scalarBytes)).toBase58()
-      : Keypair.fromSecretKey(bytes).publicKey.toBase58();
+    const mintKey = readVanityMintKey({
+      keyType: req.body?.keyType,
+      scalar: req.body?.scalar,
+      secretKey: req.body?.secretKey,
+    });
+    const { publicKey } = mintKey;
     const { prefix, suffix } = normalizeVanityTargetBase58(req.body?.prefix || '', req.body?.suffix || '');
     const caseInsensitive = req.body?.caseInsensitive === true;
     const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
@@ -2234,10 +2227,7 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
     }
     const mode = prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : null;
     vanityCaStore.add({
-      publicKey,
-      ...(scalarBytes
-        ? { keyType: 'scalar', scalar: Array.from(scalarBytes) }
-        : { secretKey: Array.from(bytes) }),
+      ...mintKey,
       attempts: Number.isFinite(Number(req.body?.attempts)) ? Number(req.body.attempts) : null,
       expectedAttempts: expectedVanityAttempts(prefix, suffix, { caseInsensitive }),
       target: prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix || null),

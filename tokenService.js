@@ -58,6 +58,7 @@ import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { getRpcUrl, getNetwork } from './rpcConfig.js';
 import { generateVanityKeypair } from './vanityKeygen.js';
+import { readVanityMintKey } from './vanityMintKey.js';
 import { scalarPublicKey, signWithScalar } from '@trebuchet/core/split-key';
 import {
   createTokenMetadataUmi,
@@ -819,12 +820,17 @@ export async function createTokenWithMetaplex({
     // detects which side the launched token lands on after pool creation
     // and branches every downstream calculation accordingly.
     let mintKeypair = null;
-    if (vanityCAScalar) {
-      mintKeypair = scalarMintSigner(vanityCAScalar);
-      console.log(`Using split-key vanity CA: ${mintKeypair.publicKey.toBase58()}`);
-    } else if (vanityCAKeypair) {
-      mintKeypair = Keypair.fromSecretKey(Uint8Array.from(vanityCAKeypair));
-      console.log(`Using pre-ground vanity CA: ${mintKeypair.publicKey.toBase58()}`);
+    if (vanityCAScalar != null || vanityCAKeypair != null) {
+      if (vanityCAScalar != null && vanityCAKeypair != null) {
+        throw new Error('Choose one vanity mint key: a secret key or a split scalar.');
+      }
+      const mintKey = readVanityMintKey(vanityCAScalar != null
+        ? { keyType: 'scalar', scalar: vanityCAScalar }
+        : vanityCAKeypair);
+      mintKeypair = mintKey.keyType === 'scalar'
+        ? scalarMintSigner(mintKey.scalar)
+        : Keypair.fromSecretKey(Uint8Array.from(mintKey.secretKey));
+      console.log(`Using saved vanity CA: ${mintKeypair.publicKey.toBase58()}`);
     } else if (vanityPrefix || vanitySuffix) {
       mintKeypair = await grindVanityKeypair({ vanityPrefix, vanitySuffix });
     } else {
