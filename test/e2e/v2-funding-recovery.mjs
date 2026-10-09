@@ -81,6 +81,9 @@ try {
     state.demoActive = false;
     state.launchChecks = { active: false };
     state.customPools = [];
+    state.launchWorkspace = 'fund';
+    state.phaseSlide = { ...state.phaseSlide, fund: 'cost' };
+    setView('launch');
     state.manualPrefund = { walletPublicKey: wallet, balance: { sol: 2.6, tokens: { OWL: { amountRaw: '1000000', decimals: 6 } } }, lastUpdatedAt: new Date().toISOString() };
     const estimate = { totalSol: 3, subtotalSol: 2.8, bufferSol: 0.2, byQuote: {}, quoteBreakdown: [],
       autoSwapPlan: [{ allocationIndex: 0, quoteMint: 'OWL', quoteSymbol: 'OWL', quoteDecimals: 6, minRaw: '1000000', targetRaw: '2000000', estSolSpend: 0.4 }] };
@@ -98,7 +101,8 @@ try {
     return document.querySelector('.funding-task').textContent;
   });
   assert.match(missing, /Add 3.333334 OWL/); assert.match(missing, /Balances refresh automatically/);
-  if (shots) await page.screenshot({ path: path.join(shots, 'funding-shortfall.png'), fullPage: true });
+  await page.locator('.funding-task').waitFor({ state: 'visible' });
+  if (shots) await page.screenshot({ path: path.join(shots, 'funding-shortfall.png') });
   const recovered = await page.evaluate(async () => {
     let attempts = 0, readinessReads = 0, sends = 0;
     const wallet = selectedLaunchWalletPublicKey();

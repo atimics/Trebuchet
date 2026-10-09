@@ -212,5 +212,8 @@ jobs:
       - name: Run v2 API-backed E2E test
         run: npm run test:e2e:v2
 
+      - name: Verify funding balances and automatic recovery
+        run: node test/e2e/v2-funding-recovery.mjs
+
       - name: Run v2 desktop and mobile viewport smoke
         run: npm run test:v2:viewport

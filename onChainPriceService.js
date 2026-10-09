@@ -303,7 +303,7 @@ export async function getOnChainPriceUsd({
 
   if (sel.spreadPct.gt(maxSpreadPct)) {
     const err = new Error(
-      `Pool prices differ by ${sel.spreadPct.toFixed(1)}% (limit ${maxSpreadPct}%). ` +
+      `The deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median (limit ${maxSpreadPct}%). ` +
       sel.qualifying.slice(0, 3).map((pool) =>
         `${pool.kind} ${pool.anchorSymbol}: $${pool.priceUsd.toSignificantDigits(6)} per token, $${pool.liquidityUsd.toFixed(0)} liquidity`
       ).join('; ') + '. Trebuchet checks prices again automatically. Review this pair in Token & pools and choose another pair to continue now.',

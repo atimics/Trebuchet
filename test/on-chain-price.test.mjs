@@ -243,7 +243,7 @@ test('end to end: qualifying pools that disagree -> POOL_SPREAD', async () => {
         },
       }),
     }),
-    (e) => e.code === 'POOL_SPREAD' && /prices differ/.test(e.message) && /\$0.8 per token/.test(e.message) && /choose another pair/.test(e.message),
+    (e) => e.code === 'POOL_SPREAD' && /deepest pool price/.test(e.message) && /\$0.8 per token/.test(e.message) && /choose another pair/.test(e.message),
   );
 });
 

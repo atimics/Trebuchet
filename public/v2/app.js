@@ -6430,7 +6430,7 @@ function setLaunchWorkspace(workspace, { focus = false } = {}) {
   }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
-  if (workspace === 'wallet') {
+  if (workspace === 'fund') {
     state.launchChecks = { ...state.launchChecks, active: true };
     refreshLaunchChecks().catch(() => null);
   }
@@ -14373,9 +14373,11 @@ function renderClassicBridge() {
     && finishReturn.address !== walletPublicKey;
   const fundingNeed = !estimate
     ? {
-      eyebrow: 'Not estimated',
+      eyebrow: state.fundingEstimating ? 'Calculating' : state.launchChecks?.error ? 'Retry scheduled' : 'Launch cost',
       title: 'Estimate the launch cost',
-      detail: '',
+      detail: state.launchChecks?.error
+        ? `${state.launchChecks.error}. Trebuchet will try again automatically.`
+        : state.fundingEstimating ? 'Checking pair tokens and current prices…' : 'Funding checks run automatically when you open this step.',
       action: 'estimate-funding',
       actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
@@ -14405,7 +14407,7 @@ function renderClassicBridge() {
         }
         : !quoteFundingReady
           ? {
-            eyebrow: 'Pair tokens missing',
+            eyebrow: 'Pair token funding',
             title: 'Get the pair tokens',
             detail: pairTokenFundingDetail(),
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',

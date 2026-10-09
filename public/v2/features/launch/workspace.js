@@ -831,7 +831,7 @@ function setLaunchWorkspace(workspace, { focus = false } = {}) {
   }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
-  if (workspace === 'wallet') {
+  if (workspace === 'fund') {
     state.launchChecks = { ...state.launchChecks, active: true };
     refreshLaunchChecks().catch(() => null);
   }
