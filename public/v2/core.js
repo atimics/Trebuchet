@@ -101,7 +101,9 @@ var TrebuchetCore = (() => {
     estimateAirdropExecutionCostSol: () => estimateAirdropExecutionCostSol,
     eventDerivedPriorResults: () => eventDerivedPriorResults,
     expectedVanityAttempts: () => expectedVanityAttempts,
+    formatFundingTokenAmount: () => formatFundingTokenAmount,
     formatTokenAmountRaw: () => formatTokenAmountRaw,
+    fundingTokenCoverage: () => fundingTokenCoverage,
     hasCompletedLpResults: () => hasCompletedLpResults,
     hasOpenedPhase1Position: () => hasOpenedPhase1Position,
     invalidBase58Characters: () => invalidBase58Characters,
@@ -177,6 +179,74 @@ var TrebuchetCore = (() => {
     const metadataRecorded = events.some((event) => event?.stage === "metadata_account_created");
     const metadataAdoptedBySafeRepair = journal?.token?.isSafe === true;
     return supplyRecorded && (metadataRecorded || metadataAdoptedBySafeRepair);
+  }
+
+  // packages/core/src/funding-balance.js
+  var raw = (value) => /^\d+$/.test(String(value ?? "")) ? BigInt(value) : 0n;
+  function formatFundingTokenAmount(value, decimals) {
+    const amount = raw(value);
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 19) return `${amount} raw units`;
+    const text = amount.toString().padStart(decimals + 1, "0");
+    if (!decimals) return text;
+    const fraction = text.slice(-decimals).replace(/0+$/, "");
+    return text.slice(0, -decimals) + (fraction ? `.${fraction}` : "");
+  }
+  function fundingTokenCoverage(estimate = {}, walletBalance = null) {
+    const rows = /* @__PURE__ */ new Map();
+    const manual = estimate.byQuote || {};
+    const routes = Array.isArray(estimate.autoSwapPlan) ? estimate.autoSwapPlan : [];
+    const get = (mint) => {
+      if (!rows.has(mint)) {
+        const detail = (estimate.quoteBreakdown || []).find((item) => item.mint === mint);
+        const route = routes.find((item) => item.quoteMint === mint);
+        const token = walletBalance?.tokens?.[mint];
+        rows.set(mint, {
+          mint,
+          symbol: detail?.symbol || route?.quoteSymbol || mint.slice(0, 8),
+          decimals: detail?.decimals ?? route?.quoteDecimals ?? token?.decimals,
+          required: 0n,
+          held: raw(token?.amountRaw),
+          manual: raw(manual[mint])
+        });
+      }
+      return rows.get(mint);
+    };
+    for (const [mint, amount] of Object.entries(manual)) get(mint).required += raw(amount);
+    for (const route of routes) get(route.quoteMint).required += raw(route.minRaw || route.targetRaw);
+    const purchases = /* @__PURE__ */ new Map();
+    for (const route of routes) {
+      const purchase = purchases.get(route.quoteMint) || { minimum: 0n, target: 0n, spend: 0 };
+      purchase.minimum += raw(route.minRaw || route.targetRaw);
+      purchase.target += raw(route.targetRaw);
+      const spend = Number(route.estSolSpend);
+      if (Number.isFinite(spend) && spend > 0) purchase.spend += spend;
+      purchases.set(route.quoteMint, purchase);
+    }
+    let swapCreditSol = 0;
+    for (const [mint, purchase] of purchases) {
+      const row = get(mint);
+      const held = row.held > row.manual ? row.held - row.manual : 0n;
+      if (purchase.minimum > 0n && held >= purchase.minimum) swapCreditSol += purchase.spend;
+      else if (purchase.target > 0n) {
+        const lamports = Math.floor(purchase.spend * 1e9);
+        if (Number.isSafeInteger(lamports)) swapCreditSol += Number(BigInt(lamports) * held / purchase.target) / 1e9;
+      }
+    }
+    return { swapCreditSol, rows: [...rows.values()].map((row) => {
+      const missing = row.required > row.held ? row.required - row.held : 0n;
+      return {
+        mint: row.mint,
+        symbol: row.symbol,
+        decimals: row.decimals,
+        requiredRaw: String(row.required),
+        heldRaw: String(row.held),
+        missingRaw: String(missing),
+        required: formatFundingTokenAmount(row.required, row.decimals),
+        held: formatFundingTokenAmount(row.held, row.decimals),
+        missing: formatFundingTokenAmount(missing, row.decimals),
+        funded: missing === 0n
+      };
+    }) };
   }
 
   // packages/core/src/sha256.js
@@ -464,11 +534,11 @@ var TrebuchetCore = (() => {
     return description;
   }
   function normalizeWholeTokenSupply(value, decimals = TOKEN_DECIMALS) {
-    const raw = String(value ?? "").trim().replace(/,/g, "");
-    if (!/^[1-9]\d*$/.test(raw)) {
+    const raw2 = String(value ?? "").trim().replace(/,/g, "");
+    if (!/^[1-9]\d*$/.test(raw2)) {
       throw new Error("Total supply must be a positive whole number");
     }
-    const whole = BigInt(raw);
+    const whole = BigInt(raw2);
     const multiplier = 10n ** BigInt(decimals);
     const rawSupply = whole * multiplier;
     if (rawSupply > U64_MAX) {
@@ -477,7 +547,7 @@ var TrebuchetCore = (() => {
         `Total supply is too large for an SPL mint with ${decimals} decimals; maximum whole-token supply is ${maxWhole.toString()}`
       );
     }
-    return raw;
+    return raw2;
   }
   var PLACEHOLDER_SWEEP_RE = /^1{20,}[1-9A-HJ-NP-Za-km-z]*$/;
   function isPlaceholderSweepDestination(value) {
@@ -682,10 +752,10 @@ var TrebuchetCore = (() => {
     return BigInt(digits).toString();
   }
   function formatTokenAmountRaw(value, decimals) {
-    const raw = normalizeTokenAmountRaw(value, 0);
+    const raw2 = normalizeTokenAmountRaw(value, 0);
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("Use token decimals between 0 and 255");
-    if (decimals === 0) return raw;
-    const padded = raw.padStart(decimals + 1, "0");
+    if (decimals === 0) return raw2;
+    const padded = raw2.padStart(decimals + 1, "0");
     return (padded.slice(0, -decimals) + "." + padded.slice(-decimals)).replace(/0+$/, "").replace(/\.$/, "");
   }
 
@@ -883,13 +953,13 @@ var TrebuchetCore = (() => {
     return supply;
   }
   function normalizeSliceDistribution(input) {
-    const raw = Array.isArray(input) && input.length ? input.map((item) => ({
+    const raw2 = Array.isArray(input) && input.length ? input.map((item) => ({
       sharePercent: normalizePercent(item?.sharePercent ?? item, 0),
       recipient: typeof item?.recipient === "string" && item.recipient.trim() ? item.recipient.trim() : null
     })).filter((item) => item.sharePercent > 0) : [{ sharePercent: 100, recipient: null }];
-    const total = raw.reduce((sum, item) => sum + item.sharePercent, 0);
+    const total = raw2.reduce((sum, item) => sum + item.sharePercent, 0);
     if (total <= 0) return [{ sharePercent: 100, recipient: null }];
-    const normalized = raw.map((item) => ({
+    const normalized = raw2.map((item) => ({
       ...item,
       sharePercent: Number((item.sharePercent / total * 100).toFixed(2))
     }));
@@ -1085,34 +1155,6 @@ var TrebuchetCore = (() => {
     const solLamports = positiveFinite(estimate.solLamports, 0);
     return solLamports > 0 ? solLamports / 1e9 : 0;
   }
-  function parseRawTokenAmount(value) {
-    const text = String(value ?? "").trim();
-    if (!/^\d+$/.test(text)) return null;
-    try {
-      return BigInt(text);
-    } catch {
-      return null;
-    }
-  }
-  function addRawRequirement(requirements, mint, amount) {
-    const key = String(mint || "").trim();
-    const raw = parseRawTokenAmount(amount);
-    if (!key || raw == null || raw <= 0n) return;
-    requirements.set(key, (requirements.get(key) || 0n) + raw);
-  }
-  function walletTokenRawAmount(walletBalance, mint) {
-    const key = String(mint || "").trim();
-    if (!key) return 0n;
-    const raw = parseRawTokenAmount(walletBalance?.tokens?.[key]?.amountRaw);
-    return raw == null ? 0n : raw;
-  }
-  function fundingQuoteSymbol(estimate = {}, mint) {
-    const breakdown = Array.isArray(estimate.quoteBreakdown) ? estimate.quoteBreakdown : [];
-    const byBreakdown = breakdown.find((row) => String(row?.mint || "").trim() === mint)?.symbol;
-    if (byBreakdown) return byBreakdown;
-    const autoPlan = Array.isArray(estimate.autoSwapPlan) ? estimate.autoSwapPlan : [];
-    return autoPlan.find((row) => String(row?.quoteMint || "").trim() === mint)?.quoteSymbol || mint.slice(0, 6);
-  }
   function fundingEstimateSolUsd(estimate = {}) {
     return positiveFinite(estimate.solUsd, 0);
   }
@@ -1149,35 +1191,13 @@ var TrebuchetCore = (() => {
       }];
     }
     const issues = [];
-    const quoteRequirements = /* @__PURE__ */ new Map();
-    const byQuote = estimate?.byQuote && typeof estimate.byQuote === "object" ? estimate.byQuote : {};
-    Object.entries(byQuote).forEach(([mint, rawAmount]) => {
-      addRawRequirement(quoteRequirements, mint, rawAmount);
-    });
-    const autoPlan = Array.isArray(estimate?.autoSwapPlan) ? estimate.autoSwapPlan : [];
-    autoPlan.forEach((item) => {
-      addRawRequirement(quoteRequirements, item?.quoteMint, item?.minRaw || item?.targetRaw);
-    });
-    let acquiredAutoSwapCreditSol = 0;
-    const remainingAutoRawByMint = /* @__PURE__ */ new Map();
-    autoPlan.forEach((item) => {
-      const mint = String(item?.quoteMint || "").trim();
-      const minRaw = parseRawTokenAmount(item?.minRaw || item?.targetRaw);
-      if (!mint || minRaw == null || minRaw <= 0n) return;
-      const available = remainingAutoRawByMint.has(mint) ? remainingAutoRawByMint.get(mint) : walletTokenRawAmount(walletBalance, mint);
-      if (available >= minRaw) {
-        remainingAutoRawByMint.set(mint, available - minRaw);
-        acquiredAutoSwapCreditSol += positiveFinite(item?.estSolSpend, 0);
-      } else {
-        remainingAutoRawByMint.set(mint, available);
-      }
-    });
+    const coverage = fundingTokenCoverage(estimate, walletBalance);
     const subtotalSol = positiveFinite(estimate?.subtotalSol, 0);
     const baseSolNeeded = subtotalSol > 0 ? subtotalSol : fundingEstimateTotalSol(estimate);
     const completedSol = completedFundingCreditSol({ estimate, tokenCreated });
     const creditedSwapSol = Math.max(
       positiveFinite(estimate?.solCreditedForCompletedSwaps, 0),
-      acquiredAutoSwapCreditSol
+      coverage.swapCreditSol
     );
     const estimateIncludesAirdrop = estimate?.includesAirdropExecutionCost === true;
     const airdropExecutionSol = estimateIncludesAirdrop ? 0 : positiveFinite(plan?.poolTopology?.airdrop?.executionCostSol, 0);
@@ -1190,15 +1210,13 @@ var TrebuchetCore = (() => {
         detail: `Wallet has ${walletSol.toFixed(4)} SOL; Classic needs at least ${solNeeded.toFixed(4)} SOL before live execution.`
       });
     }
-    [...quoteRequirements.entries()].forEach(([mint, requiredRaw], index) => {
-      const currentRaw = walletTokenRawAmount(walletBalance, mint);
-      if (currentRaw >= requiredRaw) return;
-      const symbol = fundingQuoteSymbol(estimate, mint);
+    coverage.rows.forEach((row, index) => {
+      if (row.funded) return;
       issues.push({
         id: `funding-quote-short-${index + 1}`,
         phase: "funding",
-        title: `${symbol} funding short`,
-        detail: `Wallet has ${currentRaw.toString()} raw ${symbol}; Classic needs ${requiredRaw.toString()} raw for ${mint}.`
+        title: `Add ${row.missing} ${row.symbol}`,
+        detail: `Wallet has ${row.held} ${row.symbol}; total needed: ${row.required}. Send ${row.missing} ${row.symbol} to the launch wallet or buy it in Funding. Balances refresh automatically.`
       });
     });
     return issues;
@@ -1436,17 +1454,17 @@ var TrebuchetCore = (() => {
     const mint = String(pool.quoteMint || "").trim();
     const token = String(pool.quoteToken || "").trim();
     const symbol = String(pool.quoteSymbol || pool.quoteSymbolOverride || "").trim();
-    const raw = mint || token || symbol;
-    if (!raw) return "";
-    const upper = raw.toUpperCase();
-    if (raw === DEFAULT_SOL_MINT || upper === "SOL") return "SOL";
-    if (raw === DEFAULT_USDC_MINT || upper === "USDC") return "USDC";
-    if (raw === DEFAULT_USDT_MINT || upper === "USDT") return "USDT";
+    const raw2 = mint || token || symbol;
+    if (!raw2) return "";
+    const upper = raw2.toUpperCase();
+    if (raw2 === DEFAULT_SOL_MINT || upper === "SOL") return "SOL";
+    if (raw2 === DEFAULT_USDC_MINT || upper === "USDC") return "USDC";
+    if (raw2 === DEFAULT_USDT_MINT || upper === "USDT") return "USDT";
     if (!mint && symbol && token && symbol.toUpperCase() === token.toUpperCase()) {
       return symbol.toUpperCase();
     }
     if (!mint && !token && symbol) return symbol.toUpperCase();
-    return raw;
+    return raw2;
   }
   function poolQuoteLabel(pool = {}) {
     return String(pool.quoteSymbol || pool.quoteToken || pool.quoteMint || "quote").trim() || "quote";
@@ -1483,7 +1501,7 @@ var TrebuchetCore = (() => {
     const token = String(pool.quoteToken || "").trim();
     return KNOWN_CLASSIC_QUOTE_MINTS.has(mint) || KNOWN_CLASSIC_QUOTE_MINTS.has(token);
   }
-  function quoteTokenSafetyIssues(pools = [], heldQuotes = /* @__PURE__ */ new Set()) {
+  function quoteTokenSafetyIssues(pools = []) {
     const issues = [];
     pools.forEach((pool, index) => {
       if (Number(pool.supplyPercent || 0) <= 0) return;
@@ -1505,7 +1523,7 @@ var TrebuchetCore = (() => {
           index,
           state: "warn",
           blocksFreshLive: true,
-          detail: `Pool ${index + 1} (${label}) has not run the Classic quote-token safety check yet.`
+          detail: `Pool ${index + 1} (${label}) is waiting for its token check. Trebuchet checks it automatically during funding.`
         });
         return;
       }
@@ -1525,22 +1543,12 @@ var TrebuchetCore = (() => {
           detail: `Pool ${index + 1} (${label}) quote token has a freeze-authority risk that can strand launch-wallet balances.`
         });
       }
-      const swapRoute = String(info.swapRoute || "unknown").toLowerCase();
-      const held = heldQuotes.has(quoteRef);
-      if (swapRoute === "none" && !held) {
-        issues.push({
-          index,
-          state: "danger",
-          blocksFreshLive: true,
-          detail: `Pool ${index + 1} (${label}) quote token cannot be bought with SOL: neither Raydium nor Jupiter has a route.`
-        });
-      }
-      if (info.compatible == null || info.freezeAuthorityBlock == null || !held && !["raydium", "jupiter", "none"].includes(swapRoute)) {
+      if (info.compatible == null || info.freezeAuthorityBlock == null) {
         issues.push({
           index,
           state: "warn",
           blocksFreshLive: true,
-          detail: `Pool ${index + 1} (${label}) quote-token compatibility, authority, or route status is incomplete. Trebuchet re-checks pair tokens automatically when you estimate funding.`
+          detail: `Checking Pool ${index + 1} (${label}) token rules and authorities. Trebuchet retries this check automatically.`
         });
       }
       if (info.mintAuthorityWarning === true) {
@@ -2512,17 +2520,10 @@ var TrebuchetCore = (() => {
     );
     const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
     const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
-    const heldQuotes = /* @__PURE__ */ new Set();
-    if (fundingEstimateMatchesInput && context.walletBalance) {
-      const requirements = /* @__PURE__ */ new Map();
-      Object.entries(fundingEstimate?.byQuote || {}).forEach(([mint, raw]) => addRawRequirement(requirements, mint, raw));
-      (fundingEstimate?.autoSwapPlan || []).forEach((row) => addRawRequirement(requirements, row.quoteMint, row.minRaw || row.targetRaw));
-      for (const [mint, raw] of requirements) if (walletTokenRawAmount(context.walletBalance, mint) >= raw) heldQuotes.add(mint);
-    }
-    const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools, heldQuotes);
+    const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools);
     setPlanGuardrail(plan, "classic-quote-safety", {
       state: quoteSafety.some((issue) => issue.state === "danger") ? "danger" : quoteSafety.length ? "warn" : "pass",
-      detail: quoteSafety[0]?.detail || "Pair-token safety checks passed and funding is covered."
+      detail: quoteSafety[0]?.detail || "Pair-token safety checks passed."
     });
     quoteSafety.forEach((issue, issueIndex) => {
       if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
@@ -2575,8 +2576,8 @@ var TrebuchetCore = (() => {
       const issue = {
         id: "funding-not-estimated",
         phase: "funding",
-        title: "Funding not estimated",
-        detail: "Run the classic funding estimate before funding the launch wallet."
+        title: "Calculating funding",
+        detail: "Trebuchet estimates the required SOL and pair tokens automatically."
       };
       if (demoMode || !fundingGateRequired) {
         warnings.push(readinessIssue({ ...issue, severity: "warning" }));
@@ -3588,13 +3589,13 @@ var TrebuchetCore = (() => {
     return String(symbol || "").trim().toUpperCase() === "SOL";
   }
   function normalizeStreamlinedFees(input = {}) {
-    const raw = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const raw2 = input && typeof input === "object" && !Array.isArray(input) ? input : {};
     const clampBps = (value) => clampInt(finiteNumber(value, 0), 0, STREAMLINED_MAX_FEE_BPS);
-    const buyBps = clampBps(raw.buyBps);
-    const sellBps = clampBps(raw.sellBps);
-    const transferBps = clampBps(raw.transferBps);
+    const buyBps = clampBps(raw2.buyBps);
+    const sellBps = clampBps(raw2.sellBps);
+    const transferBps = clampBps(raw2.transferBps);
     const enabled = buyBps > 0 || sellBps > 0 || transferBps > 0;
-    const treasury = String(raw.treasury || "").trim();
+    const treasury = String(raw2.treasury || "").trim();
     if (enabled && !TREASURY_ADDRESS_RE.test(treasury)) {
       throw new Error(
         "A token with swap/transfer fees requires a valid 32-44 char Solana treasury address."

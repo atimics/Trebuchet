@@ -471,14 +471,14 @@ function renderClassicBridge() {
   const ladderCount = topology.pools.reduce((sum, pool) => sum + Number(pool.ladder?.bandCount || pool.ladder?.bands?.length || 0), 0);
   const fundingEstimateStatus = classicFundingEstimateStatus(config);
   const estimate = fundingEstimateStatus.matchesConfig ? state.classicFundingEstimate : null;
-  const totalSol = Number(estimate?.totalSol || 0);
-  const routeCount = estimate?.autoSwapPlan?.length || 0;
+  const totalSol = Math.max(0, Number(estimate?.totalSol || 0) - currentFundingTokenCoverage().swapCreditSol);
+  const coverage = currentFundingTokenCoverage();
+  const routeCount = (estimate?.autoSwapPlan || []).filter((route) => !coverage.fresh || !coverage.rows.find((row) => row.mint === route.quoteMint)?.funded).length;
   const manualQuoteCount = quoteAcquireManualCount();
   const funding = fundingMeterSnapshot(config);
   const fundingBalanceKnown = state.demoActive || (funding.hasWalletBalance && funding.walletBalanceFresh);
   const fundingSolReady = fundingBalanceKnown && Number(funding.missingSol || 0) <= 0.001;
   const quoteStatus = quoteAcquireStatus(config);
-  const missingPairCount = quoteStatus.walletFunding?.missingRoutes.length ?? routeCount;
   const manualSummary = manualPrefundSummary(quoteManualPrefundItems());
   const quoteFundingReady = quoteStatus.ready && (!manualQuoteCount || manualSummary.className === '');
   const fundingReady = Boolean(estimate && fundingSolReady && quoteFundingReady);
@@ -564,13 +564,16 @@ function renderClassicBridge() {
   const finishDestinationReady = finishReturn.kind !== 'unverified'
     && Boolean(finishReturn.address)
     && finishReturn.address !== walletPublicKey;
+  const reviewPairPrice = state.launchChecks?.error && state.launchChecks.errorCode === 'POOL_SPREAD';
   const fundingNeed = !estimate
     ? {
-      eyebrow: 'Not estimated',
-      title: 'Estimate the launch cost',
-      detail: '',
-      action: 'estimate-funding',
-      actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
+      eyebrow: state.fundingEstimating ? 'Calculating' : state.launchChecks?.error ? 'Retry scheduled' : 'Launch cost',
+      title: reviewPairPrice ? 'Review the pair price' : 'Estimate the launch cost',
+      detail: state.launchChecks?.error
+        ? `${state.launchChecks.error}. Trebuchet will try again automatically.`
+        : state.fundingEstimating ? 'Checking pair tokens and current prices…' : 'Funding checks run automatically when you open this step.',
+      action: reviewPairPrice ? 'review-pair-tokens' : 'estimate-funding',
+      actionLabel: reviewPairPrice ? 'Review pair tokens' : fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
     : state.demoActive
       ? {
@@ -598,11 +601,9 @@ function renderClassicBridge() {
         }
         : !quoteFundingReady
           ? {
-            eyebrow: 'Pair tokens missing',
+            eyebrow: 'Pair token funding',
             title: 'Get the pair tokens',
-            detail: missingPairCount
-              ? `${missingPairCount} pair token${missingPairCount === 1 ? '' : 's'} need more funds in the launch wallet.`
-              : 'Send the pair tokens to the launch wallet, then check the balance.',
+            detail: pairTokenFundingDetail(),
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }

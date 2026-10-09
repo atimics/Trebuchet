@@ -204,7 +204,10 @@ test('a verified wallet holding the summed quote amount can create pools without
     walletBalance: { sol: 10, tokens: { [QUOTE.address]: { amountRaw: '160' } } } };
   const safety = () => buildV2ExecutionReadiness(input, context).blockers.filter((item) => item.id.startsWith('quote-token-safety'));
   assert.equal(safety().length, 0);
-  context.walletBalance.tokens[QUOTE.address].amountRaw = '159'; assert.equal(safety().length, 1);
+  context.walletBalance.tokens[QUOTE.address].amountRaw = '159';
+  assert.equal(safety().length, 0);
+  const funding = buildV2ExecutionReadiness(input, { ...context, requireFundingBalance: true });
+  assert.ok(funding.blockers.some((item) => item.id.startsWith('funding-quote-short')));
   context.walletBalance.tokens[QUOTE.address].amountRaw = '160';
   input.poolTopology.pools[0].quoteCompatibility.freezeAuthorityBlock = true;
   assert.match(safety()[0].detail, /freeze-authority/);

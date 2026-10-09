@@ -1,3 +1,5 @@
+import { fundingTokenCoverage } from './funding-balance.js';
+export { fundingTokenCoverage, formatFundingTokenAmount } from './funding-balance.js';
 import { sha256Hex } from './sha256.js';
 import {
   COST_BS_QUOTE_SOL,
@@ -425,38 +427,6 @@ function fundingEstimateTotalSol(estimate = {}) {
   return solLamports > 0 ? solLamports / 1_000_000_000 : 0;
 }
 
-function parseRawTokenAmount(value) {
-  const text = String(value ?? '').trim();
-  if (!/^\d+$/.test(text)) return null;
-  try {
-    return BigInt(text);
-  } catch {
-    return null;
-  }
-}
-
-function addRawRequirement(requirements, mint, amount) {
-  const key = String(mint || '').trim();
-  const raw = parseRawTokenAmount(amount);
-  if (!key || raw == null || raw <= 0n) return;
-  requirements.set(key, (requirements.get(key) || 0n) + raw);
-}
-
-function walletTokenRawAmount(walletBalance, mint) {
-  const key = String(mint || '').trim();
-  if (!key) return 0n;
-  const raw = parseRawTokenAmount(walletBalance?.tokens?.[key]?.amountRaw);
-  return raw == null ? 0n : raw;
-}
-
-function fundingQuoteSymbol(estimate = {}, mint) {
-  const breakdown = Array.isArray(estimate.quoteBreakdown) ? estimate.quoteBreakdown : [];
-  const byBreakdown = breakdown.find((row) => String(row?.mint || '').trim() === mint)?.symbol;
-  if (byBreakdown) return byBreakdown;
-  const autoPlan = Array.isArray(estimate.autoSwapPlan) ? estimate.autoSwapPlan : [];
-  return autoPlan.find((row) => String(row?.quoteMint || '').trim() === mint)?.quoteSymbol || mint.slice(0, 6);
-}
-
 function fundingEstimateSolUsd(estimate = {}) {
   return positiveFinite(estimate.solUsd, 0);
 }
@@ -498,40 +468,13 @@ function fundingBalanceIssues({
   }
 
   const issues = [];
-  const quoteRequirements = new Map();
-  const byQuote = estimate?.byQuote && typeof estimate.byQuote === 'object' ? estimate.byQuote : {};
-  Object.entries(byQuote).forEach(([mint, rawAmount]) => {
-    addRawRequirement(quoteRequirements, mint, rawAmount);
-  });
-
-  const autoPlan = Array.isArray(estimate?.autoSwapPlan) ? estimate.autoSwapPlan : [];
-  autoPlan.forEach((item) => {
-    addRawRequirement(quoteRequirements, item?.quoteMint, item?.minRaw || item?.targetRaw);
-  });
-
-  let acquiredAutoSwapCreditSol = 0;
-  const remainingAutoRawByMint = new Map();
-  autoPlan.forEach((item) => {
-    const mint = String(item?.quoteMint || '').trim();
-    const minRaw = parseRawTokenAmount(item?.minRaw || item?.targetRaw);
-    if (!mint || minRaw == null || minRaw <= 0n) return;
-    const available = remainingAutoRawByMint.has(mint)
-      ? remainingAutoRawByMint.get(mint)
-      : walletTokenRawAmount(walletBalance, mint);
-    if (available >= minRaw) {
-      remainingAutoRawByMint.set(mint, available - minRaw);
-      acquiredAutoSwapCreditSol += positiveFinite(item?.estSolSpend, 0);
-    } else {
-      remainingAutoRawByMint.set(mint, available);
-    }
-  });
-
+  const coverage = fundingTokenCoverage(estimate, walletBalance);
   const subtotalSol = positiveFinite(estimate?.subtotalSol, 0);
   const baseSolNeeded = subtotalSol > 0 ? subtotalSol : fundingEstimateTotalSol(estimate);
   const completedSol = completedFundingCreditSol({ estimate, tokenCreated });
   const creditedSwapSol = Math.max(
     positiveFinite(estimate?.solCreditedForCompletedSwaps, 0),
-    acquiredAutoSwapCreditSol,
+    coverage.swapCreditSol,
   );
   const estimateIncludesAirdrop = estimate?.includesAirdropExecutionCost === true;
   const airdropExecutionSol = estimateIncludesAirdrop
@@ -547,15 +490,13 @@ function fundingBalanceIssues({
     });
   }
 
-  [...quoteRequirements.entries()].forEach(([mint, requiredRaw], index) => {
-    const currentRaw = walletTokenRawAmount(walletBalance, mint);
-    if (currentRaw >= requiredRaw) return;
-    const symbol = fundingQuoteSymbol(estimate, mint);
+  coverage.rows.forEach((row, index) => {
+    if (row.funded) return;
     issues.push({
       id: `funding-quote-short-${index + 1}`,
       phase: 'funding',
-      title: `${symbol} funding short`,
-      detail: `Wallet has ${currentRaw.toString()} raw ${symbol}; Classic needs ${requiredRaw.toString()} raw for ${mint}.`,
+      title: `Add ${row.missing} ${row.symbol}`,
+      detail: `Wallet has ${row.held} ${row.symbol}; total needed: ${row.required}. Send ${row.missing} ${row.symbol} to the launch wallet or buy it in Funding. Balances refresh automatically.`,
     });
   });
 
@@ -873,7 +814,7 @@ function isKnownClassicQuote(pool = {}) {
   return KNOWN_CLASSIC_QUOTE_MINTS.has(mint) || KNOWN_CLASSIC_QUOTE_MINTS.has(token);
 }
 
-function quoteTokenSafetyIssues(pools = [], heldQuotes = new Set()) {
+function quoteTokenSafetyIssues(pools = []) {
   const issues = [];
   pools.forEach((pool, index) => {
     if (Number(pool.supplyPercent || 0) <= 0) return;
@@ -898,7 +839,7 @@ function quoteTokenSafetyIssues(pools = [], heldQuotes = new Set()) {
         index,
         state: 'warn',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) has not run the Classic quote-token safety check yet.`,
+        detail: `Pool ${index + 1} (${label}) is waiting for its token check. Trebuchet checks it automatically during funding.`,
       });
       return;
     }
@@ -918,28 +859,12 @@ function quoteTokenSafetyIssues(pools = [], heldQuotes = new Set()) {
         detail: `Pool ${index + 1} (${label}) quote token has a freeze-authority risk that can strand launch-wallet balances.`,
       });
     }
-    // swapRoute is decided once, by the host's quote-token check (Raydium,
-    // then Jupiter). Only "no route anywhere" blocks; nothing re-derives it.
-    const swapRoute = String(info.swapRoute || 'unknown').toLowerCase();
-    const held = heldQuotes.has(quoteRef);
-    if (swapRoute === 'none' && !held) {
-      issues.push({
-        index,
-        state: 'danger',
-        blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote token cannot be bought with SOL: neither Raydium nor Jupiter has a route.`,
-      });
-    }
-    if (
-      info.compatible == null
-      || info.freezeAuthorityBlock == null
-      || (!held && !['raydium', 'jupiter', 'none'].includes(swapRoute))
-    ) {
+    if (info.compatible == null || info.freezeAuthorityBlock == null) {
       issues.push({
         index,
         state: 'warn',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote-token compatibility, authority, or route status is incomplete. Trebuchet re-checks pair tokens automatically when you estimate funding.`,
+        detail: `Checking Pool ${index + 1} (${label}) token rules and authorities. Trebuchet retries this check automatically.`,
       });
     }
     if (info.mintAuthorityWarning === true) {
@@ -2033,17 +1958,10 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
   );
   const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
   const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
-  const heldQuotes = new Set();
-  if (fundingEstimateMatchesInput && context.walletBalance) {
-    const requirements = new Map();
-    Object.entries(fundingEstimate?.byQuote || {}).forEach(([mint, raw]) => addRawRequirement(requirements, mint, raw));
-    (fundingEstimate?.autoSwapPlan || []).forEach((row) => addRawRequirement(requirements, row.quoteMint, row.minRaw || row.targetRaw));
-    for (const [mint, raw] of requirements) if (walletTokenRawAmount(context.walletBalance, mint) >= raw) heldQuotes.add(mint);
-  }
-  const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools, heldQuotes);
+  const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools);
   setPlanGuardrail(plan, 'classic-quote-safety', {
     state: quoteSafety.some((issue) => issue.state === 'danger') ? 'danger' : quoteSafety.length ? 'warn' : 'pass',
-    detail: quoteSafety[0]?.detail || 'Pair-token safety checks passed and funding is covered.',
+    detail: quoteSafety[0]?.detail || 'Pair-token safety checks passed.',
   });
   quoteSafety.forEach((issue, issueIndex) => {
     if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
@@ -2100,8 +2018,8 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     const issue = {
       id: 'funding-not-estimated',
       phase: 'funding',
-      title: 'Funding not estimated',
-      detail: 'Run the classic funding estimate before funding the launch wallet.',
+      title: 'Calculating funding',
+      detail: 'Trebuchet estimates the required SOL and pair tokens automatically.',
     };
     if (demoMode || !fundingGateRequired) {
       warnings.push(readinessIssue({ ...issue, severity: 'warning' }));

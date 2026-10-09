@@ -303,11 +303,10 @@ export async function getOnChainPriceUsd({
 
   if (sel.spreadPct.gt(maxSpreadPct)) {
     const err = new Error(
-      `On-chain pools for ${mint} disagree on price: the deepest pool ` +
-      `(${sel.best.anchorSymbol} pair, $${sel.best.liquidityUsd.toFixed(0)} deep) is ` +
-      `${sel.spreadPct.toFixed(1)}% from the median of ${sel.qualifying.length} qualifying ` +
-      `pools (limit ${maxSpreadPct}%). No single number is a safe launch reference ` +
-      'while the market itself is this inconsistent.',
+      `For ${mint}, the deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median (limit ${maxSpreadPct}%). ` +
+      sel.qualifying.slice(0, 3).map((pool) =>
+        `${pool.kind} ${pool.anchorSymbol}: $${pool.priceUsd.toSignificantDigits(6)} per token, $${pool.liquidityUsd.toFixed(0)} liquidity`
+      ).join('; ') + '. Trebuchet checks prices again automatically. Review this pair in Token & pools and choose another pair to continue now.',
     );
     err.code = 'POOL_SPREAD';
     err.spreadPct = Number(sel.spreadPct.toString());

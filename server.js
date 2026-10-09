@@ -7335,6 +7335,7 @@ app.post('/api/quote-token-info', async (req, res) => {
             // No Raydium route, but the auto-buy routes it through Jupiter.
             infoOut.raydiumTradeable = 'no';
             infoOut.swapRoute = 'jupiter';
+            infoOut.swapVenues = cachedProbe.venues;
             if (cachedProbe.priceUsd && !infoOut.pricePoolId && !infoOut.priceWarning) {
               infoOut.priceUsd = cachedProbe.priceUsd;
               infoOut.priceSource = 'jupiter-probe (cached)';
@@ -7398,34 +7399,35 @@ app.post('/api/quote-token-info', async (req, res) => {
               const code = probeErr.code || 'UNKNOWN';
               // Raydium has no route: the auto-buy falls back to Jupiter
               // (e.g. PumpSwap-only tokens), so check that before blocking.
-              const jupiterRoute = code === 'NO_ROUTE'
-                ? await discoverJupiterRoute({
+              let jupiterError = null;
+              const jupiterRoute = await discoverJupiterRoute({
                   quoteMint: infoOut.address,
                   quoteDecimals: infoOut.decimals,
                   solUsd: solUsdForProbe,
                   forceFresh: true,
-                }).catch(() => null)
-                : null;
+                }).catch((error) => { jupiterError = error; return null; });
               if (jupiterRoute?.available) {
                 const priceStr = jupiterRoute.effectiveQuoteUsd.toString();
                 step2ProbeCache.set(infoOut.address, {
                   verdict: 'jupiter',
+                  venues: jupiterRoute.venues,
                   priceUsd: priceStr,
                   expiresAt: now + STEP2_PROBE_TTL_MS,
                 });
                 infoOut.raydiumTradeable = 'no';
                 infoOut.swapRoute = 'jupiter';
+                infoOut.swapVenues = jupiterRoute.venues;
                 if (!infoOut.pricePoolId && !infoOut.priceWarning) {
                   infoOut.priceUsd = priceStr;
                   infoOut.priceSource = 'jupiter-probe';
                 }
-              } else if (code === 'NO_ROUTE') {
+              } else if (code === 'NO_ROUTE' && !jupiterError) {
                 // Cache the verdict — the user typing the same mint
                 // 10 times in a row shouldn't probe 10 times.
                 step2ProbeCache.set(infoOut.address, {
                   verdict: 'no-route',
                   priceUsd: null,
-                  expiresAt: now + STEP2_PROBE_TTL_MS,
+                  expiresAt: now + 30000,
                 });
                 infoOut.raydiumTradeable = 'no';
                 infoOut.swapRoute = 'none';
@@ -7444,7 +7446,7 @@ app.post('/api/quote-token-info', async (req, res) => {
                 // re-typing or by refreshing.
                 infoOut.raydiumTradeable = 'unknown';
                 infoOut.swapRoute = 'unknown';
-                infoOut.raydiumProbeError = probeErr.message;
+                infoOut.raydiumProbeError = jupiterError?.message || probeErr.message;
               }
             }
           }
@@ -7552,7 +7554,7 @@ app.post('/api/estimate-lp-funding', async (req, res) => {
     res.json({ success: true, estimate });
   } catch (error) {
     console.error('Error estimating LP funding:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 });
 

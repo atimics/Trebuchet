@@ -120,3 +120,30 @@ for (const reply of [new Response('x'.repeat(50)), new Response('{bad'), new Res
     await assert.rejects(api.quote({ provider: 'raydium' }), { code: 'QUOTE_UNAVAILABLE' });
   });
 }
+
+
+test('Jupiter uses the current quote endpoint and sends its key only to Jupiter', async () => {
+  const calls = [];
+  const api = createQuoteProvider({ jupiterApiKey: 'fixture-key', fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), headers: options.headers });
+    return new Response(JSON.stringify(String(url).includes('api.jup.ag') ? { routePlan: [{ swapInfo: { label: 'PumpSwap' } }] } : { success: true }));
+  } });
+  await api.quote({ provider: 'jupiter', inputMint: 'SOL', outputMint: 'TOKEN', inputAmountRaw: '50000', slippageBps: 100 });
+  await api.quote({ provider: 'raydium', inputMint: 'SOL', outputMint: 'TOKEN', inputAmountRaw: '50000', slippageBps: 100 });
+  assert.ok(calls[0].url.startsWith('https://api.jup.ag/swap/v1/quote?'));
+  assert.equal(calls[0].headers['x-api-key'], 'fixture-key');
+  assert.equal(calls[1].headers['x-api-key'], undefined);
+});
+
+
+test('unsigned quote requests retry a busy provider with bounded backoff', async () => {
+  let calls = 0; const delays = [];
+  const api = createQuoteProvider({ sleep: async (ms) => delays.push(ms), fetchImpl: async () => {
+    calls++;
+    return calls < 3 ? new Response('{}', { status: calls === 1 ? 429 : 503 })
+      : new Response(JSON.stringify({ routePlan: [{ swapInfo: { label: 'PumpSwap' } }] }));
+  } });
+  const quote = await api.quote({ provider: 'jupiter' });
+  assert.equal(quote.routePlan[0].swapInfo.label, 'PumpSwap');
+  assert.equal(calls, 3); assert.deepEqual(delays, [2000, 4000]);
+});

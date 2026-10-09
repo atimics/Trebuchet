@@ -50,7 +50,7 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
     ['Price source', info.priceSource || 'Awaiting market'],
     ['Price checked', info.priceCheckedAt ? formatDate(info.priceCheckedAt) : 'Awaiting refresh'],
-    ['Route', { raydium: 'Raydium', jupiter: 'Jupiter', none: 'none' }[info.swapRoute] || 'unknown'],
+    ['Route', info.swapRoute === 'jupiter' && info.swapVenues?.length ? `Jupiter · ${info.swapVenues.join(', ')}` : { raydium: 'Raydium', jupiter: 'Jupiter', none: 'Wallet tokens' }[info.swapRoute] || 'Checking'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
   ] : [];
@@ -60,6 +60,7 @@ function renderCustomQuoteInfoPanel(pool) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
         <small>${escapeHtml(badge.detail)}</small>
       </div>
+      ${info?.priceWarning ? `<p role="status">${escapeHtml(info.priceWarning)}</p>` : ''}
       ${facts.length ? `<div class="quote-info-facts">
         ${facts.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
       </div>` : ''}

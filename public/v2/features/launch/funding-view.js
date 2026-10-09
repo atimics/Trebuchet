@@ -83,27 +83,29 @@ function quoteAcquireSuccessEvidence(routes, job) {
   return routes.every((route) => results.some((result) => quoteAcquireResultMatchesRoute(result, route)));
 }
 
+function currentFundingTokenCoverage() {
+  const snapshot = manualPrefundBalanceSnapshotStatus();
+  const fresh = snapshot.fresh && snapshot.matchesWallet && !state.manualPrefund.error;
+  const coverage = TrebuchetCore.fundingTokenCoverage(
+    currentClassicFundingEstimateForConfig() || {}, fresh ? snapshot.balance : null,
+  );
+  return { ...coverage, fresh };
+}
+
+function pairTokenFundingDetail() {
+  const coverage = currentFundingTokenCoverage();
+  return coverage.rows.filter((row) => !coverage.fresh || !row.funded).map((row) =>
+    coverage.fresh
+      ? `Add ${row.missing} ${row.symbol} (have ${row.held}; need ${row.required}).`
+      : `Need ${row.required} ${row.symbol}. Checking the wallet balance.`
+  ).join(' ') + ' Balances refresh automatically.';
+}
+
 function quoteWalletFundingStatus(routes = quoteAcquireRoutes()) {
-  const saved = state.manualPrefund || {};
-  const age = Date.now() - Date.parse(saved.lastUpdatedAt || '');
-  const checked = Boolean(saved.balance && saved.walletPublicKey === selectedLaunchWalletPublicKey()
-    && Number.isFinite(age) && age >= 0 && age <= 60_000 && !saved.error);
-  const requirements = new Map();
-  const add = (mint, value) => {
-    if (!mint) return;
-    const text = String(value ?? '');
-    const raw = /^\d+$/.test(text) ? BigInt(text) : null;
-    requirements.set(mint, raw == null ? null : requirements.get(mint) === null ? null : (requirements.get(mint) || 0n) + raw);
-  };
-  routes.forEach((route) => add(route.quoteMint, route.minRaw || route.targetRaw));
-  Object.entries(state.classicFundingEstimate?.byQuote || {}).forEach(([mint, raw]) => add(mint, raw));
-  const heldMints = new Set();
-  if (checked) for (const [mint, required] of requirements) {
-    const raw = String(saved.balance.tokens?.[mint]?.amountRaw ?? '0');
-    if (required != null && required > 0n && /^\d+$/.test(raw) && BigInt(raw) >= required) heldMints.add(mint);
-  }
-  return { checked, heldMints, missingRoutes: routes.filter((route) => !heldMints.has(route.quoteMint)),
-    ready: checked && routes.every((route) => heldMints.has(route.quoteMint)) };
+  const coverage = currentFundingTokenCoverage();
+  const heldMints = new Set(coverage.fresh ? coverage.rows.filter((row) => row.funded && BigInt(row.requiredRaw) > 0n).map((row) => row.mint) : []);
+  return { checked: coverage.fresh, heldMints, missingRoutes: routes.filter((route) => !heldMints.has(route.quoteMint)),
+    ready: coverage.fresh && routes.every((route) => heldMints.has(route.quoteMint)) };
 }
 
 function quoteAcquireStatus(config = currentLaunchConfig()) {
@@ -119,8 +121,9 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
   ).trim();
   const stale = Boolean(routes.length && hasJob && (!actualFingerprint || actualFingerprint !== expectedFingerprint));
   const successEvidence = quoteAcquireSuccessEvidence(routes, job);
-  const walletFunding = quoteWalletFundingStatus(routes);
-  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || walletFunding.ready || (!walletFunding.checked && Boolean(
+  const coverage = currentFundingTokenCoverage();
+  const held = routes.length > 0 && coverage.fresh && routes.every((route) => coverage.rows.find((row) => row.mint === route.quoteMint)?.funded);
+  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || held || (!coverage.fresh && Boolean(
     job?.status === 'done'
     && !stale
     && successEvidence
@@ -134,7 +137,8 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     actualFingerprint,
     stale,
     successEvidence,
-    walletFunding,
+    held,
+    walletFunding: quoteWalletFundingStatus(routes),
     ready,
   };
 }
@@ -253,7 +257,7 @@ function manualPrefundStatus(item) {
   const requiredRaw = parseRawTokenAmount(item.rawAmount);
   const currentRaw = parseRawTokenAmount(token?.amountRaw ?? '0') ?? 0n;
   const need = formatManualPrefundAmount(item.amount)
-    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), token?.decimals))
+    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), item.decimals ?? token?.decimals))
     || 'unknown';
   const have = formatManualPrefundBalance(token);
 
@@ -266,7 +270,7 @@ function manualPrefundStatus(item) {
     return { label: 'Funded', className: '', detail: `Wallet has ${have}; needs ${need}.` };
   }
   const shortRaw = requiredRaw - currentRaw;
-  const short = formatRawTokenAmount(shortRaw.toString(), token?.decimals) || `${shortRaw.toString()} raw`;
+  const short = formatRawTokenAmount(shortRaw.toString(), item.decimals ?? token?.decimals) || `${shortRaw.toString()} raw`;
   return { label: 'Short', className: 'danger', detail: `Wallet has ${have}; needs ${need}. Short ${short}.` };
 }
 
@@ -319,6 +323,7 @@ function quoteManualPrefundItems() {
       rawAmount: byQuote[mint] == null ? null : String(byQuote[mint]),
       symbol,
       amount: amount > 0 ? amount : null,
+      decimals: rows.find((row) => Number.isInteger(row.decimals))?.decimals,
       rows,
     };
   });
@@ -356,6 +361,7 @@ function quoteAcquireBadge() {
     if (failed) return { label: `${failed} failed`, className: 'danger' };
     return status.ready ? { label: 'Done', className: '' } : { label: 'Verify', className: 'warn' };
   }
+  if (status.held) return { label: 'In wallet', className: '' };
   if (quoteAcquireRoutes().length > 0) return { label: 'Ready', className: '' };
   if (quoteAcquireManualCount() > 0) return { label: 'Manual', className: 'warn' };
   return { label: 'None', className: '' };

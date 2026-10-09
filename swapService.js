@@ -96,7 +96,8 @@ const RAYDIUM_SWAP_API = 'https://transaction-v1.raydium.io';
 // Jupiter aggregator (keyless tier). Fallback route when Raydium has none:
 // pump.fun tokens that only trade on PumpSwap (the pump.fun AMM) are not
 // routable through Raydium's Trade API but are through Jupiter.
-const JUPITER_SWAP_API = 'https://lite-api.jup.ag/swap/v1';
+const JUPITER_SWAP_API = 'https://api.jup.ag/swap/v1';
+const jupiterHeaders = () => ({ Accept: 'application/json', ...(process.env.JUPITER_API_KEY ? { 'x-api-key': process.env.JUPITER_API_KEY } : {}) });
 
 // Probe amount used to verify Raydium can route a SOL→token swap and
 // to derive an effective price. 0.01 SOL — small enough to be cheap,
@@ -342,15 +343,16 @@ export async function discoverRaydiumRoute({
 }) {
   if (quoteMint === WSOL_MINT) return null;
 
-  // Cache lookup. Skipped when forceFresh is true. The cache stores
-  // both `null` (no route) and result objects (route found), so
-  // check via has() not value-truthiness.
+  // Successful routes stay fresh for one minute. Failed lookups can recover
+  // on the next funding check. forceFresh reads the provider immediately.
   // The cached price is per whole token, so it depends on the decimals it
   // was computed with. Keying by mint alone served a stale price after the
   // decimals changed (off by 10^decimals).
   const cacheKey = `${quoteMint}:${quoteDecimals}`;
   if (!forceFresh && routeDiscoveryCache.has(cacheKey)) {
-    return routeDiscoveryCache.get(cacheKey);
+    const cached = routeDiscoveryCache.get(cacheKey);
+    if (cached.expiresAt > Date.now()) return cached.result;
+    routeDiscoveryCache.delete(cacheKey);
   }
 
   const url = new URL(`${RAYDIUM_SWAP_API}/compute/swap-base-in`);
@@ -396,8 +398,8 @@ export async function discoverRaydiumRoute({
   // Only persist when not a forceFresh call. A forceFresh probe is a
   // point-in-time snapshot for pool creation; it shouldn't poison the
   // cache that other callers (funding-estimate refreshes) rely on.
-  if (!forceFresh) {
-    routeDiscoveryCache.set(cacheKey, result);
+  if (!forceFresh && result) {
+    routeDiscoveryCache.set(cacheKey, { result, expiresAt: Date.now() + 60000 });
   }
   return result;
 }
@@ -443,7 +445,11 @@ export async function discoverRaydiumRoute({
 export async function discoverJupiterRoute({ quoteMint, quoteDecimals, solUsd, forceFresh = false }) {
   if (quoteMint === WSOL_MINT) return null;
   const cacheKey = `jupiter:${quoteMint}:${quoteDecimals}`;
-  if (!forceFresh && routeDiscoveryCache.has(cacheKey)) return routeDiscoveryCache.get(cacheKey);
+  if (!forceFresh && routeDiscoveryCache.has(cacheKey)) {
+    const cached = routeDiscoveryCache.get(cacheKey);
+    if (cached.expiresAt > Date.now()) return cached.result;
+    routeDiscoveryCache.delete(cacheKey);
+  }
   let result = null;
   try {
     const quote = await obtainJupiterQuote({
@@ -457,12 +463,13 @@ export async function discoverJupiterRoute({ quoteMint, quoteDecimals, solUsd, f
     if (inputAmount.gt(0) && outputAmount.gt(0)) {
       const solWhole = inputAmount.div(new Decimal(10).pow(9));
       const tokensWhole = outputAmount.div(new Decimal(10).pow(quoteDecimals));
-      result = { available: true, effectiveQuoteUsd: solWhole.mul(solUsd).div(tokensWhole), provider: 'jupiter' };
+      result = { available: true, effectiveQuoteUsd: solWhole.mul(solUsd).div(tokensWhole), provider: 'jupiter', venues: [...new Set((quote.routePlan || []).map((hop) => hop.swapInfo?.label).filter(Boolean))] };
     }
   } catch (e) {
+    if (classifySwapError(e) !== 'no_route') throw e;
     console.log(`discoverJupiterRoute: ${quoteMint} -> ${e.message}`);
   }
-  if (!forceFresh) routeDiscoveryCache.set(cacheKey, result);
+  if (!forceFresh && result) routeDiscoveryCache.set(cacheKey, { result, expiresAt: Date.now() + 60000 });
   return result;
 }
 
@@ -733,11 +740,13 @@ async function fetchJupiterQuote({ inputMint, outputMint, amountLamports, slippa
   url.searchParams.set('amount', amountLamports.toString());
   url.searchParams.set('slippageBps', String(slippageBps));
   url.searchParams.set('restrictIntermediateTokens', 'true');
-  const resp = await fetchWithTimeout(url.toString(), { headers: { Accept: 'application/json' } });
+  const resp = await fetchWithTimeout(url.toString(), { headers: jupiterHeaders() });
   const json = await resp.json().catch(() => null);
   if (!resp.ok || !json || !Array.isArray(json.routePlan) || json.routePlan.length === 0) {
-    const code = json?.errorCode || json?.error || `HTTP ${resp.status}`;
-    throw new Error(`Jupiter quote failed: no route (${code})`);
+    const code = String(json?.errorCode || '');
+    const noRoute = ['COULD_NOT_FIND_ANY_ROUTE', 'TOKEN_NOT_TRADABLE', 'NO_ROUTES_FOUND'].includes(code)
+      || (resp.ok && Array.isArray(json?.routePlan) && json.routePlan.length === 0);
+    throw new Error(noRoute ? `Jupiter quote failed: no route (${code})` : `Jupiter quote service: HTTP ${resp.status}. Trebuchet will check again.`);
   }
   return json;
 }
@@ -746,7 +755,7 @@ async function fetchJupiterQuote({ inputMint, outputMint, amountLamports, slippa
 async function fetchJupiterTransactions({ swapResponse, walletPubkey, priorityFeeMicroLamports }) {
   const resp = await fetchWithTimeout(`${JUPITER_SWAP_API}/swap`, {
     method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    headers: { ...jupiterHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({
       quoteResponse: swapResponse,
       userPublicKey: walletPubkey,

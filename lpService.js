@@ -6402,7 +6402,7 @@ export async function estimateRequiredFunding({
       }
       if (!quoteUsd && route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
         quoteUsd = route.effectiveQuoteUsd;
-        quoteUsdSource = 'raydium-probe';
+        quoteUsdSource = `${route.provider || 'raydium'}-probe`;
       } else if (!quoteUsd) {
         try {
           quoteUsd = await lookupPrice(quoteAddr);
@@ -6796,7 +6796,8 @@ export async function estimateRequiredFunding({
           // Display-friendly: trim long decimals while keeping enough
           // precision to be unambiguous (e.g. 33333.3 not 33333.333334).
           // targetWhole is a JS Number; toPrecision returns a string.
-          amount: Number(Number(targetWhole).toPrecision(6)),
+          amount: rawAmt / Math.pow(10, quoteDecimals),
+          decimals: quoteDecimals,
           mint: quoteAddr,
         });
 
@@ -6807,7 +6808,8 @@ export async function estimateRequiredFunding({
           quoteBreakdown.push({
             label: `${poolLabel}: support position (~$${supportActualUsd.toFixed(2)})`,
             symbol: quoteSymbol,
-            amount: Number(Number(supportWhole).toPrecision(6)),
+            amount: supportRaw / Math.pow(10, quoteDecimals),
+            decimals: quoteDecimals,
             mint: quoteAddr,
           });
         }

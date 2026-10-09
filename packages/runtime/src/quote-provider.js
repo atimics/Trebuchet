@@ -1,23 +1,31 @@
 const fail = (message) => Object.assign(new Error(message), { code: 'QUOTE_UNAVAILABLE' });
-const endpoints = Object.freeze({ raydium: 'https://transaction-v1.raydium.io', jupiter: 'https://lite-api.jup.ag/swap/v1' });
+const endpoints = Object.freeze({ raydium: 'https://transaction-v1.raydium.io', jupiter: 'https://api.jup.ag/swap/v1' });
 
 // Providers return public quotes and unsigned messages. Spending belongs to
 // the reviewed acquisition plan and its transaction engine.
-export function createQuoteProvider({ fetchImpl = fetch, timeoutMs = 15000, maxResponseBytes = 1024 * 1024 } = {}) {
+export function createQuoteProvider({ fetchImpl = fetch, timeoutMs = 15000, maxResponseBytes = 1024 * 1024, jupiterApiKey = process.env.JUPITER_API_KEY, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const json = async (url, body) => {
-    try {
-      const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-        headers: { accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
-      if (!response.ok) throw fail(`Quote service returned HTTP ${response.status}`);
-      const chunks = []; let length = 0;
-      for await (const chunk of response.body) {
-        length += chunk.byteLength;
-        if (length > maxResponseBytes) throw fail('Use a bounded quote service response');
-        chunks.push(Buffer.from(chunk));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+          headers: { accept: 'application/json', ...(new URL(url).hostname === 'api.jup.ag' && jupiterApiKey ? { 'x-api-key': jupiterApiKey } : {}), ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        if (!response.ok) throw Object.assign(fail(`Quote service returned HTTP ${response.status}`), { retryable: [408, 429].includes(response.status) || response.status >= 500 });
+        const chunks = []; let length = 0;
+        for await (const chunk of response.body) {
+          length += chunk.byteLength;
+          if (length > maxResponseBytes) throw fail('Use a bounded quote service response');
+          chunks.push(Buffer.from(chunk));
+        }
+        try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+        catch { throw fail('Read a complete quote service response'); }
+      } catch (cause) {
+        if (attempt < 2 && (cause.retryable === true || ['TypeError', 'TimeoutError', 'AbortError'].includes(cause.name))) {
+          await sleep(2000 * 2 ** attempt);
+          continue;
+        }
+        throw cause.code === 'QUOTE_UNAVAILABLE' ? cause : Object.assign(fail('Read a current quote from the provider'), { cause });
       }
-      try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-      catch { throw fail('Read a complete quote service response'); }
-    } catch (cause) { throw cause.code === 'QUOTE_UNAVAILABLE' ? cause : Object.assign(fail('Read a current quote from the provider'), { cause }); }
+    }
   };
   return {
     async quote({ provider, inputMint, outputMint, inputAmountRaw, slippageBps }) {
