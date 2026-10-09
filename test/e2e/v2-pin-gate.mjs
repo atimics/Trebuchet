@@ -61,6 +61,20 @@ await page.route(/\/api\/v2\/wallets$/, (route) => route.fulfill({ json: { succe
     secretState: walletUnlocked ? 'readable' : 'locked', label: 'Launch wallet' },
 ] } }));
 await page.route(/\/api\/check-balance$/, (route) => route.fulfill({ json: { success: true, balance: 0 } }));
+// Keep background chain reads out of this PIN-route test. A stalled RPC or
+// image fetch can occupy Chromium's same-origin connections and delay the
+// real Recovery PIN status request that this test is checking.
+await page.route(/\/api\/check-balance-detailed$/, (route) => route.fulfill({
+  json: { success: true, balance: { sol: 0, tokens: {} } },
+}));
+await page.route(/\/api\/v2\/destinations(?:\?.*)?$/, (route) => route.fulfill({
+  json: { success: true, funder: null, funders: [], signed: [] },
+}));
+await page.route(/\/api\/proxy-image(?:\?.*)?$/, (route) => route.fulfill({
+  status: 200,
+  contentType: 'image/gif',
+  body: Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64'),
+}));
 
 await page.goto(`${base}/v2/`);
 await page.waitForSelector('#recoveryPinGate:not([hidden])', { timeout: 15000 });
