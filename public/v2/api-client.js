@@ -472,9 +472,9 @@
       return rawRequest(path, { ...init, headers });
     }
 
-    async function safeGet(path) {
+    async function safeGet(path, init) {
       try {
-        return { ok: true, data: await request(path) };
+        return { ok: true, data: await request(path, init) };
       } catch (error) {
         return { ok: false, error: errorMessage(error), code: error?.code || null };
       }
@@ -1216,7 +1216,8 @@
       try {
         const sessionToken = await getSessionToken();
         const entries = await Promise.all(
-          Object.entries(BOOT_ENDPOINTS).map(async ([key, path]) => [key, await safeGet(path)]),
+          Object.entries(BOOT_ENDPOINTS).map(async ([key, path]) => [key, await safeGet(path,
+            key === 'secretPin' ? { timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS } : undefined)]),
         );
         return deriveV2BootState({
           apiAvailable: true,

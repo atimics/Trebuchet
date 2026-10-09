@@ -111,20 +111,28 @@ check('a timed out check keeps a locked local vault locked', await page.evaluate
 await page.unroute(unlockRoute);
 
 let unlockRequests = 0;
+let statusUnavailable = false;
+const statusRoute = /\/api\/secret-pin\/status$/;
+await page.route(statusRoute, (route) => statusUnavailable
+  ? route.fulfill({ status: 503, json: { success: false, error: 'Status read interrupted.' } }) : route.continue());
 await page.route(unlockRoute, async (route) => {
   unlockRequests++;
   const response = await route.fetch();
   assert.equal(response.status(), 200);
   walletUnlocked = true;
+  statusUnavailable = true;
   await new Promise((resolve) => setTimeout(resolve, 4000));
   await route.fulfill({ response });
 });
 await page.fill('#recoveryPinInput', '4321');
 await page.waitForSelector('#recoveryPinGate', { state: 'hidden', timeout: 15000 });
 check('a valid PIN reply can take more than 3.5 seconds', await page.evaluate(() => state.secretPin.unlocked));
+check('a failed bootstrap status read preserves the confirmed unlock', await page.evaluate(() => state.secretPin.configured && !state.secretPin.locked));
 check('a valid PIN refreshes the saved wallet and keeps one unlock request', unlockRequests === 1
   && await page.evaluate(() => state.managedWallets.some((wallet) => wallet.publicKey === state.selectedWalletPublicKey && wallet.hasSecretKey)));
 await page.unroute(unlockRoute);
+statusUnavailable = false;
+await page.unroute(statusRoute);
 
 assert.equal(await call('POST', '/api/secret-pin/lock', {}), 200);
 walletUnlocked = false;

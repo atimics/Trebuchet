@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const dialogs = readFileSync(new URL('../public/v2/features/shell/dialogs.js', import.meta.url), 'utf8');
 const apiSource = readFileSync(new URL('../public/v2/api-client.js', import.meta.url), 'utf8');
+const connectionSource = readFileSync(new URL('../public/v2/features/shell/connection.js', import.meta.url), 'utf8');
 const locked = { configured: true, unlocked: false, locked: true, damaged: false };
 const unlocked = { ...locked, unlocked: true, locked: false };
 const failure = (code) => Object.assign(new Error('Request interrupted'), { code });
@@ -61,6 +62,10 @@ test('PIN work has time to finish after the short general request budget', async
     assert.equal((await operation()).unlocked, true);
   }
   assert.deepEqual(paths, ['/api/secret-pin/setup', '/api/secret-pin/unlock', '/api/secret-pin/change', '/api/secret-pin/status']);
+  const boot = await client.bootstrap();
+  assert.equal(boot.secretPin.unlocked, true, 'bootstrap status uses the PIN request budget');
+  assert.equal(boot.endpointStatus.secretPin, true);
+  assert.equal(boot.endpointStatus.prefs, false, 'ordinary bootstrap reads retain their short budget');
 });
 
 test('a timeout with the PIN still locked clears the digits and enables another try', async () => {
@@ -132,4 +137,31 @@ test('wallet refresh failure keeps a confirmed PIN unlock successful', async () 
   assert.equal(harness.context.state.secretPin.unlocked, true);
   assert.equal(harness.settled(), true);
   assert.equal(harness.notices.length, 1);
+});
+
+test('a partial wallet bootstrap keeps the confirmed PIN state until a successful status read', async () => {
+  const harness = gateHarness({ unlockSecretPin: async () => unlocked });
+  Object.assign(harness.context, {
+    applyPersonalDiscoveryState() {}, restoreDetectedLaunch() {}, renderSavedLaunchList() {},
+    normalizeClmmFeeTiers: () => [], freeVanityCandidates: () => [], authoritativeNetworkLabel: () => 'Solana',
+  });
+  harness.context.state.updateCheck = {};
+  const start = connectionSource.indexOf('function applyBootState(');
+  const end = connectionSource.indexOf('async function bootLocalApi()', start);
+  vm.runInNewContext(connectionSource.slice(start, end), harness.context);
+  harness.context.refreshSecretPinStatus = async () => harness.context.applyBootState({
+    api: { available: true, status: 'connected' }, endpointStatus: { secretPin: false },
+    secretPin: { configured: false, unlocked: false, locked: false },
+  });
+  await harness.context.submitRecoveryPinGate(); harness.tick();
+  assert.equal(harness.context.state.secretPin.unlocked, true);
+  assert.equal(harness.context.state.secretPin.configured, true);
+  assert.equal(harness.settled(), true);
+  harness.context.state.recoveryPinOffered = true;
+  harness.context.applyBootState({ api: { available: true, status: 'connected' },
+    endpointStatus: { secretPin: true }, secretPin: locked });
+  assert.equal(harness.context.state.secretPin.locked, true, 'a later confirmed lock replaces the saved UI state');
+  harness.context.applyBootState({ api: { available: false, status: 'static' },
+    secretPin: { configured: false, unlocked: false, locked: false } });
+  assert.equal(harness.context.state.secretPin.locked, true, 'an unavailable API preserves the last confirmed lock');
 });

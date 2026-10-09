@@ -253,7 +253,8 @@ function applyBootState(boot) {
   state.releaseUrl = boot.app?.releaseUrl || state.releaseUrl;
   state.releaseTrust = boot.app?.releaseTrust || state.releaseTrust;
   state.updateCheck.available = boot.app?.updateCheckAvailable === true;
-  applySecretPinStatus(boot.secretPin || {});
+  // Keep the last verified PIN state when this bootstrap's status read failed.
+  if (boot.api.available !== false && boot.endpointStatus?.secretPin !== false) applySecretPinStatus(boot.secretPin || {});
   state.prefs = {
     demoMode: boot.prefs?.demoMode === true,
     publishLaunchReport: boot.prefs?.publishLaunchReport !== false,
