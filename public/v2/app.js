@@ -15561,8 +15561,18 @@ function launchPlanLogoFingerprint(logo = null) {
 }
 
 function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.launchPlanConfigFingerprint === 'function') {
+    return TrebuchetCore.launchPlanConfigFingerprint(config);
+  }
   const token = config?.token || {};
   const topology = config?.poolTopology || {};
+  const stableTopology = { ...topology };
+  if (Array.isArray(topology.pools)) {
+    stableTopology.pools = topology.pools.map((pool) => {
+      const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+      return intent;
+    });
+  }
   return JSON.stringify(stableFundingFingerprintValue({
     experience: config?.experience || null,
     token: {
@@ -15578,7 +15588,7 @@ function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
     launchSol: Number.isFinite(Number(config?.launchSol)) ? Number(config.launchSol) : null,
     mode: config?.mode || null,
     vanity: config?.vanity || null,
-    poolTopology: topology,
+    poolTopology: stableTopology,
     funding: {
       launchSol: Number.isFinite(Number(config?.funding?.launchSol ?? config?.launchSol))
         ? Number(config.funding?.launchSol ?? config.launchSol)
