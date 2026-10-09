@@ -273,7 +273,8 @@ try {
   await field(':manual').fill('');
   assert.equal(await note('manual').textContent(), '');
 
-  // Names: every control is named by its label (helper text was removed).
+  // Names and descriptions stay separate so assistive technology reads the
+  // field label first, followed by its helper text and any live feedback.
   const names = await page.evaluate(() => [...document.querySelectorAll('.supply-settings input[type="text"], .supply-settings input:not([type]), .supply-settings textarea')].map((control) => {
     const label = document.getElementById(control.getAttribute('aria-labelledby'));
     const described = (control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean).map((id) => document.getElementById(id)?.textContent || '');
@@ -282,6 +283,7 @@ try {
   assert.ok(names.length >= 5);
   names.forEach((item) => {
     assert.ok(item.name, 'every field has a name');
+    assert.ok(item.described, `${item.name} has a description`);
   });
 
   // Narrow screen: no sideways scroll, and the tier labels stay inside.
