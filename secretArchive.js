@@ -14,7 +14,13 @@ function configDir() {
   return process.env.TREBUCHET_CONFIG_DIR || __dirname;
 }
 
-const FLAT_FILES = ['.secretPin.json', 'pendingWallets.json', 'vanityCAs.json', 'splitJobs.json'];
+const FLAT_FILES = [
+  '.secretPin.json',
+  '.secretPin.json.bak',
+  'pendingWallets.json',
+  'vanityCAs.json',
+  'splitJobs.json',
+];
 
 function archiveSources() {
   const root = configDir();
