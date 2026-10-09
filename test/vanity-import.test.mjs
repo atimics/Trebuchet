@@ -10,7 +10,8 @@ const route = server.slice(
 
 test('vanity import derives the public key from the secret and checks the pattern', () => {
   assert.ok(route.length > 0, 'import route exists');
-  assert.match(route, /Keypair\.fromSecretKey\(bytes\)\.publicKey\.toBase58\(\)/);
+  assert.match(route, /readVanityMintKey\(\{/);
+  assert.match(route, /const \{ publicKey \} = mintKey/);
   assert.doesNotMatch(route, /req\.body\?\.publicKey/, 'the request cannot choose the public key');
   assert.match(route, /does not match the requested pattern/);
   assert.match(route, /rejectIfSecretPinLocked/);
@@ -29,9 +30,9 @@ test('the grinder has a libsodium backend that replaces tweetnacl', () => {
 });
 
 test('vanity import accepts a split-key scalar and derives the address from it', () => {
-  assert.match(route, /scalarPublicKey\(scalarBytes\)/);
-  assert.match(route, /scalar must be a 32-byte array/);
-  assert.match(route, /keyType: 'scalar', scalar: Array\.from\(scalarBytes\)/);
+  assert.match(route, /scalar: req\.body\?\.scalar/);
+  assert.match(route, /keyType: req\.body\?\.keyType/);
+  assert.match(route, /vanityCaStore\.add\(\{\s*\.\.\.mintKey/);
   assert.doesNotMatch(route, /req\.body\?\.publicKey/);
 });
 

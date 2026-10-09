@@ -8,6 +8,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Keypair } from '@solana/web3.js';
+
+const vanity = Keypair.fromSeed(new Uint8Array(32).fill(12));
+const vanityPublicKey = vanity.publicKey.toBase58();
+const vanitySecret = Array.from(vanity.secretKey);
 
 import * as secretStore from '../secretStore.js';
 
@@ -46,8 +51,8 @@ test('persists vanity CA candidates without exposing secret metadata in listMeta
     const store = await importFreshStore(configDir);
 
     store.add({
-      publicKey: 'Vanity111111111111111111111111111111111',
-      secretKey: [1, 2, 3],
+      publicKey: vanityPublicKey,
+      secretKey: vanitySecret,
       rarity: 'Common',
       attempts: 42,
       epochs: 0.7,
@@ -57,10 +62,10 @@ test('persists vanity CA candidates without exposing secret metadata in listMeta
       mode: 'both',
     });
 
-    assert.deepEqual(store.get('Vanity111111111111111111111111111111111').secretKey, [1, 2, 3]);
+    assert.deepEqual(store.get(vanityPublicKey).secretKey, vanitySecret);
     assert.deepEqual(store.listMetadata(), [
       {
-        publicKey: 'Vanity111111111111111111111111111111111',
+        publicKey: vanityPublicKey,
         createdAt: store.list()[0].createdAt,
         rarity: 'Common',
         epochs: 0.7,
@@ -81,9 +86,9 @@ test('persists vanity CA candidates without exposing secret metadata in listMeta
 
     const disk = JSON.parse(readFileSync(storeFile(configDir), 'utf8'));
     assert.equal(disk[0].secretKey, undefined);
-    assert.equal(disk[0].secretKeyEnc, 'plain:[1,2,3]');
+    assert.equal(disk[0].secretKeyEnc, `plain:${JSON.stringify(vanitySecret)}`);
 
-    store.remove('Vanity111111111111111111111111111111111');
+    store.remove(vanityPublicKey);
     assert.deepEqual(store.list(), []);
   });
 });
@@ -98,21 +103,21 @@ test('stores vanity CA secrets with the configured Recovery PIN', async (t) => {
     const store = await importFreshStore(configDir);
 
     store.add({
-      publicKey: 'PinVanity1111111111111111111111111111111',
-      secretKey: [9, 8, 7],
+      publicKey: vanityPublicKey,
+      secretKey: vanitySecret,
       rarity: 'Rare',
     });
 
     const disk = JSON.parse(readFileSync(storeFile(configDir), 'utf8'));
     assert.match(disk[0].secretKeyEnc, /^pin:/);
-    assert.deepEqual(store.get('PinVanity1111111111111111111111111111111').secretKey, [9, 8, 7]);
+    assert.deepEqual(store.get(vanityPublicKey).secretKey, vanitySecret);
 
     secretStore.lockSecretPin();
-    assert.equal(store.get('PinVanity1111111111111111111111111111111').secretKey, undefined);
+    assert.equal(store.get(vanityPublicKey).secretKey, undefined);
     assert.equal(store.listMetadata()[0].decryptionFailed, true);
 
     assert.equal(secretStore.unlockSecretPin('1357'), true);
-    assert.deepEqual(store.get('PinVanity1111111111111111111111111111111').secretKey, [9, 8, 7]);
+    assert.deepEqual(store.get(vanityPublicKey).secretKey, vanitySecret);
   });
 });
 
@@ -153,5 +158,24 @@ test('removes only PIN-encrypted Vanity CAs during destructive PIN reset', async
         rarity: 'Common',
       },
     ]);
+  });
+});
+
+test('invalid imported keys leave saved candidates and ciphertext intact', async (t) => {
+  await withMutedConsole(async () => {
+    const configDir = makeTempConfigDir(t);
+    secretStore.lockSecretPin();
+    secretStore.setSafeStorage(null);
+    const store = await importFreshStore(configDir);
+    store.add({ publicKey: vanityPublicKey, secretKey: vanitySecret });
+    const before = readFileSync(storeFile(configDir), 'utf8');
+    for (const entry of [
+      { publicKey: vanityPublicKey, secretKey: vanitySecret.slice(0, 32) },
+      { publicKey: vanityPublicKey, secretKey: vanitySecret.map((byte) => byte + 256) },
+      { publicKey: Keypair.generate().publicKey.toBase58(), secretKey: vanitySecret },
+    ]) {
+      assert.throws(() => store.add(entry), { code: 'INVALID_VANITY_KEY' });
+      assert.equal(readFileSync(storeFile(configDir), 'utf8'), before);
+    }
   });
 });

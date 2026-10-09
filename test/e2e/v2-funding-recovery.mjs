@@ -90,17 +90,18 @@ try {
     state.classicFundingEstimate = stampClassicFundingEstimate(estimate, currentLaunchConfig());
     state.quoteAcquire = defaultQuoteAcquireState();
     renderAll();
-    return { ready: quoteAcquireStatus().ready, missingSol: fundingMeterSnapshot().missingSol, cost: fundingMeterSnapshot().estimatedCost };
+    return { ready: quoteAcquireStatus().ready, missingSol: fundingMeterSnapshot().missingSol, cost: fundingMeterSnapshot().estimatedCost, costLabel: phaseTabValue('cost') };
   });
-  assert.equal(initial.ready, true); assert.equal(initial.missingSol, 0); assert.equal(initial.cost, 2.6);
+  assert.equal(initial.ready, true); assert.equal(initial.missingSol, 0); assert.equal(initial.cost, 2.6); assert.equal(initial.costLabel, '2.6000 SOL');
   const missing = await page.evaluate(() => {
     state.classicFundingEstimate = { ...state.classicFundingEstimate, autoSwapPlan: [],
       byQuote: { OWL: '3333334' }, quoteBreakdown: [{ mint: 'OWL', symbol: 'OWL', amount: 3.333334, decimals: 6 }] };
     state.manualPrefund.balance = { sol: 10, tokens: {} };
     renderClassicBridge();
-    return document.querySelector('.funding-task').textContent;
+    return { text: document.querySelector('.funding-task').textContent, pairLabel: phaseTabValue('acquire') };
   });
-  assert.match(missing, /Add 3.333334 OWL/); assert.match(missing, /Balances refresh automatically/);
+  assert.match(missing.text, /Add 3.333334 OWL/); assert.match(missing.text, /Balances refresh automatically/);
+  assert.equal(missing.pairLabel, '1 to fund');
   await page.locator('.funding-task').waitFor({ state: 'visible' });
   if (shots) await page.screenshot({ path: path.join(shots, 'funding-shortfall.png') });
   const recovered = await page.evaluate(async () => {
@@ -127,6 +128,13 @@ try {
   assert.equal(recovered.error, 'Quote service busy'); assert.equal(recovered.attempts, 2);
   assert.equal(recovered.readinessReads, 1); assert.equal(recovered.sends, 0); assert.equal(recovered.ready, '');
   assert.match(recovered.text, /Launch wallet ready/);
+  const priceReview = await page.evaluate(() => {
+    state.classicFundingEstimate = null;
+    state.launchChecks = { active: true, error: 'OWL pool prices differ', errorCode: 'POOL_SPREAD' };
+    renderClassicBridge();
+    return document.querySelector('.funding-task [data-action]').dataset.action;
+  });
+  assert.equal(priceReview, 'review-pair-tokens');
   assert.deepEqual(pageErrors, []);
   console.log('v2 funding recovery: ok');
 } finally {

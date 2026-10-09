@@ -147,6 +147,8 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
+  if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
+  if (view === 'launch') refreshQuotePrices().catch(() => null);
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -531,7 +533,7 @@ function renderLaunchNextRail(facts, next, workspace) {
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
             : '<div class="rail-balance"><b>Not checked</b></div>'}
-      ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
+      ${tokens.map(([tokenMint, token]) => `<div class="rail-row"><span>${tokenSymbolHtml(tokenMint, token.symbol)}</span><b>${escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
     </section>`;
 
   // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch
@@ -637,9 +639,16 @@ function phaseTabValue(id, runValue) {
     case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
     case 'record': return state.launchProof ? 'Saved' : 'Not ready';
     case 'recover': return 'Resume or refund';
-    case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
-    case 'prefund': return `${quoteAcquireManualCount()} to send`;
+    case 'cost': {
+      const funding = fundingMeterSnapshot();
+      return funding.estimateAvailable ? `${Number(funding.estimatedCost).toFixed(4)} SOL` : 'Calculating';
+    }
+    case 'acquire': {
+      const coverage = currentFundingTokenCoverage();
+      const missing = coverage.rows.filter((row) => !row.funded).length;
+      return !coverage.fresh ? 'Checking balance' : missing ? `${missing} to fund` : 'Held in wallet';
+    }
+    case 'prefund': return manualPrefundSummary(quoteManualPrefundItems()).label;
     default: return runValue || supply;
   }
 }

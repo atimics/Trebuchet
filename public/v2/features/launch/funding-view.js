@@ -101,6 +101,13 @@ function pairTokenFundingDetail() {
   ).join(' ') + ' Balances refresh automatically.';
 }
 
+function quoteWalletFundingStatus(routes = quoteAcquireRoutes()) {
+  const coverage = currentFundingTokenCoverage();
+  const heldMints = new Set(coverage.fresh ? coverage.rows.filter((row) => row.funded && BigInt(row.requiredRaw) > 0n).map((row) => row.mint) : []);
+  return { checked: coverage.fresh, heldMints, missingRoutes: routes.filter((route) => !heldMints.has(route.quoteMint)),
+    ready: coverage.fresh && routes.every((route) => heldMints.has(route.quoteMint)) };
+}
+
 function quoteAcquireStatus(config = currentLaunchConfig()) {
   const routes = quoteAcquireRoutes();
   const progress = quoteAcquireProgress();
@@ -131,6 +138,7 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     stale,
     successEvidence,
     held,
+    walletFunding: quoteWalletFundingStatus(routes),
     ready,
   };
 }
@@ -178,11 +186,11 @@ function formatRawTokenAmount(value, decimals = 0) {
 }
 
 function manualPrefundBalanceSnapshotStatus(walletPublicKey = selectedLaunchWalletPublicKey()) {
-  const balance = state.manualPrefund.balance && typeof state.manualPrefund.balance === 'object'
+  const balance = state.manualPrefund?.balance && typeof state.manualPrefund.balance === 'object'
     ? state.manualPrefund.balance
     : null;
-  const snapshotWalletPublicKey = state.manualPrefund.walletPublicKey || null;
-  const checkedAt = state.manualPrefund.lastUpdatedAt || null;
+  const snapshotWalletPublicKey = state.manualPrefund?.walletPublicKey || null;
+  const checkedAt = state.manualPrefund?.lastUpdatedAt || null;
   const checkedAtMs = Date.parse(checkedAt || '');
   const ageMs = Number.isFinite(checkedAtMs) ? Date.now() - checkedAtMs : Infinity;
   const fresh = Boolean(balance && Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= WALLET_BALANCE_FRESH_MS);
@@ -639,6 +647,8 @@ function renderQuoteAcquirePanel() {
     ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
+    : acquireStatus.walletFunding.ready
+      ? 'The launch wallet holds enough pair tokens for these pools.'
     : acquireStatus.stale
       ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
@@ -652,7 +662,8 @@ function renderQuoteAcquirePanel() {
     && Boolean(selectedLaunchWalletPublicKey())
     && (routes.length > 0 || savedAction)
     && blocked.length === 0
-    && !state.quoteAcquire.running;
+    && !state.quoteAcquire.running
+    && !acquireStatus.walletFunding.ready;
   const startLabel = state.quoteAcquire.running
     ? 'Acquiring'
     : blocked.length ? 'Resolve pair block'

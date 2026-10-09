@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from '../launchExecution.js';
 import { RecoveryStorageError } from '../packages/runtime/src/store.js';
+import { createSplitSecret, scalarPublicKey } from '@trebuchet/core/split-key';
 
 const wallet = Keypair.fromSeed(new Uint8Array(32).fill(6));
 const destination = Keypair.fromSeed(new Uint8Array(32).fill(7)).publicKey.toBase58();
@@ -78,6 +79,21 @@ test('all six ordinary services return results and release their wallet admissio
   }
 });
 
+test('classic liquidity create and resume pass the resolved wallet to the shared pool wrapper', async () => {
+  for (const method of ['createLiquidity', 'resumeLiquidity']) {
+    const f = fixture();
+    let poolRequest;
+    f.deps.createPoolsAndPositions = async (request) => {
+      poolRequest = request;
+      return { results: [{ poolId: 'pool-a' }] };
+    };
+
+    await f.services()[method]({ ...input });
+
+    assert.equal(poolRequest.walletPublicKey, input.walletPublicKey, method);
+  }
+});
+
 test('concurrent liquidity requests preserve the active request and its progress', async () => {
   const f = fixture();
   let complete, entered;
@@ -143,8 +159,8 @@ test('token recovery receives saved metadata authority choices and records its r
 test('an existing vanity mint is adopted through the service failure path', async () => {
   const f = fixture();
   f.deps.createTokenWithMetaplex = async () => { throw new Error('account already in use'); };
-  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-saved' }), { code: 'TOKEN_ACCOUNT_ALREADY_EXISTS' });
-  assert.equal(f.state.journal.token.mint, 'mint-saved');
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: input.walletPublicKey }), { code: 'TOKEN_ACCOUNT_ALREADY_EXISTS' });
+  assert.equal(f.state.journal.token.mint, input.walletPublicKey);
   assert.equal(f.state.journal.stage, 'token_account_exists');
   assert.equal(f.calls.includes('candidate-remove'), false);
   assert.equal(f.operations.size, 0);
@@ -169,12 +185,59 @@ test('another launch\'s mint is never adopted as this launch\'s token', async ()
   const f = fixture();
   f.deps.createTokenWithMetaplex = async () => {
     // The address became another launch's coin while this one was creating.
-    f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: 'mint-raced' } }];
+    f.state.otherJournals = [{ walletPublicKey: 'other-wallet', token: { mint: input.walletPublicKey } }];
     throw new Error('account already in use');
   };
-  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: 'mint-raced' }));
-  assert.notEqual(f.state.journal.token.mint, 'mint-raced');
+  await assert.rejects(f.services().createToken({ ...input, vanityCAPublicKey: input.walletPublicKey }));
+  assert.notEqual(f.state.journal.token.mint, input.walletPublicKey);
   assert.notEqual(f.state.journal.stage, 'token_account_exists');
+});
+
+test('short imported vanity keys fail before wallet admission or journal changes', async () => {
+  for (const saved of [false, true]) {
+    const f = fixture();
+    const shortKey = Array.from(wallet.secretKey.slice(0, 32));
+    f.deps.vanityCaStore.get = () => ({ secretKey: shortKey });
+    await assert.rejects(f.services().createToken({
+      ...input,
+      ...(saved ? { vanityCAPublicKey: input.walletPublicKey } : { vanityCAKeypair: JSON.stringify(shortKey) }),
+    }), (error) => error.statusCode === 400 && error.code === 'INVALID_VANITY_KEY' && /64 bytes; received 32/.test(error.message));
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.writes, []);
+    assert.equal(f.operations.size, 0);
+  }
+});
+
+test('imported key records and saved split keys reach token creation with the correct key type', async () => {
+  const { secretScalar } = createSplitSecret();
+  const scalarKey = { keyType: 'scalar', scalar: Array.from(secretScalar), publicKey: new PublicKey(scalarPublicKey(secretScalar)).toBase58() };
+  for (const source of ['array', 'JSON record', 'saved scalar', 'scalar record']) {
+    const f = fixture();
+    let received;
+    f.deps.createTokenWithMetaplex = async (args) => { received = args; return { tokenMint: 'mint-a' }; };
+    f.deps.vanityCaStore.get = () => scalarKey;
+    const selection = source === 'saved scalar' ? { vanityCAPublicKey: scalarKey.publicKey }
+      : source === 'scalar record' ? { vanityCAKeypair: JSON.stringify(scalarKey) }
+      : { vanityCAKeypair: source === 'array' ? Array.from(wallet.secretKey) : JSON.stringify({ secretKey: Array.from(wallet.secretKey) }) };
+    await f.services().createToken({ ...input, ...selection });
+    const split = source.includes('scalar');
+    assert.deepEqual(received.vanityCAScalar, split ? scalarKey.scalar : null);
+    assert.deepEqual(received.vanityCAKeypair, split ? null : Array.from(wallet.secretKey));
+  }
+});
+
+test('an imported key must match the selected mint and its mint format before launch starts', async () => {
+  const { secretScalar } = createSplitSecret();
+  for (const selection of [
+    { vanityCAPublicKey: destination, vanityCAKeypair: JSON.stringify(Array.from(wallet.secretKey)) },
+    { vanityCAKeypair: JSON.stringify({ keyType: 'scalar', scalar: Array.from(secretScalar) }) },
+  ]) {
+    const f = fixture();
+    f.deps.normalizeMintFormat = () => 'classic-spl';
+    await assert.rejects(f.services().createToken({ ...input, ...selection }), (error) => error.statusCode === 400 && error.code === 'INVALID_VANITY_KEY');
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.writes, []);
+  }
 });
 
 test('liquidity failures retain public recovery details for every caller', async () => {

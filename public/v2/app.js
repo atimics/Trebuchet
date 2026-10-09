@@ -239,10 +239,10 @@ const V2_VIEWPORT_SMOKE_REQUIRED_CHECKS = Object.freeze([
   'keyboardWalkthrough',
 ]);
 const DEFAULT_CLMM_FEE_TIERS = Object.freeze([
-  { index: 4, tradeFeeRate: 100, tickSpacing: 1 },
-  { index: 5, tradeFeeRate: 500, tickSpacing: 1 },
-  { index: 1, tradeFeeRate: 2500, tickSpacing: 60 },
-  { index: 3, tradeFeeRate: 10000, tickSpacing: 120 },
+  { index: 4, tradeFeeRate: 100, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 5, tradeFeeRate: 500, tickSpacing: 1, feeModel: 'fixed' },
+  { index: 1, tradeFeeRate: 2500, tickSpacing: 60, feeModel: 'fixed' },
+  { index: 3, tradeFeeRate: 10000, tickSpacing: 120, feeModel: 'fixed' },
 ]);
 
 const DISCOVERY_STORAGE_KEY = 'trebuchet:v2:discovery-registry:v1';
@@ -522,9 +522,9 @@ const state = {
   launchPresetSignature: null,
   // The SOL pool's venue: Raydium CLMM, or a Meteora DAMM v2 pool (one locked position).
   solPoolVenue: 'raydium',
-  solPoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  solPoolDamm: { feeBps: 25, rangeMultiple: 1000, feeModel: 'fixed' },
   quotePoolVenue: 'raydium',
-  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000 },
+  quotePoolDamm: { feeBps: 25, rangeMultiple: 1000, feeModel: 'fixed' },
   customPools: [],
   customPoolCounter: 0,
   airdropCsvText: '',
@@ -3480,9 +3480,30 @@ const RECOVERY_PIN_DEVICE_SECRET_MESSAGE = "This computer's keychain no longer h
 
 function recoveryPinFailureMessage(error) {
   if (error?.code === 'BAD_SECRET_PIN') return 'Incorrect PIN';
+  if (error?.code === 'TIMEOUT') return 'The PIN check took too long. Try again.';
   if (error?.code === 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE') return RECOVERY_PIN_DEVICE_SECRET_MESSAGE;
   if (error?.code === 'SECRET_PIN_STATE_DAMAGED') return RECOVERY_PIN_DAMAGED_MESSAGE;
   return error?.message || 'PIN check failed';
+}
+
+function recoveryPinRequestUncertain(error) {
+  if (['BAD_SECRET_PIN', 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE', 'SECRET_PIN_STATE_DAMAGED', 'SECRET_PIN_NOT_SET'].includes(error?.code)) return false;
+  return !error?.code || ['TIMEOUT', 'INVALID_JSON', 'HTTP_ERROR', 'V2_API_ERROR'].includes(error.code) || error.status >= 500;
+}
+
+async function unlockRecoveryPinWithStatus(pin) {
+  try { return await state.apiClient.unlockSecretPin(pin); }
+  catch (error) {
+    if (recoveryPinRequestUncertain(error) && state.apiClient?.getSecretPinStatus) {
+      state.recoveryPinGate.message = 'Checking the local unlock status…';
+      renderRecoveryPinGate();
+      try {
+        const status = await state.apiClient.getSecretPinStatus();
+        if (status?.configured === true && status.unlocked === true && status.locked === false && status.damaged !== true) return status;
+      } catch { /* Keep the original request error for the next try. */ }
+    }
+    throw error;
+  }
 }
 
 function secretPinMeta() {
@@ -3863,9 +3884,15 @@ async function submitRecoveryPinGate() {
   state.secretPin.busy = 'Unlocking';
   renderRecoveryPinGate();
   try {
-    const status = await state.apiClient.unlockSecretPin(pin);
+    const status = await unlockRecoveryPinWithStatus(pin);
     applySecretPinStatus(status);
-    await refreshSecretPinStatus({ reloadBoot: true });
+    state.recoveryPinGate.message = 'PIN verified. Loading saved wallets…';
+    renderRecoveryPinGate();
+    try { await refreshSecretPinStatus({ reloadBoot: true }); }
+    catch {
+      applySecretPinStatus(status);
+      notify('PIN verified. Refresh the wallet list to continue.');
+    }
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'success';
     state.recoveryPinGate.message = state.recoveryPinGate.reason === 'vanity'
@@ -3877,7 +3904,7 @@ async function submitRecoveryPinGate() {
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'error';
     state.recoveryPinGate.message = recoveryPinFailureMessage(error);
-    const retryable = !error?.code || error.code === 'BAD_SECRET_PIN';
+    const retryable = recoveryPinRequestUncertain(error) || error?.code === 'BAD_SECRET_PIN';
     renderRecoveryPinGate();
     recoveryPinGateTimer = window.setTimeout(() => {
       recoveryPinGateTimer = null;
@@ -4475,7 +4502,11 @@ function normalizeClmmFeeTier(tier) {
   if (!Number.isInteger(index) || index < 0) return null;
   if (!Number.isInteger(tradeFeeRate) || tradeFeeRate <= 0) return null;
   if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) return null;
-  return { index, tradeFeeRate, tickSpacing };
+  // Dynamic-fee configs (Raydium CLMM upgrade, May 2026) keep their model tag
+  // so the picker, glossary, and evidence rows can disclose that the rate is
+  // a baseline, not the fee the pool always charges.
+  const feeModel = tier.feeModel === 'dynamic' ? 'dynamic' : 'fixed';
+  return { index, tradeFeeRate, tickSpacing, feeModel };
 }
 
 function normalizeClmmFeeTiers(tiers) {
@@ -4492,7 +4523,8 @@ function normalizeClmmFeeTiers(tiers) {
 
 function feeTierLabel(tier) {
   const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
+  const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic' : '';
+  return `${feePercent}% / spacing ${tier.tickSpacing}${dynamic}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
 }
 
 function feeTierOptionsHtml(selectedIndex) {
@@ -4500,7 +4532,7 @@ function feeTierOptionsHtml(selectedIndex) {
   const selected = Math.floor(Number(selectedIndex));
   const hasSelected = tiers.some((tier) => tier.index === selected);
   const options = tiers.map((tier) => `
-    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
+    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" title="${tier.feeModel === 'dynamic' ? escapeHtml('Dynamic fee: the shown rate is the baseline; the pool charges more under volatility.') : ''}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
   `).join('');
   return `${options}${Number.isInteger(selected) && !hasSelected ? `<option value="${selected}" selected>Custom index ${selected}</option>` : ''}`;
 }
@@ -4539,10 +4571,11 @@ function customQuoteInfoBadge(pool = {}) {
   if (info.compatible === false) return { label: 'Incompatible', className: 'danger', detail: 'Token is not compatible with the Raydium CLMM launch path.' };
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
   const swapRoute = info.swapRoute || 'unknown';
+  const held = quoteWalletFundingStatus().heldMints.has(pool.quoteMint);
   if (info.compatible == null || info.freezeAuthorityBlock == null) {
     return { label: 'Checking safety', className: 'warn', detail: 'Trebuchet retries the token and authority checks automatically.' };
   }
-  if (swapRoute === 'none' || swapRoute === 'unknown') return {
+  if (!held && (swapRoute === 'none' || swapRoute === 'unknown')) return {
     label: swapRoute === 'none' ? 'Use wallet tokens' : 'Checking routes', className: 'warn',
     detail: 'Funding counts tokens in the launch wallet and shows the amount to add. Swap routes refresh automatically.',
   };
@@ -4550,9 +4583,9 @@ function customQuoteInfoBadge(pool = {}) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
   return {
-    label: 'Verified',
+    label: held ? 'Held in wallet' : 'Verified',
     className: '',
-    detail: `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
+    detail: held ? 'The token safety check passed and the launch wallet holds the required amount.' : `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
   };
 }
 
@@ -5072,11 +5105,16 @@ function currentClassicModel() {
       ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
       : String(pool.id || '').endsWith('-flywheel')
         ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
-        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange, feeModel: custom.dammFeeModel, ramp: custom.dammRamp } } : null;
     if (choice?.venue !== 'meteora-damm-v2') return;
     Object.assign(pool, {
       venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      damm: {
+        feeBps: Number(choice.damm?.feeBps) || 25,
+        rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000,
+        feeModel: choice.damm?.feeModel || 'fixed',
+        ...(choice.damm?.ramp ? { ramp: { endBps: Number(choice.damm.ramp.endBps) || 25, durationSec: Number(choice.damm.ramp.durationSec) || 30 * 24 * 3600 } } : {}),
+      },
       distribution: [{ sharePercent: 100, recipient: null }],
       ladder: { mode: 'off' },
       support: { mode: 'off' },
@@ -5502,14 +5540,14 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   // with a saved launch, the same way it appears after an upload.
   if (token.logo && typeof token.logo === 'object' && token.logo.dataUrl) {
     state.tokenLogo = {
-      dataUrl: token.logo.dataUrl,
-      mime: token.logo.mime || 'image/png',
+      ...token.logo,
+      mimeType: token.logo.mimeType || token.logo.mime || /^data:([^;]+)/.exec(token.logo.dataUrl)?.[1] || 'image/png',
       name: token.logo.name || 'logo',
-      animated: token.logo.animated === true,
+      animated: token.logo.animated === true || /^data:image\/gif;/.test(token.logo.dataUrl),
     };
     state.launchIdentity = null;
     // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
-    if (!journal?.token?.metadataUri) {
+    if (!journal?.token?.metadataUri && !journal?.token?.onChainMetadataUri) {
       fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
     }
   }
@@ -5746,6 +5784,8 @@ function setView(view) {
   $('#viewEyebrow').textContent = views[view].eyebrow;
   $('#viewTitle').textContent = views[view].title;
   if (view === 'wallet') refreshHeldWallets();
+  if (view === 'launch' && !chainCoinOnPage()) autoVerifyQuoteTokens();
+  if (view === 'launch') refreshQuotePrices().catch(() => null);
   renderCoinContext();
   renderLaunchWorkspace();
   renderExtension();
@@ -6130,7 +6170,7 @@ function renderLaunchNextRail(facts, next, workspace) {
         : !walletKey ? '<div class="rail-balance"><b>No wallet</b></div>'
           : holds != null ? `<div class="rail-balance is-amount"><b>${sol(holds)}</b><span>SOL</span></div>`
             : '<div class="rail-balance"><b>Not checked</b></div>'}
-      ${tokens.map(([tokenMint, token]) => row(String(token.symbol || shortAddress(tokenMint)), escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 })))).join('')}
+      ${tokens.map(([tokenMint, token]) => `<div class="rail-row"><span>${tokenSymbolHtml(tokenMint, token.symbol)}</span><b>${escapeHtml(Number(token.amountUi).toLocaleString('en-US', { maximumFractionDigits: 2 }))}</b></div>`).join('')}
     </section>`;
 
   // Once the launch has started, the wallet is meant to empty: the block shows the budget the launch
@@ -6236,9 +6276,16 @@ function phaseTabValue(id, runValue) {
     case 'breakdown': return `${(state.classicFundingEstimate?.solBreakdown || []).length} lines`;
     case 'record': return state.launchProof ? 'Saved' : 'Not ready';
     case 'recover': return 'Resume or refund';
-    case 'cost': return state.classicFundingEstimate?.totalSol ? `${Number(state.classicFundingEstimate.totalSol).toFixed(4)} SOL` : 'Not estimated';
-    case 'acquire': return `${state.classicFundingEstimate?.autoSwapPlan?.length || 0} to buy`;
-    case 'prefund': return `${quoteAcquireManualCount()} to send`;
+    case 'cost': {
+      const funding = fundingMeterSnapshot();
+      return funding.estimateAvailable ? `${Number(funding.estimatedCost).toFixed(4)} SOL` : 'Calculating';
+    }
+    case 'acquire': {
+      const coverage = currentFundingTokenCoverage();
+      const missing = coverage.rows.filter((row) => !row.funded).length;
+      return !coverage.fresh ? 'Checking balance' : missing ? `${missing} to fund` : 'Held in wallet';
+    }
+    case 'prefund': return manualPrefundSummary(quoteManualPrefundItems()).label;
     default: return runValue || supply;
   }
 }
@@ -7732,6 +7779,8 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Symbol', info.symbol || pool.quoteSymbol || '-'],
     ['Decimals', info.decimals ?? '-'],
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
+    ['Price source', info.priceSource || 'Awaiting market'],
+    ['Price checked', info.priceCheckedAt ? formatDate(info.priceCheckedAt) : 'Awaiting refresh'],
     ['Route', info.swapRoute === 'jupiter' && info.swapVenues?.length ? `Jupiter · ${info.swapVenues.join(', ')}` : { raydium: 'Raydium', jupiter: 'Jupiter', none: 'Wallet tokens' }[info.swapRoute] || 'Checking'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
@@ -7746,6 +7795,8 @@ function renderCustomQuoteInfoPanel(pool) {
       ${facts.length ? `<div class="quote-info-facts">
         ${facts.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
       </div>` : ''}
+      <small>Prices refresh every 30 seconds. Pool creation checks the market again.</small>
+      ${info?.priceError || info?.priceWarning ? `<small class="warn">${escapeHtml(info.priceError || info.priceWarning)}</small>` : ''}
       <button class="pill-button" type="button" data-action="resolve-custom-quote" data-pool-id="${escapeHtml(pool.id)}" ${canCheck ? '' : 'disabled'}>
         ${customQuoteInfoRecord(pool)?.loading ? 'Checking' : 'Verify quote'}
       </button>
@@ -7814,6 +7865,7 @@ function feeTierInfo(index) {
     step: (Math.pow(1.0001, tier.tickSpacing) - 1) * 100,
     rank: tiers.indexOf(tier),
     count: tiers.length,
+    dynamic: tier.feeModel === 'dynamic',
   };
 }
 
@@ -7835,7 +7887,7 @@ function poolVenueFor(row) {
   if (row.key === 'sol') return { venue: state.solPoolVenue, damm: state.solPoolDamm };
   if (row.key === 'quote') return { venue: state.quotePoolVenue, damm: state.quotePoolDamm };
   const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
-  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange } };
+  return { venue: pool?.venue, damm: { feeBps: pool?.dammFeeBps, rangeMultiple: pool?.dammRange, feeModel: pool?.dammFeeModel, ramp: pool?.dammRamp } };
 }
 
 function rowIsMeteora(row) {
@@ -7851,7 +7903,13 @@ function setPoolVenueChoice(rowKey, patch) {
   }
   if (rowKey === 'quote') {
     if (patch.venue) state.quotePoolVenue = patch.venue;
-    state.quotePoolDamm = { ...state.quotePoolDamm, ...(patch.feeBps ? { feeBps: patch.feeBps } : {}), ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}) };
+    state.quotePoolDamm = {
+      ...state.quotePoolDamm,
+      ...(patch.feeBps ? { feeBps: patch.feeBps } : {}),
+      ...(patch.feeModel ? { feeModel: patch.feeModel } : {}),
+      ...(patch.ramp ? { ramp: { endBps: patch.ramp.endBps, durationSec: state.quotePoolDamm?.ramp?.durationSec || 30 * 24 * 3600 } } : {}),
+      ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}),
+    };
     if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
     return;
   }
@@ -7859,6 +7917,8 @@ function setPoolVenueChoice(rowKey, patch) {
   if (!pool) return;
   if (patch.venue) pool.venue = patch.venue;
   if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.feeModel) pool.dammFeeModel = patch.feeModel;
+  if (patch.ramp) pool.dammRamp = { endBps: patch.ramp.endBps, durationSec: pool.dammRamp?.durationSec || 30 * 24 * 3600 };
   if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
   if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
 }
@@ -7880,14 +7940,27 @@ function rowSwitchesHtml(row) {
   let fee;
   if (meteora) {
     const current = Number(poolVenueFor(row).damm?.feeBps) || 25;
-    fee = toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    const model = poolVenueFor(row).damm?.feeModel || 'fixed';
+    fee = toggleGroupHtml({
+      label: `${row.label} fee model`, action: 'set-pool-fee-model', rowKey: row.key, selected: model,
+      options: [
+        ['fixed', 'Fixed', 'The fee never changes.'],
+        ['ramp', 'Ramp', 'Starts at the shown fee and decays to the ramp end fee over 30 days.'],
+        ['dynamic', 'Dynamic', 'The shown fee is the base; the pool charges more when the price moves fast.'],
+      ],
+    });
+    fee += toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    if (model === 'ramp') {
+      const end = Number(poolVenueFor(row).damm?.ramp?.endBps) || 25;
+      fee += toggleGroupHtml({ label: `${row.label} ramp end fee`, action: 'set-pool-ramp-end', rowKey: row.key, selected: end, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+    }
   } else {
     const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
     const selected = Math.floor(Number(rowTierIndex(row)));
     const shown = tiers.filter((tier) => RAYDIUM_ROW_TIERS.includes(tier.index) || tier.index === selected);
     fee = toggleGroupHtml({
       label: `${row.label} fee tier`, action: 'set-pool-tier', rowKey: row.key, selected,
-      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
+      options: (shown.length ? shown : tiers.slice(0, 4)).map((tier) => [tier.index, `${Number(tier.tradeFeeRate) / 10000}%${tier.feeModel === 'dynamic' ? ' · dynamic (base)' : ''}`, `price steps of ${Number(((Math.pow(1.0001, tier.tickSpacing) - 1) * 100).toFixed(2))}%`])
         .concat(tiers.some((tier) => tier.index === selected) ? [] : [[selected, `#${selected}`]]),
     });
   }
@@ -8076,11 +8149,11 @@ function renderSupplyEditor() {
   let fieldSeq = 0;
   const field = (label, hint, control, feedback = '', wide = false) => {
     const base = `supply-field-${++fieldSeq}`;
-    const described = [feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const described = [hint ? `${base}-hint` : '', feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
     const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
       `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
     ));
-    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${hint ? `<small id="${base}-hint">${escapeHtml(hint)}</small>` : ''}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
   };
   const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
@@ -8100,7 +8173,7 @@ function renderSupplyEditor() {
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
-        ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
+        ${field('Support layers', 'Quote share, low price multiple and high price multiple, one layer per line.', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
@@ -8109,8 +8182,8 @@ function renderSupplyEditor() {
     if (row.key === 'quote') {
       return `
         ${mapHost}
-        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
-        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        ${field('Fee tier', 'Swap fee charged by the pair pool.', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', 'The pair opens above the SOL pool price. 0 to 500%.', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
@@ -8124,7 +8197,7 @@ function renderSupplyEditor() {
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
       ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
-      ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
+      ${field('Support layers', 'Quote share, low price multiple and high price multiple, one layer per line.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
       ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
@@ -8995,8 +9068,10 @@ function applyPoolSwitch(action, control) {
   const value = control.dataset.value;
   const patch = action === 'set-pool-venue' ? { venue: value === 'meteora-damm-v2' ? 'meteora-damm-v2' : 'raydium' }
     : action === 'set-pool-fee' ? { feeBps: Number(value) }
-      : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
-        : { tierIndex: Math.floor(Number(value)) };
+      : action === 'set-pool-fee-model' ? { feeModel: value }
+        : action === 'set-pool-ramp-end' ? { ramp: { endBps: Number(value) } }
+          : action === 'set-pool-range' ? { rangeMultiple: Number(value) }
+            : { tierIndex: Math.floor(Number(value)) };
   setPoolVenueChoice(control.dataset.rowKey, patch);
   invalidateClassicOutputs();
   refreshClassicPreview();
@@ -9510,6 +9585,9 @@ function mergeLaunchConfigSnapshot(existing = null, incoming = null, existingPro
     token: { ...(base.token || {}) },
     poolTopology: { ...(base.poolTopology || {}) },
   };
+  if (!merged.token.logo?.dataUrl && incoming?.token?.logo?.dataUrl) {
+    merged.token.logo = { ...(merged.token.logo || {}), ...incoming.token.logo };
+  }
   const incomingDestination = String(
     incomingProof?.transfer?.destinationWallet
     || incomingProof?.destinationWallet
@@ -9624,7 +9702,12 @@ function mergeLaunchProofEvidence(existing, incoming) {
 function rememberLaunchProof(readinessOrProof) {
   const rawProof = readinessOrProof?.proof || readinessOrProof;
   if (rawProof && typeof rawProof === 'object') {
+    const previousToken = state.launchProof?.token;
     state.launchProof = mergeLaunchProofEvidence(state.launchProof, rawProof);
+    const token = state.launchProof?.token;
+    if (token?.mint && token.mintAuthorityRenounced === true
+        && (previousToken?.mint !== token.mint || previousToken?.mintAuthorityRenounced !== true)
+        && typeof refreshCoinAfterExecution === 'function') refreshCoinAfterExecution(token.mint);
     const proofConfig = proofConfigForFingerprint(state.launchProof, currentLaunchConfig());
     state.lastReportPublish = reportPublishIsProofCurrent(state.launchProof?.reportPublish, state.launchProof, proofConfig)
       ? state.launchProof.reportPublish
@@ -12383,12 +12466,34 @@ function v2ReportPoolConfig(config, result, index) {
 }
 
 function v2ReportPoolFeeTierLabel(pool = {}, userPool = {}) {
+  // Meteora DAMM v2 pool: state the full fee schedule from the plan, never
+  // a bare number — a dynamic or ramping fee is a schedule, not a rate.
+  const damm = pool.damm ?? userPool.damm;
+  if (damm) {
+    const bps = Number(damm.bps ?? damm.feeBps) || 25;
+    const model = damm.model ?? damm.feeModel ?? 'fixed';
+    if (model === 'ramp') {
+      const end = Number(damm.ramp?.endBps) || 25;
+      const days = Math.max(1, Math.round((Number(damm.ramp?.durationSec) || 30 * 86400) / 86400));
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% over ${days}d (Meteora ramp)`;
+    }
+    if (model === 'dynamic') {
+      const swing = (Number(damm.dynamic?.maxPriceChangeBps) || 500) / 100;
+      return `${(bps / 100).toFixed(2)}% base + up to ${swing.toFixed(2)}% under volatility (Meteora dynamic)`;
+    }
+    if (model === 'marketcap') {
+      const end = Number(damm.marketcap?.endBps) || bps;
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% by market cap (Meteora)`;
+    }
+    return `${(bps / 100).toFixed(2)}% (Meteora)`;
+  }
   const index = Math.floor(Number(pool.ammConfigIndex ?? userPool.ammConfigIndex));
   const tickSpacing = numberOrNull(pool.tickSpacing ?? userPool.tickSpacing);
   const tier = normalizeClmmFeeTiers(state.clmmFeeTiers).find((item) => item.index === index);
   if (tier) {
     const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}`;
+    const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic (base)' : '';
+    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}${dynamic}`;
   }
   if (Number.isFinite(tickSpacing) && Number.isFinite(index)) return `index ${index} / spacing ${tickSpacing}`;
   if (Number.isFinite(tickSpacing)) return `spacing ${tickSpacing}`;
@@ -13080,6 +13185,13 @@ function pairTokenFundingDetail() {
   ).join(' ') + ' Balances refresh automatically.';
 }
 
+function quoteWalletFundingStatus(routes = quoteAcquireRoutes()) {
+  const coverage = currentFundingTokenCoverage();
+  const heldMints = new Set(coverage.fresh ? coverage.rows.filter((row) => row.funded && BigInt(row.requiredRaw) > 0n).map((row) => row.mint) : []);
+  return { checked: coverage.fresh, heldMints, missingRoutes: routes.filter((route) => !heldMints.has(route.quoteMint)),
+    ready: coverage.fresh && routes.every((route) => heldMints.has(route.quoteMint)) };
+}
+
 function quoteAcquireStatus(config = currentLaunchConfig()) {
   const routes = quoteAcquireRoutes();
   const progress = quoteAcquireProgress();
@@ -13110,6 +13222,7 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     stale,
     successEvidence,
     held,
+    walletFunding: quoteWalletFundingStatus(routes),
     ready,
   };
 }
@@ -13157,11 +13270,11 @@ function formatRawTokenAmount(value, decimals = 0) {
 }
 
 function manualPrefundBalanceSnapshotStatus(walletPublicKey = selectedLaunchWalletPublicKey()) {
-  const balance = state.manualPrefund.balance && typeof state.manualPrefund.balance === 'object'
+  const balance = state.manualPrefund?.balance && typeof state.manualPrefund.balance === 'object'
     ? state.manualPrefund.balance
     : null;
-  const snapshotWalletPublicKey = state.manualPrefund.walletPublicKey || null;
-  const checkedAt = state.manualPrefund.lastUpdatedAt || null;
+  const snapshotWalletPublicKey = state.manualPrefund?.walletPublicKey || null;
+  const checkedAt = state.manualPrefund?.lastUpdatedAt || null;
   const checkedAtMs = Date.parse(checkedAt || '');
   const ageMs = Number.isFinite(checkedAtMs) ? Date.now() - checkedAtMs : Infinity;
   const fresh = Boolean(balance && Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= WALLET_BALANCE_FRESH_MS);
@@ -13618,6 +13731,8 @@ function renderQuoteAcquirePanel() {
     ? 'Funding estimate is out of date.'
     : blocked.length
       ? `Resolve ${blocked.map(({ pool }) => pool.quoteSymbol || shortAddress(pool.quoteMint)).join(', ')} on Token & pools before buying pair tokens.`
+    : acquireStatus.walletFunding.ready
+      ? 'The launch wallet holds enough pair tokens for these pools.'
     : acquireStatus.stale
       ? 'The last pair-token purchase was for another wallet or plan.'
       : hasCurrentEstimate
@@ -13631,7 +13746,8 @@ function renderQuoteAcquirePanel() {
     && Boolean(selectedLaunchWalletPublicKey())
     && (routes.length > 0 || savedAction)
     && blocked.length === 0
-    && !state.quoteAcquire.running;
+    && !state.quoteAcquire.running
+    && !acquireStatus.walletFunding.ready;
   const startLabel = state.quoteAcquire.running
     ? 'Acquiring'
     : blocked.length ? 'Resolve pair block'
@@ -14348,8 +14464,12 @@ function renderClassicBridge() {
       )
     );
   const finalSweepComplete = transferHasWalletEmptyFinalSweepEvidence(currentLaunchProof()?.transfer);
+  const completedJournal = completedLaunchJournal();
+  // A finished launch is closed even when some planned pools never opened: nothing resumes it.
+  const liquidityClosed = !liquidityComplete && Boolean(completedJournal);
+  const openedPoolCount = Math.min(poolCount, launchProofPoolIds(currentLaunchProof()).length);
   const practiceComplete = Boolean(state.demoActive && state.lastDemoLaunchRun);
-  const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete ? `
+  const restoredPlanNotice = state.restoredLaunchJournalId && !finalSweepComplete && !completedJournal ? `
     <aside class="recovered-plan-notice" role="status">
       <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
       <span><strong>Recovery loaded</strong><small>Journal ${escapeHtml(fullAddress(state.restoredLaunchJournalId))} restored this launch. Only unfinished work remains.</small></span>
@@ -14367,19 +14487,19 @@ function renderClassicBridge() {
   const revealCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/reveal-sealed-metadata';
   const finishCanRun = canExecuteNext && readiness?.nextEndpoint === '/api/transfer-assets';
   const finishReturn = returnWalletStatus();
-  const completedJournal = completedLaunchJournal();
   const finishDestinationReady = finishReturn.kind !== 'unverified'
     && Boolean(finishReturn.address)
     && finishReturn.address !== walletPublicKey;
+  const reviewPairPrice = state.launchChecks?.error && state.launchChecks.errorCode === 'POOL_SPREAD';
   const fundingNeed = !estimate
     ? {
       eyebrow: state.fundingEstimating ? 'Calculating' : state.launchChecks?.error ? 'Retry scheduled' : 'Launch cost',
-      title: 'Estimate the launch cost',
+      title: reviewPairPrice ? 'Review the pair price' : 'Estimate the launch cost',
       detail: state.launchChecks?.error
         ? `${state.launchChecks.error}. Trebuchet will try again automatically.`
         : state.fundingEstimating ? 'Checking pair tokens and current prices…' : 'Funding checks run automatically when you open this step.',
-      action: 'estimate-funding',
-      actionLabel: fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
+      action: reviewPairPrice ? 'review-pair-tokens' : 'estimate-funding',
+      actionLabel: reviewPairPrice ? 'Review pair tokens' : fundingEstimateStatus.stale ? 'Update estimate' : 'Estimate cost',
     }
     : state.demoActive
       ? {
@@ -14629,7 +14749,7 @@ function renderClassicBridge() {
         <div>
           <h2 id="liquidityStepTitle">Create &amp; lock liquidity</h2>
         </div>
-        ${state.demoActive || liquidityComplete ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
+        ${state.demoActive || liquidityComplete || liquidityClosed ? '' : `<aside><i class="fa-solid fa-lock" aria-hidden="true"></i><span><strong>Can't be undone.</strong> If it stops partway, it resumes where it stopped.</span></aside>`}
       </section>
       <div class="plan-preview is-liquidity">
         <div class="preview-map pool-map" role="group" aria-label="Where this launch puts its liquidity">${poolsMapForPlan(topology.pools)}</div>
@@ -14639,17 +14759,18 @@ function renderClassicBridge() {
           <div><dt>Start market cap</dt><dd>$${escapeHtml(Number(topology.targetMarketCapUsd || 0).toLocaleString('en-US'))}</dd></div>
           <div><dt>Fee tier</dt><dd>${escapeHtml(feeTierDisplay(topology.pools[0]?.ammConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX))}</dd></div>
           <div><dt>Positions</dt><dd>${sliceCount}${ladderCount ? ` <i>+ ${ladderCount} bands</i>` : ''}${(() => { const bids = topology.pools.reduce((sum, pool) => sum + (pool.support?.mode === 'custom' ? (pool.support.layers?.length || 1) : 0), 0); return bids ? ` <i>+ ${bids} support</i>` : ''; })()}</dd></div>
-          <div><dt>Locked</dt><dd class="${liquidityComplete ? 'is-ok' : ''}">${liquidityComplete ? 'Yes' : 'At creation'}</dd></div>
+          <div><dt>Locked</dt><dd class="${liquidityComplete || liquidityClosed ? 'is-ok' : ''}">${liquidityComplete || liquidityClosed ? 'Yes' : 'At creation'}</dd></div>
         </dl>
       </div>
       ${readinessPanel({
-        title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked' : 'Create and lock liquidity',
+        title: metadataRevealPending ? 'Reveal the name and logo' : liquidityComplete ? 'Liquidity created and locked'
+          : liquidityClosed ? `${openedPoolCount} of ${poolCount} pool${poolCount === 1 ? '' : 's'} opened and locked` : 'Create and lock liquidity',
         detail: metadataRevealPending
           ? ''
-          : liquidityComplete ? '' : 'Takes a few minutes. Keep Trebuchet open.',
+          : liquidityComplete ? '' : liquidityClosed ? 'The launch finished without the others.' : 'Takes a few minutes. Keep Trebuchet open.',
         canRun: metadataRevealPending ? revealCanRun : liquidityCanRun,
         runLabel: metadataRevealPending ? 'Reveal & lock identity' : readiness?.nextEndpoint === '/api/resume-launch' ? 'Resume missing work' : 'Create liquidity',
-        complete: liquidityComplete && !metadataRevealPending,
+        complete: (liquidityComplete || liquidityClosed) && !metadataRevealPending,
         endpoint: metadataRevealPending ? '/api/reveal-sealed-metadata' : readiness?.nextEndpoint === '/api/resume-launch' ? '/api/resume-launch' : '/api/create-lp',
         primary: true,
       })}
@@ -15433,6 +15554,7 @@ function fundingEstimateAllocationsForTopology(topology = {}) {
       supplyPercent: pool.supplyPercent,
       ammConfigIndex: pool.ammConfigIndex,
       quoteUsdOverride,
+      ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
       quoteDecimalsOverride,
       quoteSymbolOverride: pool.quoteSymbol,
       distribution: pool.distribution,
@@ -15461,8 +15583,18 @@ function launchPlanLogoFingerprint(logo = null) {
 }
 
 function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.launchPlanConfigFingerprint === 'function') {
+    return TrebuchetCore.launchPlanConfigFingerprint(config);
+  }
   const token = config?.token || {};
   const topology = config?.poolTopology || {};
+  const stableTopology = { ...topology };
+  if (Array.isArray(topology.pools)) {
+    stableTopology.pools = topology.pools.map((pool) => {
+      const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+      return intent;
+    });
+  }
   return JSON.stringify(stableFundingFingerprintValue({
     experience: config?.experience || null,
     token: {
@@ -15478,7 +15610,7 @@ function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
     launchSol: Number.isFinite(Number(config?.launchSol)) ? Number(config.launchSol) : null,
     mode: config?.mode || null,
     vanity: config?.vanity || null,
-    poolTopology: topology,
+    poolTopology: stableTopology,
     funding: {
       launchSol: Number.isFinite(Number(config?.funding?.launchSol ?? config?.launchSol))
         ? Number(config.funding?.launchSol ?? config.launchSol)
@@ -16080,6 +16212,197 @@ function bindWalletChips() {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && walletChipTarget) hideWalletChipCard({ now: true });
+  });
+}
+
+// A coin's card: its price and a pie of how its liquidity splits across its pools. It opens on
+// hovering or focusing anything marked data-token-card (a coin in the list, a token symbol), and
+// the coin page header shows the price and a small pie inline. Reads are kept a minute and only
+// made for what is hovered or on screen.
+
+const TOKEN_CARD_MAX_AGE_MS = 60_000;
+const TOKEN_CARD_HOVER_DELAY_MS = 250;
+const TOKEN_CARD_WIDTH = 300;
+const TOKEN_CARD_SLICES = 4;
+const tokenCardCache = new Map();
+
+function tokenCardEligible(mint) {
+  const value = String(mint || '').trim();
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) && !value.startsWith('Demo');
+}
+
+function tokenSymbolHtml(mint, symbol) {
+  const text = escapeHtml(symbol || shortAddress(mint));
+  if (!tokenCardEligible(mint)) return `<span>${text}</span>`;
+  return `<span class="token-symbol" tabindex="0" data-token-card="${escapeHtml(mint)}">${text}</span>`;
+}
+
+function tokenCardData(mint) {
+  const cached = tokenCardCache.get(mint);
+  if (cached && (cached.pending || Date.now() - cached.at < TOKEN_CARD_MAX_AGE_MS)) return cached.pending || Promise.resolve(cached.value);
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getTokenCard) return Promise.resolve(null);
+  const pending = state.apiClient.getTokenCard(mint)
+    .then((response) => { tokenCardCache.set(mint, { at: Date.now(), value: response.card }); return response.card; })
+    .catch((error) => { tokenCardCache.set(mint, { at: Date.now(), error: error.message || 'Could not read this coin' }); throw error; });
+  tokenCardCache.set(mint, { ...(cached || {}), pending });
+  return pending;
+}
+
+function formatTokenPrice(card) {
+  if (!card || card.priceSol === null || card.priceSol === undefined) return null;
+  if (card.priceUsd !== null && card.priceUsd !== undefined) {
+    const usd = Number(card.priceUsd);
+    return usd >= 1 ? `$${usd.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : `$${usd.toPrecision(3)}`;
+  }
+  return `${Number(card.priceSol).toPrecision(3)} SOL`;
+}
+
+// Up to four pools by size, then the rest as one slice.
+function tokenCardSlices(card) {
+  const pools = (card?.pools || []).filter((pool) => pool.share > 0);
+  const top = pools.slice(0, TOKEN_CARD_SLICES).map((pool, index) => ({
+    label: pool.quoteSymbol || shortAddress(pool.quoteMint || pool.poolId),
+    venue: pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium',
+    share: pool.share,
+    tone: `is-${index}`,
+  }));
+  const rest = pools.slice(TOKEN_CARD_SLICES).reduce((sum, pool) => sum + pool.share, 0);
+  if (rest > 0) top.push({ label: `${pools.length - TOKEN_CARD_SLICES} more`, venue: '', share: rest, tone: 'is-rest' });
+  return top;
+}
+
+// A ring of stroked arcs: each slice is a dash on one circle, offset by the slices before it.
+function tokenPieSvg(slices, size) {
+  const radius = 15.9155; // a circumference of 100, so a share is its dash length
+  let offset = 25; // start at 12 o'clock
+  const arcs = slices.map((slice) => {
+    const length = Math.max(0, Math.min(100, slice.share * 100));
+    const arc = `<circle class="${slice.tone}" r="${radius}" cx="21" cy="21" fill="none" stroke-width="8" stroke-dasharray="${length.toFixed(3)} ${(100 - length).toFixed(3)}" stroke-dashoffset="${offset.toFixed(3)}"></circle>`;
+    offset -= length;
+    return arc;
+  }).join('');
+  return `<svg class="token-pie" viewBox="0 0 42 42" width="${size}" height="${size}" aria-hidden="true"><circle class="token-pie-track" r="${radius}" cx="21" cy="21" fill="none" stroke-width="8"></circle>${arcs}</svg>`;
+}
+
+function tokenCardHtml(mint, card, error) {
+  const listed = (state.coins?.list || []).find((coin) => coin.mint === mint);
+  const symbol = card?.symbol || listed?.symbol || shortAddress(mint), name = card?.name || listed?.name || '';
+  const head = `<header><strong>${escapeHtml(symbol)}</strong>${name && name !== symbol ? `<span>${escapeHtml(name)}</span>` : ''}<b>${escapeHtml(formatTokenPrice(card) || '')}</b></header>`;
+  const foot = (extra = '') => `<footer>${extra}<a href="${escapeHtml(solscanAccountUrl(mint))}" target="_blank" rel="noopener">Solscan</a></footer>`;
+  if (error) return `${head}<p class="token-card-body is-error">${escapeHtml(error)}</p>${foot()}`;
+  if (!card) return `${head}<p class="token-card-body"><span class="rail-spin" aria-hidden="true"></span></p>${foot()}`;
+  const slices = tokenCardSlices(card);
+  if (!slices.length) return `${head}<p class="token-card-body token-card-empty">No pools with liquidity</p>${foot()}`;
+  const liquidity = card.liquidityUsd !== null && card.liquidityUsd !== undefined
+    ? `${formatUsd(card.liquidityUsd)} liquidity`
+    : `${Number(card.liquiditySol.toPrecision(3))} SOL liquidity`;
+  const rows = slices.map((slice) => `<li><i class="${slice.tone}" aria-hidden="true"></i><span>${escapeHtml(slice.label)}${slice.venue ? `<small>${escapeHtml(slice.venue)}</small>` : ''}</span><b>${Math.round(slice.share * 100)}%</b></li>`).join('');
+  const poolCount = card.pools.length;
+  return `${head}
+    <div class="token-card-body">${tokenPieSvg(slices, 76)}<ul>${rows}</ul></div>
+    ${foot(`<span>${escapeHtml(liquidity)}</span><span>${poolCount} pool${poolCount === 1 ? '' : 's'}</span>`)}`;
+}
+
+// The coin page header: the price and a small pie, filled in once the card is read.
+function tokenPriceChipHtml(mint) {
+  if (!tokenCardEligible(mint)) return '';
+  return `<span class="token-price-chip" tabindex="0" data-token-card="${escapeHtml(mint)}" data-token-inline="${escapeHtml(mint)}">${tokenPriceChipInner(mint)}</span>`;
+}
+
+function tokenPriceChipInner(mint) {
+  const cached = tokenCardCache.get(mint);
+  const card = cached?.value;
+  if (!card) return cached?.error ? '<small>No price</small>' : '<span class="rail-spin" aria-hidden="true"></span>';
+  const slices = tokenCardSlices(card);
+  return `${slices.length ? tokenPieSvg(slices, 18) : ''}<b>${escapeHtml(formatTokenPrice(card) || 'No price')}</b>`;
+}
+
+function hydrateTokenPriceChips() {
+  document.querySelectorAll('[data-token-inline]').forEach((chip) => {
+    const mint = chip.dataset.tokenInline;
+    const fill = () => document.querySelectorAll(`[data-token-inline="${CSS.escape(mint)}"]`).forEach((element) => { element.innerHTML = tokenPriceChipInner(mint); });
+    const cached = tokenCardCache.get(mint);
+    if (cached?.value || cached?.error) { fill(); if (Date.now() - cached.at < TOKEN_CARD_MAX_AGE_MS) return; }
+    tokenCardData(mint).then(fill, fill);
+  });
+}
+
+function tokenCardElement() {
+  let card = document.getElementById('tokenCard');
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'tokenCard';
+    card.className = 'token-card';
+    card.setAttribute('role', 'tooltip');
+    card.hidden = true;
+    card.addEventListener('mouseleave', () => hideTokenCard());
+    document.body.appendChild(card);
+  }
+  return card;
+}
+
+let tokenCardTarget = null;
+let tokenCardShowTimer = null;
+let tokenCardHideTimer = null;
+
+function placeTokenCard(card, anchor) {
+  const box = anchor.getBoundingClientRect();
+  const width = Math.min(TOKEN_CARD_WIDTH, window.innerWidth - 32);
+  card.style.width = `${width}px`;
+  card.style.left = `${Math.max(16, Math.min(box.left, window.innerWidth - width - 16))}px`;
+  const below = box.bottom + 6;
+  card.style.top = `${below + card.offsetHeight > window.innerHeight - 8 ? Math.max(8, box.top - card.offsetHeight - 6) : below}px`;
+}
+
+function showTokenCard(anchor) {
+  clearTimeout(tokenCardHideTimer);
+  const mint = anchor.dataset.tokenCard;
+  if (!tokenCardEligible(mint)) return;
+  const card = tokenCardElement();
+  tokenCardTarget = anchor;
+  anchor.setAttribute('aria-describedby', 'tokenCard');
+  const cached = tokenCardCache.get(mint);
+  card.innerHTML = tokenCardHtml(mint, cached?.value || null, null);
+  card.hidden = false;
+  placeTokenCard(card, anchor);
+  tokenCardData(mint)
+    .then((value) => { if (tokenCardTarget === anchor) { card.innerHTML = tokenCardHtml(mint, value, null); placeTokenCard(card, anchor); } })
+    .catch((error) => { if (tokenCardTarget === anchor) card.innerHTML = tokenCardHtml(mint, null, error.message || 'Could not read this coin'); });
+}
+
+function hideTokenCard({ now = false } = {}) {
+  clearTimeout(tokenCardShowTimer);
+  clearTimeout(tokenCardHideTimer);
+  const hide = () => {
+    const card = document.getElementById('tokenCard');
+    if (card && !card.matches(':hover')) card.hidden = true;
+    tokenCardTarget?.removeAttribute('aria-describedby');
+    tokenCardTarget = null;
+  };
+  if (now) hide(); else tokenCardHideTimer = setTimeout(hide, 150);
+}
+
+function bindTokenCards() {
+  // A short hover delay: moving the pointer across the coin list reads nothing.
+  document.addEventListener('mouseover', (event) => {
+    const anchor = event.target.closest?.('[data-token-card]');
+    if (!anchor || anchor === tokenCardTarget) return;
+    clearTimeout(tokenCardShowTimer);
+    tokenCardShowTimer = setTimeout(() => { if (anchor.matches(':hover')) showTokenCard(anchor); }, TOKEN_CARD_HOVER_DELAY_MS);
+  });
+  document.addEventListener('mouseout', (event) => {
+    const anchor = event.target.closest?.('[data-token-card]');
+    if (anchor && !anchor.contains(event.relatedTarget) && !event.relatedTarget?.closest?.('#tokenCard')) hideTokenCard();
+  });
+  document.addEventListener('focusin', (event) => {
+    const anchor = event.target.closest?.('[data-token-card]');
+    if (anchor) showTokenCard(anchor);
+  });
+  document.addEventListener('focusout', (event) => {
+    if (event.target.closest?.('[data-token-card]')) hideTokenCard();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && tokenCardTarget) hideTokenCard({ now: true });
   });
 }
 
@@ -17652,7 +17975,8 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
 function invalidateClassicOutputs() {
   state.classicFundingEstimate = null;
   state.executionReadiness = null;
-  clearLaunchProof();
+  state.lastRunEnvelope = null;
+  if (!liveLaunchInProgress()) clearLaunchProof();
   state.lastReportPublish = null;
   state.lastAirdropResult = null;
   resetQuoteAcquireState();
@@ -20237,6 +20561,7 @@ async function runClassicFundingEstimate({ quiet = false } = {}) {
       const result = await state.apiClient.estimateClassicFunding(fundingRequest);
       if (classicFundingEstimateFingerprint(config) !== classicFundingEstimateFingerprint()) return false;
       state.classicFundingEstimate = stampClassicFundingEstimate(result, config);
+      state.lastRunEnvelope = null;
       resetQuoteAcquireState();
       resetManualPrefundState();
       renderAll();
@@ -20246,6 +20571,7 @@ async function runClassicFundingEstimate({ quiet = false } = {}) {
       return true;
     } catch (error) {
       state.launchChecks.error = error.message || 'Waiting for the funding service';
+      state.launchChecks.errorCode = error.code || null;
       state.launchChecks.nextAt = Date.now() + 15000;
       if (!quiet) notify(`${state.launchChecks.error}. Trebuchet will check again automatically.`);
       return false;
@@ -20262,12 +20588,14 @@ let quoteVerifyInFlight = null;
 // A pair token is checked automatically once; a check that failed is tried again after a minute,
 // not on every readiness check (each one scans the chain for the token's pools).
 const PAIR_TOKEN_RECHECK_MS = 60 * 1000;
-function pairTokensNeedingCheck(now = Date.now()) {
+function pairTokensNeedingCheck(now = Date.now(), forceFresh = false) {
   return state.customPools.filter((pool) => {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading || record.info?.compatible === false || record.info?.freezeAuthorityBlock === true) return false;
+    if (record.loading) return false;
+    if (forceFresh) return true;
+    if (record.info?.compatible === false || record.info?.freezeAuthorityBlock === true) return false;
     if (record.info && record.info.compatible != null && record.info.freezeAuthorityBlock != null
         && ['raydium', 'jupiter'].includes(record.info.swapRoute) && !record.info.priceWarning) return false;
     const failedAt = Date.parse(record.checkedAt || '');
@@ -20275,18 +20603,19 @@ function pairTokensNeedingCheck(now = Date.now()) {
   });
 }
 
-function autoVerifyQuoteTokens() {
-  if (quoteVerifyInFlight) return quoteVerifyInFlight;
+function autoVerifyQuoteTokens({ forceFresh = false } = {}) {
+  if (quoteVerifyInFlight) return forceFresh ? quoteVerifyInFlight.then(() => autoVerifyQuoteTokens({ forceFresh: true })) : quoteVerifyInFlight;
   if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenInfo) return Promise.resolve();
-  const pending = pairTokensNeedingCheck();
+  const pending = pairTokensNeedingCheck(Date.now(), forceFresh);
   if (!pending.length) return Promise.resolve();
   quoteVerifyInFlight = (async () => {
     for (const pool of pending) {
-      await resolveCustomQuoteToken(pool.id, { quiet: true }).catch(() => null);
+      await resolveCustomQuoteToken(pool.id, { quiet: true, forceFresh }).catch(() => null);
     }
   })().finally(() => {
     quoteVerifyInFlight = null;
     renderAll();
+    refreshQuotePrices().catch(() => null);
   });
   return quoteVerifyInFlight;
 }
@@ -20299,7 +20628,7 @@ function renderPairTokenChecks() {
     const badge = customQuoteInfoBadge(pool);
     const info = customQuoteResolvedInfo(pool);
     const symbol = info?.symbol || pool.quoteSymbol || shortAddress(pool.quoteMint);
-    return { symbol, badge, route: info?.swapRoute || null };
+    return { symbol, badge, route: info?.swapRoute || null, info };
   });
   const problems = rows.filter((row) => row.badge.className === 'danger');
   const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
@@ -20312,18 +20641,18 @@ function renderPairTokenChecks() {
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
+      <ul>${rows.map(({ symbol, info }) => `<li><strong>${escapeHtml(symbol)}</strong> ${info?.priceUsd ? `$${escapeHtml(Number(info.priceUsd).toPrecision(6))}` : 'Awaiting price'} · ${escapeHtml(info?.priceSource || 'Awaiting market')}${info?.priceCheckedAt ? ` · ${escapeHtml(new Date(info.priceCheckedAt).toLocaleTimeString())}` : ''}${info?.priceError ? ` · ${escapeHtml(info.priceError)}` : ''}</li>`).join('')}</ul>
       ${problems.length ? `<ul>${problems.map((row) => `<li><strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.badge.label)}: ${escapeHtml(row.badge.detail)}</li>`).join('')}</ul>` : ''}
     </div>`;
 }
 
-async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
+async function resolveCustomQuoteToken(poolId, { quiet = false, forceFresh = true } = {}) {
   const say = quiet ? () => {} : notify;
   const pool = state.customPools.find((item) => item.id === poolId);
   if (!pool) {
     say('Custom pool is unavailable');
     return null;
   }
-  const previousFundingFingerprint = classicFundingEstimateFingerprint();
   const previousRoute = customQuoteResolvedInfo(pool)?.swapRoute;
   const query = customQuoteLookupValue(pool);
   const symbol = String(pool.quoteSymbol || '').trim().toUpperCase();
@@ -20336,10 +20665,12 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
 
+  const previousIdentity = `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`;
+  const previousInfo = customQuoteResolvedInfo(pool);
   state.quoteTokenInfo[poolId] = {
     query,
     loading: true,
-    info: null,
+    info: previousInfo,
     error: null,
     checkedAt: null,
   };
@@ -20347,7 +20678,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
   renderSupplyEditor();
 
   try {
-    const info = await state.apiClient.getQuoteTokenInfo(query);
+    const info = await state.apiClient.getQuoteTokenInfo(query, { forceFresh });
     if (!state.customPools.includes(pool) || customQuoteLookupValue(pool) !== query) return null;
     if (info?.demo && pool.quoteSymbol && pool.quoteSymbol !== 'QUOTE') info.symbol = pool.quoteSymbol;
     if (info?.address) pool.quoteMint = info.address;
@@ -20360,7 +20691,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       error: null,
       checkedAt: new Date().toISOString(),
     };
-    if (previousFundingFingerprint !== classicFundingEstimateFingerprint()) invalidateClassicOutputs();
+    if (previousIdentity !== `${pool.quoteMint || ''}|${pool.quoteDecimals ?? ''}`) invalidateClassicOutputs();
     else if (state.classicFundingEstimate && previousRoute !== info.swapRoute
         && ['raydium', 'jupiter'].includes(info.swapRoute)) {
       state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
@@ -20415,6 +20746,48 @@ async function refreshLaunchChecks(now = Date.now()) {
     renderClassicBridge();
   }
 }
+const QUOTE_PRICE_POLL_MS = 30_000;
+let quotePriceTimer = null;
+let quotePriceInFlight = null;
+function refreshQuotePrices({ forceFresh = false } = {}) {
+  if (quotePriceInFlight) return quotePriceInFlight;
+  if (state.apiStatus !== 'connected' || !state.apiClient?.getQuoteTokenPrices || state.demoActive) return Promise.resolve();
+  const mints = [...new Set(state.customPools.map((pool) => String(pool.quoteMint || '').trim()).filter(Boolean))];
+  if (!mints.length) return Promise.resolve();
+  quotePriceInFlight = (async () => {
+    for (let index = 0; index < mints.length; index += 16) {
+      const batch = mints.slice(index, index + 16);
+      let prices;
+      try { prices = await state.apiClient.getQuoteTokenPrices(batch, { forceFresh }); }
+      catch (error) { prices = batch.map((mint) => ({ mint, error: error.message || 'Price refresh needs a retry' })); }
+      for (const pool of state.customPools) {
+        const price = prices.find((item) => item.mint === pool.quoteMint);
+        const record = customQuoteInfoRecord(pool);
+        if (!price || !record?.info || record.loading) continue;
+        record.info.priceError = price.error || null;
+        if (!price.error && Number.isFinite(Number(price.priceUsd)) && Number(price.priceUsd) > 0) {
+          Object.assign(record.info, { priceUsd: price.priceUsd, priceSource: price.priceSource,
+            priceCheckedAt: price.priceCheckedAt, pricePoolId: price.poolId || null, priceWarning: null });
+        }
+      }
+    }
+    // Live prices are reference data. The approved funding budget keeps its own snapshot.
+    renderPoolEditorPanel();
+    renderClassicBridge();
+  })().finally(() => { quotePriceInFlight = null; });
+  return quotePriceInFlight;
+}
+
+function startQuotePricePolling() {
+  if (quotePriceTimer) return;
+  quotePriceTimer = window.setInterval(() => {
+    if (state.activeView === 'launch' && !document.hidden) refreshQuotePrices().catch(() => null);
+  }, QUOTE_PRICE_POLL_MS);
+}
+
+// Return wallet. Launch assets only go to a proven wallet: the funder of the
+// launch wallet (blank = funder), or a wallet that signed a Trebuchet
+// challenge in the browser. Addresses are never typed in.
 
 function returnWalletStatus() {
   const address = String($('#sweepDestination')?.value || '').trim();
@@ -20762,6 +21135,13 @@ function openCoin(key) {
 const coinPageCache = new Map();
 function rememberCoinPage(mint, patch) {
   coinPageCache.set(mint, { ...(coinPageCache.get(mint) || {}), ...patch });
+}
+
+function refreshCoinAfterExecution(mint) {
+  coinPageCache.delete(mint);
+  if (state.coins.key !== `mint:${mint}`) return;
+  state.coins = { ...state.coins, detail: null, detailError: null };
+  loadCoinDetail(mint).catch(() => null);
 }
 
 // The coin's airdrop: what each wallet received, and what the chain says it holds now.
@@ -21218,7 +21598,7 @@ function renderCoins() {
     {
       variant: 'row',
       tag: 'button',
-      attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"`,
+      attrs: `type="button" data-action="open-coin" data-coin-key="${escapeHtml(item.key)}"${tokenCardEligible(item.mint) ? ` data-token-card="${escapeHtml(item.mint)}"` : ''}`,
       status: coinStatus(item),
     },
   )).join('');
@@ -21295,7 +21675,7 @@ function coinMarketsHtml(markets) {
       <div class="coin-market-row is-head" role="row"><span role="columnheader">Pool</span><span role="columnheader">Price in SOL</span><span role="columnheader">vs SOL pool</span><span role="columnheader">Quote reserve</span><span role="columnheader">Coin side</span><span role="columnheader">Fee</span></div>
       ${pools.map((pool) => `
         <div class="coin-market-row ${pool.isMainSolPool ? 'is-main' : ''} ${pool.drainsSolPool ? 'is-drain' : ''}" role="row">
-          <span role="cell"><strong>${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
+          <span role="cell"><strong>${pool.isSolPool ? 'SOL' : tokenSymbolHtml(pool.quoteMint, pool.quoteSymbol)}</strong><small>${escapeHtml([pool.venue === 'meteora-damm-v2' ? 'Meteora' : 'Raydium', pool.isMainSolPool ? 'main SOL pool' : shortAddress(pool.poolId)].join(' · '))}</small></span>
           <span role="cell">${escapeHtml(fmtPoolPrice(pool.priceSol))}</span>
           <span role="cell">${pool.gapPct === null || pool.gapPct === undefined ? '—' : `${pool.gapPct > 0 ? '+' : ''}${pool.gapPct.toFixed(1)}%`}</span>
           <span role="cell">${pool.quoteReserve === null || pool.quoteReserve === undefined ? '—' : `${escapeHtml(Number(pool.quoteReserve).toLocaleString('en-US', { maximumFractionDigits: 9 }))} ${escapeHtml(pool.quoteSymbol || shortAddress(pool.quoteMint))}`}${!pool.isSolPool && pool.quoteReserveSol != null ? `<small>valued at ${escapeHtml(fmtPoolPrice(pool.quoteReserveSol))}</small>` : ''}</span>
@@ -21564,8 +21944,9 @@ function renderCoinContext() {
         symbol: account?.metadata?.symbol || detail?.info?.symbol || chainCoin.symbol,
         address: chainCoin.mint,
         image: detail?.image || chainCoin.image || null,
-      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin) });
+      }, { variant: 'title', tag: 'span', status: coinStatus(chainCoin), trailing: tokenPriceChipHtml(chainCoin.mint) });
       hydrateCoinCards();
+      hydrateTokenPriceChips();
     }
     return;
   }
@@ -21910,18 +22291,20 @@ async function cancelSavedSupportJob(jobId) {
   } finally { await refreshSavedSupportJobs(); renderAll(); }
 }
 
-async function checkExecutionReadiness({ retried = false, quiet = false } = {}) {
+async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false } = {}) {
   if (state.executionChecking) return false;
   state.launchChecks = { ...state.launchChecks, active: true };
-  state.executionChecking = true;
   const say = quiet ? () => {} : notify;
-  try { await autoVerifyQuoteTokens(); } catch { /* A later check will retry. */ }
-  const config = currentLaunchConfig();
-  const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   state.executionChecking = true;
   renderClassicBridge();
 
   try {
+    if (forceFresh) {
+      await Promise.all([autoVerifyQuoteTokens({ forceFresh: true }), refreshManualPrefundBalance({ quiet: true })]);
+      await refreshQuotePrices({ forceFresh: true });
+    } else await autoVerifyQuoteTokens();
+    const config = currentLaunchConfig();
+    const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
       const readiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,
@@ -22977,7 +23360,8 @@ function applyBootState(boot) {
   state.releaseUrl = boot.app?.releaseUrl || state.releaseUrl;
   state.releaseTrust = boot.app?.releaseTrust || state.releaseTrust;
   state.updateCheck.available = boot.app?.updateCheckAvailable === true;
-  applySecretPinStatus(boot.secretPin || {});
+  // Keep the last verified PIN state when this bootstrap's status read failed.
+  if (boot.api.available !== false && boot.endpointStatus?.secretPin !== false) applySecretPinStatus(boot.secretPin || {});
   state.prefs = {
     demoMode: boot.prefs?.demoMode === true,
     publishLaunchReport: boot.prefs?.publishLaunchReport !== false,
@@ -23997,7 +24381,7 @@ function handleClick(event) {
   }
 
   if (action === 'check-readiness') {
-    checkExecutionReadiness();
+    checkExecutionReadiness({ forceFresh: true });
     return;
   }
 
@@ -24877,12 +25261,14 @@ restoreLaunchProof();
 restoreDiscoveryRegistry();
 bindEvents();
 bindWalletChips();
+bindTokenCards();
 bindActionGuards();
 bindCloseGuard();
 initializeSolflareWallet();
 setView('coins');
 renderAll();
 startLiveOpsPolling();
+startQuotePricePolling();
 bootLocalApi().catch((error) => {
   console.warn('v2 local API bootstrap failed:', error);
   applyBootState({

@@ -359,7 +359,8 @@ async function refreshManualPrefundBalance({ quiet = false } = {}) {
 function invalidateClassicOutputs() {
   state.classicFundingEstimate = null;
   state.executionReadiness = null;
-  clearLaunchProof();
+  state.lastRunEnvelope = null;
+  if (!liveLaunchInProgress()) clearLaunchProof();
   state.lastReportPublish = null;
   state.lastAirdropResult = null;
   resetQuoteAcquireState();

@@ -42,6 +42,7 @@ const VALID_RECOVERY_ENDPOINTS = new Set([
 ]);
 const DEFAULT_SOL_MINT = 'So11111111111111111111111111111111111111112';
 const DEFAULT_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const DEFAULT_USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 const DEFAULT_MEME_FLYWHEEL_MINT = 'HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r';
 const DEFAULT_RESERVE_FLYWHEEL_MINT = 'J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj';
 const CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
@@ -265,6 +266,8 @@ function normalizeSupport(input = {}) {
   return support;
 }
 
+import { normalizeDammFeePlan } from '@trebuchet/core/damm-v2-plan';
+
 const METEORA_VENUE = 'meteora-damm-v2';
 const METEORA_FEE_BPS = [25, 50, 100, 200];
 const METEORA_RANGES = [100, 1000, 10000];
@@ -331,6 +334,11 @@ function launchPlanLogoFingerprint(logo = null) {
 export function launchPlanConfigFingerprint(input = {}) {
   const token = input?.token || {};
   const topology = input?.poolTopology || {};
+  const stableTopology = { ...topology };
+  if (Array.isArray(topology.pools)) stableTopology.pools = topology.pools.map((pool) => {
+    const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+    return intent;
+  });
   return JSON.stringify(stableFundingFingerprintValue({
     experience: input?.experience || null,
     token: {
@@ -346,7 +354,7 @@ export function launchPlanConfigFingerprint(input = {}) {
     launchSol: Number.isFinite(Number(input?.launchSol)) ? Number(input.launchSol) : null,
     mode: input?.mode || null,
     vanity: input?.vanity || null,
-    poolTopology: topology,
+    poolTopology: stableTopology,
     funding: {
       launchSol: Number.isFinite(Number(input?.funding?.launchSol ?? input?.launchSol))
         ? Number(input.funding?.launchSol ?? input.launchSol)
@@ -371,7 +379,12 @@ function v2FundingEstimateRequest(input = {}) {
     ? input.token
     : {};
   return {
-    allocations: stableFundingFingerprintValue(classicAllocations(topology)),
+    allocations: stableFundingFingerprintValue(classicAllocations(topology).map((allocation, index) => {
+      const pool = rawTopology.pools?.[index] || {};
+      if (pool.quoteUsdOverride != null || pool.priceEnteredByUser === true) return allocation;
+      const { quoteUsdOverride: _livePrice, ...intent } = allocation;
+      return intent;
+    })),
     targetMarketCapUsd: Number(topology.targetMarketCapUsd || 0),
     publishLaunchReport: topology.report?.publish !== false,
     token: {
@@ -546,6 +559,7 @@ function normalizePoolTopology(input = {}) {
       quoteSymbol,
       ...(quoteDecimalsOverride !== undefined ? { quoteDecimalsOverride } : {}),
       ...(quoteUsdOverride !== undefined ? { quoteUsdOverride } : {}),
+      ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
       ...(pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {}),
       ...(quoteCompatibility ? { quoteCompatibility } : {}),
       ...(startPricePremiumPct !== undefined ? { startPricePremiumPct } : {}),
@@ -560,6 +574,16 @@ function normalizePoolTopology(input = {}) {
           damm: {
             feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
             rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1000))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1000)) : 1000,
+            // The full fee schedule lands in the normalized plan so the report
+            // and the pool creation always see the same numbers. Throws on a
+            // malformed schedule instead of silently defaulting.
+            ...normalizeDammFeePlan({
+              model: pool.damm?.feeModel,
+              bps: pool.damm?.feeBps ?? 25,
+              ramp: pool.damm?.ramp,
+              dynamic: pool.damm?.dynamic,
+              marketcap: pool.damm?.marketcap,
+            }),
           },
           distribution: [{ sharePercent: 100 }],
           bootstrap: { mode: 'minimal' },
@@ -722,6 +746,7 @@ function classicAllocations(poolTopology) {
     supplyPercent: pool.supplyPercent,
     ammConfigIndex: pool.ammConfigIndex,
     quoteUsdOverride: pool.quoteUsdOverride,
+    ...(pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {}),
     quoteDecimalsOverride: pool.quoteDecimalsOverride,
     quoteSymbolOverride: pool.quoteSymbol,
     ...(pool.startPricePremiumPct !== undefined ? { startPricePremiumPct: pool.startPricePremiumPct } : {}),
@@ -743,7 +768,7 @@ function poolQuoteIdentity(pool = {}) {
   const upper = raw.toUpperCase();
   if (raw === DEFAULT_SOL_MINT || upper === 'SOL') return 'SOL';
   if (raw === DEFAULT_USDC_MINT || upper === 'USDC') return 'USDC';
-  if (upper === 'USDT') return 'USDT';
+  if (raw === DEFAULT_USDT_MINT || upper === 'USDT') return 'USDT';
   if (!mint && symbol && token && symbol.toUpperCase() === token.toUpperCase()) {
     return symbol.toUpperCase();
   }
@@ -1879,24 +1904,7 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     });
   });
 
-  quoteTokenSafetyIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
-    if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
-      addBlocker({
-        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-        phase: 'liquidity',
-        title: 'Quote token safety',
-        detail: issue.detail,
-      });
-      return;
-    }
-    warnings.push(readinessIssue({
-      id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-      phase: 'liquidity',
-      title: 'Quote token safety',
-      detail: issue.detail,
-      severity: 'warning',
-    }));
-  });
+
 
   feeKeyRecipientIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
     addBlocker({
@@ -1950,6 +1958,39 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
   );
   const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
   const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
+  const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools);
+  setPlanGuardrail(plan, 'classic-quote-safety', {
+    state: quoteSafety.some((issue) => issue.state === 'danger') ? 'danger' : quoteSafety.length ? 'warn' : 'pass',
+    detail: quoteSafety[0]?.detail || 'Pair-token safety checks passed.',
+  });
+  quoteSafety.forEach((issue, issueIndex) => {
+    if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
+      addBlocker({
+        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+        phase: 'liquidity',
+        title: 'Quote token safety',
+        detail: issue.detail,
+      });
+      return;
+    }
+    warnings.push(readinessIssue({
+      id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+      phase: 'liquidity',
+      title: 'Quote token safety',
+      detail: issue.detail,
+      severity: 'warning',
+    }));
+  });
+  // The estimate records the price the operator funded. Carry that fresh
+  // reference into both LP checks, matched to its pool index and quote mint.
+  const executionAllocations = allocations.map((allocation, index) => {
+    if (allocation.priceEnteredByUser === true) return allocation;
+    const rows = Array.isArray(fundingEstimate?.resolvedPrices) ? fundingEstimate.resolvedPrices : [];
+    const price = rows.find((row) => row?.allocationIndex === index
+      && poolQuoteIdentity({ quoteToken: row.quoteMint }) === poolQuoteIdentity(allocation));
+    const quoteUsd = optionalPositiveNumber(price?.quoteUsd);
+    return quoteUsd === undefined ? allocation : { ...allocation, quoteUsdOverride: String(price.quoteUsd) };
+  });
   const rpcPosture = rpcPostureStatus(context);
   setPlanGuardrail(plan, 'rpc-posture', {
     title: rpcPosture.title,
@@ -2149,7 +2190,7 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     tokenDecimals: plan.token.decimals,
     tokenTotalSupply: plan.token.supply,
     targetMarketCapUsd,
-    allocations,
+    allocations: executionAllocations,
     lockPositions: true,
     airdrop: executableAirdrop,
   };
@@ -2285,7 +2326,7 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
         tokenDecimals: plan.token.decimals,
         tokenTotalSupply: plan.token.supply,
         targetMarketCapUsd,
-        allocations,
+        allocations: executionAllocations,
       },
       createLp: createLpPayload,
       resumeLaunch: {

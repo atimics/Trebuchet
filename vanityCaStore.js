@@ -15,6 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as secretStore from './secretStore.js';
 import { atomicWriteJson, readJsonArrayStrict } from './secureJsonFile.js';
+import { readVanityMintKey } from './vanityMintKey.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,18 +164,16 @@ function metadata(entry) {
 }
 
 export function add(entry) {
-  const scalarKey = entry?.keyType === 'scalar';
-  const validSecret = scalarKey
-    ? Array.isArray(entry.scalar) && entry.scalar.length === 32
-    : Array.isArray(entry?.secretKey);
-  if (!entry || typeof entry.publicKey !== 'string' || !validSecret) {
+  if (!entry || typeof entry.publicKey !== 'string' || !entry.publicKey) {
     throw new TypeError('vanityCaStore.add expects { publicKey, secretKey } or { publicKey, keyType: "scalar", scalar }');
   }
+  const mintKey = readVanityMintKey(entry);
+  const scalarKey = mintKey.keyType === 'scalar';
   const list = load();
   const idx = list.findIndex((item) => item.publicKey === entry.publicKey);
   const next = {
     publicKey: entry.publicKey,
-    ...(scalarKey ? { keyType: 'scalar', scalar: entry.scalar } : { keyType: 'seed', secretKey: entry.secretKey }),
+    ...(scalarKey ? { keyType: 'scalar', scalar: mintKey.scalar } : { keyType: 'seed', secretKey: mintKey.secretKey }),
     createdAt: entry.createdAt || new Date().toISOString(),
     rarity: entry.rarity || 'Common',
     epochs: entry.epochs ?? null,

@@ -15,6 +15,10 @@ import { installQuoteAcquisitionRoutes } from './quoteAcquisitionRoutes.js';
 import { classifyChainError } from './chainRetry.js';
 import { createLaunchExecutionServices, claimLaunchOperation, LaunchRejection } from './launchExecution.js';
 import { autoResumingLaunchServices } from './autoResume.js';
+import * as claimer from '@trebuchet/claimer';
+import { decideCrank, normalizeFlywheelSchedule } from '@trebuchet/core/flywheel-schedule';
+import * as claimerDamm from '@trebuchet/claimer/venues/damm';
+import { createExecutionConnection } from './rpcConnection.js';
 import express from 'express';
 import { acquireProfileOwner } from '@trebuchet/runtime/owner';
 import { createRuntimeControl } from '@trebuchet/runtime/control';
@@ -53,12 +57,14 @@ import {
   KNOWN_QUOTES,
   KNOWN_SAFE_QUOTES,
   getQuoteTokenOnChainPrice,
+  getQuoteTokenMarketPrice,
   previewSolSupport,
   findSolClmmPoolForToken,
   listTokenMarkets,
   listCoinPositions,
 } from './lpService.js';
 import { WSOL_MINT as WSOL_MINT_ADDRESS } from './lpConstants.js';
+import { getGeckoTokenPrices } from './tokenInfoService.js';
 
 import { probeRaydiumPriceStrict, discoverJupiterRoute } from './swapService.js';
 import { estimateAirdropExecutionCostSol } from './lpConstants.js';
@@ -84,7 +90,9 @@ import {
 
 import * as pendingWallets from './pendingWallets.js';
 import * as vanityCaStore from './vanityCaStore.js';
+import { readVanityMintKey } from './vanityMintKey.js';
 import { cachedTokenDisplay } from './tokenInfoService.js';
+import { tokenCardFromMarkets } from './tokenCard.js';
 import { installRpcTrace } from './rpcTrace.js';
 
 if (process.env.TREBUCHET_RPC_TRACE === '1') installRpcTrace();
@@ -97,7 +105,7 @@ import { createLaunchReportUmi, publishLaunchReport } from './launchReportServic
 import * as launchJournal from './launchJournal.js';
 import * as launchStore from './launchStore.js';
 import * as coinStore from './coinStore.js';
-import { mergeCoins, validMint, readMintAccount } from './coinService.js';
+import { mergeCoins, validMint, readMintAccount, restoreLaunchJournalArt } from './coinService.js';
 import { readTokenMarketEvidence, readHolderSample, readPoolEvidence, fetchSellQuote, marketEvidenceError } from './tokenMarketEvidence.js';
 import * as launchFlywheels from './launchFlywheels.js';
 import * as userPrefs from './userPrefs.js';
@@ -710,10 +718,19 @@ const createPoolsAndPositions = (requested) => {
   // Resuming a launch whose liquidity plan is already saved builds the remaining steps from that
   // plan, not from the current screen.
   const saved = requireLiquidityExecution().savedPlan(requested);
-  const input = saved && saved.tokenMint === requested.tokenMint
+  const savedPlanInput = saved && saved.tokenMint === requested.tokenMint
     ? { ...requested, allocations: saved.allocations, targetMarketCapUsd: saved.targetMarketCapUsd, tokenTotalSupply: saved.tokenTotalSupply,
       tokenDecimals: saved.tokenDecimals, lockPositions: saved.lockPositions }
     : requested;
+  const journal = requested.walletPublicKey ? launchJournal.activeForWallet(requested.walletPublicKey) : null;
+  const journalPlan = journal?.poolPlan;
+  const journalIntents = journalPlan?.tokenMint === requested.tokenMint
+    ? journalPlan.meteoraPoolIntents || {}
+    : {};
+  const input = {
+    ...savedPlanInput,
+    meteoraPoolIntents: { ...(requested.meteoraPoolIntents || {}), ...journalIntents },
+  };
   return createPoolsWithSdk({ ...input, execution: {
     ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
   } });
@@ -2207,20 +2224,12 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
     // Two key shapes: a 64-byte secretKey, or the 32-byte scalar a split-key
     // grind produces (a + k). Either way the public key is derived here, never
     // taken from the request.
-    const scalar = req.body?.scalar;
-    const scalarBytes = Array.isArray(scalar) ? Uint8Array.from(scalar) : null;
-    const secret = req.body?.secretKey;
-    const bytes = Array.isArray(secret) ? Uint8Array.from(secret) : null;
-    if (scalarBytes) {
-      if (scalarBytes.length !== 32) {
-        return res.status(400).json({ success: false, error: 'scalar must be a 32-byte array' });
-      }
-    } else if (!bytes || bytes.length !== 64) {
-      return res.status(400).json({ success: false, error: 'secretKey must be a 64-byte array' });
-    }
-    const publicKey = scalarBytes
-      ? new PublicKey(scalarPublicKey(scalarBytes)).toBase58()
-      : Keypair.fromSecretKey(bytes).publicKey.toBase58();
+    const mintKey = readVanityMintKey({
+      keyType: req.body?.keyType,
+      scalar: req.body?.scalar,
+      secretKey: req.body?.secretKey,
+    });
+    const { publicKey } = mintKey;
     const { prefix, suffix } = normalizeVanityTargetBase58(req.body?.prefix || '', req.body?.suffix || '');
     const caseInsensitive = req.body?.caseInsensitive === true;
     const fold = (value) => (caseInsensitive ? value.toLowerCase() : value);
@@ -2229,10 +2238,7 @@ app.post('/api/vanity-ca-candidates/import', (req, res) => {
     }
     const mode = prefix && suffix ? 'both' : prefix ? 'prefix' : suffix ? 'suffix' : null;
     vanityCaStore.add({
-      publicKey,
-      ...(scalarBytes
-        ? { keyType: 'scalar', scalar: Array.from(scalarBytes) }
-        : { secretKey: Array.from(bytes) }),
+      ...mintKey,
       attempts: Number.isFinite(Number(req.body?.attempts)) ? Number(req.body.attempts) : null,
       expectedAttempts: expectedVanityAttempts(prefix, suffix, { caseInsensitive }),
       target: prefix && suffix ? `${prefix}...${suffix}` : (prefix || suffix || null),
@@ -3323,6 +3329,11 @@ app.delete('/api/v2/coins/:mint', (req, res) => {
 // What is true about a coin launched here, fact by fact, checked against the chain
 // where the chain can answer. A step's record is a claim: "done" needs the
 // chain to agree; a record the chain contradicts is a mismatch, not a tick.
+function recoveryJournalWithArt(journal) {
+  return restoreLaunchJournalArt(journal, { launches: launchStore.list(),
+    sealedIdentity: getSealedIdentity(journal?.token?.mint) });
+}
+
 function coinCreationSteps(journal, { account = null, markets = null, launchWalletLamports = null } = {}) {
   const combine = (recorded, chain) => {
     if (chain === 'done') return 'done';
@@ -3390,7 +3401,7 @@ function coinCreationSteps(journal, { account = null, markets = null, launchWall
     // plan (older records did not), and this app holds the wallet's key.
     hasPlan: Boolean(journal?.launchConfig && typeof journal.launchConfig === 'object'),
     walletManaged: Boolean(walletEntry),
-    journal: journalWithoutEvents,
+    journal: recoveryJournalWithArt(journalWithoutEvents),
     steps,
     // A step the chain can't check (liquidity locks) holds once it is recorded, as the coin's status says.
     nextStep: steps.find((step) => !['done', 'recorded'].includes(step.state))?.id || null,
@@ -3443,6 +3454,47 @@ app.get('/api/v2/coins/:mint', async (req, res) => {
   } catch (error) {
     sendErrorResponse(res, error, 400);
   }
+});
+
+// The token card: a coin's price and how its liquidity splits across its pools. It opens on hover,
+// so a read is kept a minute and concurrent hovers share one read.
+const TOKEN_CARD_MAX_AGE_MS = 60_000;
+const tokenCardCache = new Map();
+function readTokenCard(mint) {
+  const cached = tokenCardCache.get(mint);
+  if (cached && (cached.pending || Date.now() - cached.at < TOKEN_CARD_MAX_AGE_MS)) return cached.pending || Promise.resolve(cached.value);
+  const pending = (async () => {
+    const record = coinStore.get(mint);
+    const journals = launchJournal.list({ includeCompleted: true, includeArchived: true })
+      .filter((journal) => String(journal?.token?.mint || '') === mint);
+    const [listed, solUsd] = await Promise.all([
+      listTokenMarkets(mint, { meteoraPoolIds: meteoraPoolIdsFor(journals) }),
+      getUsdPrice(WSOL_MINT_ADDRESS).then((price) => (price ? Number(price) : null)).catch(() => null),
+    ]);
+    const markets = withRecordedQuoteSymbols(listed, journals);
+    const latest = journals.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
+    return {
+      ...tokenCardFromMarkets(markets, { solUsd }),
+      mint,
+      symbol: markets.tokenSymbol || record?.symbol || latest?.launchConfig?.token?.symbol || cachedTokenDisplay(mint).symbol || null,
+      name: record?.name || latest?.launchConfig?.token?.name || null,
+      image: record?.image || null,
+      at: new Date().toISOString(),
+    };
+  })().then((value) => { tokenCardCache.set(mint, { at: Date.now(), value }); return value; })
+    .catch((error) => { tokenCardCache.delete(mint); throw error; });
+  tokenCardCache.set(mint, { ...(cached || {}), pending });
+  if (tokenCardCache.size > 200) tokenCardCache.delete(tokenCardCache.keys().next().value);
+  return pending;
+}
+
+app.get('/api/v2/coins/:mint/card', async (req, res) => {
+  try {
+    const mint = validMint(req.params.mint);
+    if (!mint) return res.status(400).json({ success: false, error: 'Enter a valid token mint.' });
+    if (isDemoMode()) return res.json({ success: true, card: { ...tokenCardFromMarkets({ pools: [] }), mint, symbol: null, name: null, image: null } });
+    res.json({ success: true, card: await readTokenCard(mint) });
+  } catch (error) { sendErrorResponse(res, error, 502); }
 });
 
 // Public market evidence and estimates use finalized account reads.
@@ -3808,6 +3860,8 @@ function v2ExecutionProofFromContext(context = {}, readiness = {}) {
   const plan = readiness?.plan || null;
   const tokenInfo = context.createdTokenInfo || journal?.token || null;
   const tokenMint = tokenInfo?.mint || context.tokenMint || readiness?.tokenMint || null;
+  const recoveryConfig = recoveryJournalWithArt({ walletPublicKey: journal?.walletPublicKey || readiness?.walletPublicKey,
+    token: { ...tokenInfo, mint: tokenMint }, launchConfig: v2LaunchConfigSnapshotFromPlan(plan, journal) }).launchConfig;
   const lpResults = Array.isArray(journal?.lp?.results)
     ? journal.lp.results
     : Array.isArray(journal?.lp?.priorResults)
@@ -3951,7 +4005,7 @@ function v2ExecutionProofFromContext(context = {}, readiness = {}) {
     reportPublish,
     transfer,
     destinationWallet,
-    launchConfig: v2LaunchConfigSnapshotFromPlan(plan, journal),
+    launchConfig: recoveryConfig,
     canPublishReport: reportableExecutionProof,
     canRunAirdrop: Boolean(tokenMint && plannedRecipients.length > 0),
     canRetryAirdrop: failedAirdrop.length > 0,
@@ -6284,6 +6338,18 @@ function recordLpJournalProgress(walletPublicKey, event) {
   const partialResults = journalResultList(journal);
   const patch = { stage: event.stage || 'lp_progress' };
 
+  if (event.stage === 'meteora_pool_start'
+    && Number.isInteger(event.allocationIndex)
+    && event.poolIntent && typeof event.poolIntent === 'object') {
+    patch.poolPlan = {
+      ...(journal?.poolPlan || {}),
+      meteoraPoolIntents: {
+        ...(journal?.poolPlan?.meteoraPoolIntents || {}),
+        [event.allocationIndex]: event.poolIntent,
+      },
+    };
+  }
+
   if (applyLpEventToResults(partialResults, event, journal)) {
     patch.lp = { partialResults };
   }
@@ -6604,6 +6670,125 @@ app.get('/api/clmm-fee-tiers', async (_req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Claims and flywheel (desktop host of @trebuchet/claimer).
+//
+// The claimer is the shared core for fee claiming/routing; these routes are
+// the desktop surface. Routes below are read/policy only and never sign.
+// Fee-claim EXECUTION (signing) intentionally answers 501 NOT_WIRED until the
+// armed-wallet slice lands — the same honest gate the sealed runner uses for
+// launches (503 NOT_READY). See docs/lp-engineering-v2.md §3.
+// ---------------------------------------------------------------------------
+
+const claimerStore = () => claimer.openCrankCollections(process.env.TREBUCHET_CONFIG_DIR || __dirname);
+
+// GET /api/v2/flywheel/schedule?scopeId=... — the saved schedule, or null.
+app.get('/api/v2/flywheel/schedule', (req, res) => {
+  const { store, schedules } = claimerStore();
+  try {
+    const scopeId = String(req.query.scopeId || '').trim();
+    res.json({ success: true, schedule: claimer.loadSchedule(schedules.load(), scopeId || 'default') });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    store.close();
+  }
+});
+
+// POST /api/v2/flywheel/schedule — validate (normalizeFlywheelSchedule) then
+// persist. A schedule that fails validation is rejected with the reason.
+app.post('/api/v2/flywheel/schedule', (req, res) => {
+  const { store, schedules } = claimerStore();
+  try {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {});
+    const scopeId = String(body.scopeId || 'default').trim();
+    const normalized = normalizeFlywheelSchedule(body.schedule);
+    const saved = { ...normalized, scopeId };
+    claimer.saveSchedule(schedules.load(), schedules.save, saved);
+    res.json({ success: true, schedule: claimer.loadSchedule(schedules.load(), scopeId) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message, valid: false });
+  } finally {
+    store.close();
+  }
+});
+
+// POST /api/v2/flywheel/decision — run decideCrank against a saved schedule
+// (or one supplied in the body) with observed state. Read-only; the keeper
+// enforces the returned ceilings at the signer, never on this route.
+app.post('/api/v2/flywheel/decision', (req, res) => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {});
+  const scopeId = String(body.scopeId || 'default').trim();
+  let schedule = body.schedule;
+  if (!schedule) {
+    const { store, schedules } = claimerStore();
+    try {
+      schedule = claimer.loadSchedule(schedules.load(), scopeId);
+    } finally {
+      store.close();
+    }
+    if (!schedule) return res.status(400).json({ success: false, error: 'No saved schedule; pass one in the body or save one first.' });
+  }
+  const state = body.state && typeof body.state === 'object' ? body.state : {};
+  res.json({ success: true, decision: decideCrank({ schedule, state }) });
+});
+
+// GET /api/v2/claims/inventory?walletPublicKey=... — the claimable positions a
+// wallet holds, read from the chain where it is cheap and safe (Meteora DAMM
+// v2 listPositions). CLMM lock inventory arrives with the journal wiring.
+// Best-effort: an RPC or network failure returns an honest { error } and
+// empty rows rather than a guessed inventory.
+app.get('/api/v2/claims/inventory', async (req, res) => {
+  const walletPublicKey = String(req.query.walletPublicKey || '').trim();
+  const network = String(req.query.network || getNetwork()).trim();
+  const rpcUrl = getRpcUrl();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(walletPublicKey)) {
+    return res.status(400).json({ success: false, error: 'walletPublicKey is required' });
+  }
+  const connection = createExecutionConnection();
+  try {
+    const positions = await claimerDamm.listPositions({ connection, owner: walletPublicKey }).catch(() => []);
+    const rows = positions.map((row) => ({
+      venue: 'meteora-damm-v2',
+      poolId: row.pool,
+      positionId: row.position,
+      positionNftMint: row.positionNft,
+      feeKeyMint: row.positionNft,
+      owner: walletPublicKey,
+      locked: row.permanentlyLocked,
+      unclaimedQuoteLamports: String(row.unclaimedQuoteLamports || '0'),
+    }));
+    const plan = claimer.buildInventoryPlan(rows);
+    res.json({
+      success: true,
+      network,
+      rpcUrl: typeof rpcUrl === 'string' ? rpcUrl.replace(/\?.*/, '') : null,
+      count: plan.count,
+      rows: plan.rows,
+    });
+  } catch (error) {
+    res.status(200).json({ success: false, error: `Inventory unavailable: ${error.message}`, count: 0, rows: [] });
+  }
+});
+
+// POST /api/v2/claims/execute — reviews a claim (buildClaimPlan) and answers
+// 501 NOT_WIRED: signing execution is the next claimer slice. The gate keeps
+// the route honest instead of pretending a signed claim exists.
+app.post('/api/v2/claims/execute', (req, res) => {
+  const body = (req.body && typeof req.body === 'object' ? req.body : {});
+  try {
+    const plan = claimer.buildClaimPlan(body.claim || body);
+    res.status(501).json({
+      success: false,
+      code: 'NOT_WIRED',
+      plan,
+      message: 'Claim execution is not wired yet: the armed-wallet claim slice (docs/lp-engineering-v2.md §3.5) must land first. The plan above is valid and ready to review.',
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
 // Image proxy for token logos. Many logo hosts (CDNs, indexers) don't send CORS
 // headers; re-serving the logo from our own origin lets the page read it.
 //
@@ -6841,6 +7026,43 @@ const onChainPriceCache = new Map();
 const ON_CHAIN_PRICE_TTL_MS = 60 * 1000;
 const ON_CHAIN_PRICE_MISS_TTL_MS = 60 * 1000;
 
+// Share current price reads across editor tabs. Each 30-second poll reads fresh state.
+const quotePriceReads = new Map();
+app.post('/api/quote-token-prices', async (req, res) => {
+  try {
+    if (!Array.isArray(req.body?.mints)) throw new Error('Provide quote mints as a list');
+    const mints = [...new Set(req.body.mints)];
+    if (!mints.length || mints.length > 16) throw new Error('Provide between 1 and 16 quote mints');
+    for (const mint of mints) {
+      if (typeof mint !== 'string') throw new Error('Each quote mint must be an address');
+      new PublicKey(mint);
+    }
+    const geckoPrices = isDemoMode() ? new Map() : await getGeckoTokenPrices([WSOL_MINT_ADDRESS, ...mints], { forceFresh: req.body.forceFresh === true });
+    const solUsd = isDemoMode() ? new Decimal(200) : geckoPrices.has(WSOL_MINT_ADDRESS)
+      ? new Decimal(geckoPrices.get(WSOL_MINT_ADDRESS)) : await getUsdPrice(WSOL_MINT_ADDRESS, { forceFresh: true });
+    const prices = [];
+    for (const mint of mints) {
+      if (isDemoMode()) {
+        prices.push({ mint, priceUsd: mint === WSOL_MINT_ADDRESS ? '200' : '1', priceSource: 'demo-ledger', priceCheckedAt: new Date().toISOString() });
+        continue;
+      }
+      const key = `${getRpcUrl()}|${mint}`;
+      let read = quotePriceReads.get(key);
+      if (!read?.pending && (!read || read.expiresAt <= Date.now() || req.body?.forceFresh === true)) {
+        read = {};
+        quotePriceReads.set(key, read);
+        read.pending = getQuoteTokenMarketPrice({ mint, solUsd, geckoPrice: geckoPrices.get(mint) }).then((result) => result, (error) => ({ mint, error: error.message })).then((result) => {
+          read.result = result; read.expiresAt = Date.now() + 10_000; read.pending = null;
+          return result;
+        });
+      }
+      prices.push(await (read.pending || read.result));
+    }
+    while (quotePriceReads.size > 128) quotePriceReads.delete(quotePriceReads.keys().next().value);
+    res.json({ success: true, prices });
+  } catch (error) { res.status(400).json({ success: false, error: error.message }); }
+});
+
 // Quote-token info: when the user picks/enters a quote token in the UI,
 // we look up its symbol/decimals/USD price for inline display. For known
 // quote tokens (SOL/USDC/USDT) we use built-in constants. For arbitrary
@@ -6852,7 +7074,7 @@ app.post('/api/quote-token-info', async (req, res) => {
   // reads, authority audits, Raydium probes, and pool-price discovery.
   if (isDemoMode()) return demoChainService.handleQuoteTokenInfo(req, res);
   try {
-    const { quoteToken } = req.body;
+    const { quoteToken, forceFresh = false } = req.body;
     if (!quoteToken) throw new Error('quoteToken required');
 
     if (isDemoMode()) {
@@ -6973,7 +7195,7 @@ app.post('/api/quote-token-info', async (req, res) => {
         const ocKey = `${getRpcUrl()}|${quoteToken}`;
         const ocHit = onChainPriceCache.get(ocKey);
         let oc;
-        if (ocHit && ocHit.expiresAt > Date.now()) {
+        if (!forceFresh && ocHit && ocHit.expiresAt > Date.now()) {
           oc = ocHit.result;
         } else {
           const solUsdForDisplay = await getUsdPrice(WSOL_MINT_ADDRESS);
@@ -7008,7 +7230,7 @@ app.post('/api/quote-token-info', async (req, res) => {
       // is immutable-ish on-chain. Authorities CAN be revoked but never
       // re-added, and a token that has had its authorities revoked at
       // some point won't suddenly have them again. So caching is safe.
-      const cachedCompat = compatCache.get(quoteToken);
+      const cachedCompat = forceFresh ? null : compatCache.get(quoteToken);
       if (cachedCompat) {
         infoOut.compatible = cachedCompat.compatible;
         infoOut.isToken2022 = cachedCompat.isToken2022;
@@ -7104,7 +7326,7 @@ app.post('/api/quote-token-info', async (req, res) => {
         infoOut.swapRoute = 'raydium';
       } else if (needsProbe) {
         // Cache lookup with TTL check.
-        const cachedProbe = step2ProbeCache.get(infoOut.address);
+        const cachedProbe = forceFresh ? null : step2ProbeCache.get(infoOut.address);
         const now = Date.now();
         if (cachedProbe && cachedProbe.expiresAt > now) {
           // Translate the cache verdict ('tradeable' | 'no-route') into
@@ -7114,14 +7336,14 @@ app.post('/api/quote-token-info', async (req, res) => {
             infoOut.raydiumTradeable = 'no';
             infoOut.swapRoute = 'jupiter';
             infoOut.swapVenues = cachedProbe.venues;
-            if (cachedProbe.priceUsd) {
+            if (cachedProbe.priceUsd && !infoOut.pricePoolId && !infoOut.priceWarning) {
               infoOut.priceUsd = cachedProbe.priceUsd;
               infoOut.priceSource = 'jupiter-probe (cached)';
             }
           } else if (cachedProbe.verdict === 'tradeable') {
             infoOut.raydiumTradeable = 'yes';
             infoOut.swapRoute = 'raydium';
-            if (cachedProbe.priceUsd) {
+            if (cachedProbe.priceUsd && !infoOut.pricePoolId && !infoOut.priceWarning) {
               // Prefer the probe-derived price over the aggregator price.
               // The probe IS the price the pool will be created at later;
               // showing it here means the user sees the same number
@@ -7169,8 +7391,10 @@ app.post('/api/quote-token-info', async (req, res) => {
               });
               infoOut.raydiumTradeable = 'yes';
               infoOut.swapRoute = 'raydium';
-              infoOut.priceUsd = priceStr;
-              infoOut.priceSource = 'raydium-probe';
+              if (!infoOut.pricePoolId && !infoOut.priceWarning) {
+                infoOut.priceUsd = priceStr;
+                infoOut.priceSource = 'raydium-probe';
+              }
             } catch (probeErr) {
               const code = probeErr.code || 'UNKNOWN';
               // Raydium has no route: the auto-buy falls back to Jupiter
@@ -7193,8 +7417,10 @@ app.post('/api/quote-token-info', async (req, res) => {
                 infoOut.raydiumTradeable = 'no';
                 infoOut.swapRoute = 'jupiter';
                 infoOut.swapVenues = jupiterRoute.venues;
-                infoOut.priceUsd = priceStr;
-                infoOut.priceSource = 'jupiter-probe';
+                if (!infoOut.pricePoolId && !infoOut.priceWarning) {
+                  infoOut.priceUsd = priceStr;
+                  infoOut.priceSource = 'jupiter-probe';
+                }
               } else if (code === 'NO_ROUTE' && !jupiterError) {
                 // Cache the verdict — the user typing the same mint
                 // 10 times in a row shouldn't probe 10 times.
@@ -7211,7 +7437,7 @@ app.post('/api/quote-token-info', async (req, res) => {
                 // techLine renders correctly. If priceUsd is null
                 // here (no aggregator either), the frontend's
                 // no-price warning takes over.
-                if (infoOut.priceUsd != null) {
+                if (infoOut.priceUsd != null && !infoOut.pricePoolId && !infoOut.priceWarning) {
                   infoOut.priceSource = 'oracle';
                 }
               } else {
@@ -7328,7 +7554,7 @@ app.post('/api/estimate-lp-funding', async (req, res) => {
     res.json({ success: true, estimate });
   } catch (error) {
     console.error('Error estimating LP funding:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 });
 
@@ -7846,7 +8072,7 @@ app.get('/api/launch-journals', (req, res) => {
     const includeCompleted = req.query.includeCompleted === '1';
     const includeArchived = req.query.includeArchived === '1';
     const journals = launchJournal.list({ includeCompleted, includeArchived });
-    res.json({ success: true, journals });
+    res.json({ success: true, journals: journals.map(recoveryJournalWithArt) });
   } catch (error) {
     console.error('Error listing launch journals:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -8054,6 +8280,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
 
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: wallet.secretKey,
+      walletPublicKey,
       tokenMint,
       tokenDecimals,
       tokenTotalSupply,
@@ -8061,6 +8288,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       allocations,
       lockPositions,
       priorResults: effectivePriorResults,
+      meteoraPoolIntents: poolPlan.meteoraPoolIntents || {},
       onProgress: (event) => {
         recordLpJournalProgress(walletPublicKey, event);
         try { lpProgressEvent(walletPublicKey, event); }

@@ -5,6 +5,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import { Keypair, PublicKey } from '@solana/web3.js';
+import { scalarPublicKey } from '@trebuchet/core/split-key';
+
+const seedMint = Keypair.fromSeed(new Uint8Array(32).fill(51));
+const seedAddress = seedMint.publicKey.toBase58();
+const scalarSecret = new Uint8Array(32).fill(52);
+const scalarAddress = new PublicKey(scalarPublicKey(scalarSecret)).toBase58();
 
 // Every test uses a temp folder. Set it before the modules are used.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'trebuchet-reset-archive-'));
@@ -45,15 +52,15 @@ function seed(dir) {
     walletKey: bytes(64),
     walletKey2: bytes(64),
     mnemonic: 'test seed words alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima',
-    vanitySeed: bytes(64),
-    vanityScalar: bytes(32),
+    vanitySeed: Array.from(seedMint.secretKey),
+    vanityScalar: Array.from(scalarSecret),
     split: bytes(32),
     nft: bytes(32),
   };
   pendingWallets.add('WalletAAAA1111', secrets.walletKey, secrets.mnemonic);
   pendingWallets.add('WalletBBBB2222', secrets.walletKey2, null);
-  vanityCaStore.add({ publicKey: 'VanitySeed1111', secretKey: secrets.vanitySeed, attempts: 123456789, epochs: 3 });
-  vanityCaStore.add({ publicKey: 'VanityScalar1111', keyType: 'scalar', scalar: secrets.vanityScalar, attempts: 987654321 });
+  vanityCaStore.add({ publicKey: seedAddress, secretKey: secrets.vanitySeed, attempts: 123456789, epochs: 3 });
+  vanityCaStore.add({ publicKey: scalarAddress, keyType: 'scalar', scalar: secrets.vanityScalar, attempts: 987654321 });
   const job = splitJobStore.create({ secretScalar: secrets.split, publicPoint: 'ab'.repeat(32), prefix: 'AB' });
   // An NFT collection key saved before the NFTs view was removed: the file stays on disk, and a
   // PIN reset still archives it and leaves it in place.
@@ -204,9 +211,9 @@ test('inventory classifies readable, locked, wrong-key and missing, and returns 
   assert.equal(byKey(unlocked, 'WalletWrongKey3333').state, 'wrong-key');
   assert.equal(byKey(unlocked, 'WalletMissing4444').state, 'missing');
   assert.equal(byKey(unlocked, 'WalletMissing4444').wouldBeLostByReset, false);
-  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === 'VanityScalar1111').kind, 'vanity scalar key');
-  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === 'VanitySeed1111').attempts, 123456789);
-  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === 'VanitySeed1111').epochs, 3);
+  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === scalarAddress).kind, 'vanity scalar key');
+  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === seedAddress).attempts, 123456789);
+  assert.equal(unlocked.stores.vanityCAs.find((i) => i.publicKey === seedAddress).epochs, 3);
   assert.equal(unlocked.stores.splitJobs[0].state, 'readable');
   assert.equal(unlocked.stores.nftKeys[0].state, 'readable');
   assert.equal(unlocked.totals.missing, 1);
@@ -255,11 +262,48 @@ test('copying the archive back and unlocking with the original PIN restores ever
   const wallet = pendingWallets.get('WalletAAAA1111');
   assert.equal(sha(JSON.stringify(wallet.secretKey)), expected.wallet);
   assert.equal(sha(wallet.mnemonic), expected.mnemonic);
-  assert.equal(sha(JSON.stringify(vanityCaStore.get('VanityScalar1111').scalar)), expected.vanity);
+  assert.equal(sha(JSON.stringify(vanityCaStore.get(scalarAddress).scalar)), expected.vanity);
   assert.equal(sha(JSON.stringify(splitJobStore.getWithSecret(jobId).secretScalar)), expected.split);
   const record = JSON.parse(fs.readFileSync(path.join(dir, 'nftCollections', collectionId, 'collection.json'), 'utf8'));
   assert.equal(sha(secretStore.decryptString(record.collectionKey.scalarEnc)), expected.nft);
   assert.equal(secretInventory().totals.readable, secretInventory().totals.total);
+});
+
+test('reset archive keeps the last good PIN state needed to recover after active state damage', (t) => {
+  const dir = freshConfig(t);
+  const recoveryWallet = Keypair.generate();
+  const publicKey = recoveryWallet.publicKey.toBase58();
+  const secret = Array.from(recoveryWallet.secretKey);
+  secretPinStore.setPin(PIN);
+  pendingWallets.add(publicKey, secret, null);
+  secretPinStore.rotateUnlockedPin('5731');
+
+  const stateFile = path.join(dir, '.secretPin.json');
+  const backupFile = `${stateFile}.bak`;
+  const backupBytes = fs.readFileSync(backupFile);
+  fs.writeFileSync(stateFile, '{ damaged state');
+  secretPinStore.lock();
+
+  const result = resetWithArchive({ confirmReset: RESET_PHRASE });
+  const archiveDir = path.join(dir, result.archive.path);
+  const archivedBackup = path.join(archiveDir, '.secretPin.json.bak');
+  assert.ok(fs.readFileSync(archivedBackup).equals(backupBytes));
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(archivedBackup).mode & 0o777, fs.statSync(backupFile).mode & 0o777);
+  }
+
+  // A new setup and later PIN change can replace the live one-deep backup.
+  secretStore.setupSecretPin('8642');
+  secretStore.changeSecretPin('9753');
+  assert.equal(fs.readFileSync(backupFile).equals(backupBytes), false);
+
+  // Restoring the archive's backup state makes its saved wallet readable again.
+  const restoreDir = fs.mkdtempSync(path.join(root, 'restore-'));
+  process.env.TREBUCHET_CONFIG_DIR = restoreDir;
+  fs.copyFileSync(path.join(archiveDir, 'pendingWallets.json'), path.join(restoreDir, 'pendingWallets.json'));
+  fs.copyFileSync(archivedBackup, path.join(restoreDir, '.secretPin.json'));
+  assert.equal(secretPinStore.unlock(PIN), true);
+  assert.deepEqual(pendingWallets.get(publicKey).secretKey, secret);
 });
 
 test('archiveSecrets works with no files at all', (t) => {

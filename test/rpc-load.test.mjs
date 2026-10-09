@@ -4,61 +4,102 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { clearPoolDiscoveryCache, fetchVenuePoolsByMints } from '../venuePoolService.js';
 import { appCaller, installRpcTrace } from '../rpcTrace.js';
+import { WSOL_MINT, USDC_MINT, USDT_MINT } from '../onChainPriceService.js';
 
 const read = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
 
-test('a pair\'s pools are scanned once per 10 minutes, not on every price read', async () => {
+const TOKEN = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+const noPoolsConnection = (onRead = () => {}) => ({
+  getProgramAccounts: async () => { throw new Error('Broad pool scan reached'); },
+  getMultipleAccountsInfo: async (keys) => { onRead(keys); return keys.map(() => null); },
+});
+const indexedPair = (anchor = WSOL_MINT) => ({ chainId: 'solana', pairAddress: USDC_MINT,
+  baseToken: { address: TOKEN }, quoteToken: { address: anchor }, liquidity: { usd: 1000 } });
+
+test('one mint index covers all quote pairs and RPC connections while state reads stay fresh', async () => {
   clearPoolDiscoveryCache();
-  let scans = 0;
-  const connection = {
-    rpcEndpoint: 'rpc-a',
-    getProgramAccounts: async () => { scans += 1; return []; },
-    getMultipleAccountsInfo: async (keys) => keys.map(() => null),
-  };
-  await fetchVenuePoolsByMints(connection, 'MintA', 'So11111111111111111111111111111111111111112');
-  const first = scans;
-  assert.ok(first > 0, 'the first read scans');
-  await fetchVenuePoolsByMints(connection, 'MintA', 'So11111111111111111111111111111111111111112');
-  await fetchVenuePoolsByMints(connection, 'MintA', 'So11111111111111111111111111111111111111112');
-  assert.equal(scans, first, 'later reads reuse the scan');
-  await fetchVenuePoolsByMints({ ...connection, rpcEndpoint: 'rpc-b' }, 'MintA', 'So11111111111111111111111111111111111111112');
-  assert.equal(scans, first * 2, 'another RPC is scanned on its own');
+  let lookups = 0; let reads = 0; let now = 100_000;
+  const options = { now: () => now, fetchImpl: async (url) => {
+    lookups++; assert.ok(url.endsWith(`/solana/${TOKEN}`));
+    return { ok: true, json: async () => [indexedPair()] };
+  } };
+  const connection = noPoolsConnection(() => { reads++; });
+  for (const anchor of [WSOL_MINT, USDC_MINT, USDT_MINT, WSOL_MINT]) {
+    await fetchVenuePoolsByMints(connection, TOKEN, anchor, options);
+  }
+  await fetchVenuePoolsByMints(noPoolsConnection(() => { reads++; }), TOKEN, WSOL_MINT, options);
+  assert.equal(lookups, 1); assert.equal(reads, 5);
+  now += 600_001;
+  await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, options);
+  assert.equal(lookups, 2, 'address discovery refreshes after ten minutes');
 });
 
-test('a failed scan waits a minute, then a fresh read can recover', async (t) => {
+test('a failed mint index has a five minute cooldown shared across polls, anchors, and RPCs', async () => {
   let now = 100_000;
-  t.mock.method(Date, 'now', () => now);
   clearPoolDiscoveryCache();
-  let scans = 0;
-  const connection = {
-    rpcEndpoint: 'rpc-c',
-    getProgramAccounts: async () => { scans += 1; throw new Error('429 Too Many Requests'); },
-    getMultipleAccountsInfo: async (keys) => keys.map(() => null),
-  };
-  await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
-  const first = scans;
-  await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
-  assert.equal(scans, first, 'repeated reads share the cooldown');
-  now += 60_001;
-  await fetchVenuePoolsByMints(connection, 'MintB', 'So11111111111111111111111111111111111111112');
-  assert.equal(scans, first * 2);
+  let lookups = 0; let recover = false;
+  const options = { now: () => now, fetchImpl: async () => {
+    lookups++;
+    return recover ? { ok: true, json: async () => [indexedPair()] } : { ok: false, status: 429 };
+  } };
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, WSOL_MINT, options);
+  for (let i = 0; i < 9; i++) {
+    now += 30_000;
+    await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, [WSOL_MINT, USDC_MINT, USDT_MINT][i % 3], options);
+  }
+  assert.equal(lookups, 1);
+  now += 30_001; recover = true;
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, WSOL_MINT, options);
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, USDC_MINT, options);
+  assert.equal(lookups, 2);
 });
 
-test('concurrent price reads share one pool scan in either mint order', async () => {
+test('twenty concurrent price reads share a single mint index request', async () => {
   clearPoolDiscoveryCache();
-  let scans = 0;
+  let lookups = 0;
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
-  const connection = {
-    rpcEndpoint: 'rpc-concurrent',
-    getProgramAccounts: async () => { scans += 1; await pending; return []; },
-  };
-  const a = fetchVenuePoolsByMints(connection, 'MintC', 'MintD');
-  const b = fetchVenuePoolsByMints(connection, 'MintD', 'MintC');
-  const c = fetchVenuePoolsByMints(connection, 'MintC', 'MintD');
+  const options = { fetchImpl: async () => {
+    lookups++; await pending; return { ok: true, json: async () => [indexedPair()] };
+  } };
+  const requests = Array.from({ length: 20 }, (_, i) => fetchVenuePoolsByMints(
+    noPoolsConnection(), TOKEN, [WSOL_MINT, USDC_MINT, USDT_MINT][i % 3], options));
+  assert.equal(lookups, 1);
   release();
-  await Promise.all([a, b, c]);
-  assert.equal(scans, 8, 'four venues in two mint orders');
+  await Promise.all(requests);
+  assert.equal(lookups, 1);
+});
+
+test('a failed index refresh keeps known addresses and still reads their current accounts', async () => {
+  clearPoolDiscoveryCache();
+  let now = 0; let lookups = 0; const batches = [];
+  const options = { now: () => now, fetchImpl: async () => {
+    lookups++; if (lookups > 1) throw new Error('index offline');
+    return { ok: true, json: async () => [indexedPair()] };
+  } };
+  const connection = noPoolsConnection((keys) => batches.push(keys.map((key) => key.toBase58())));
+  await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, options);
+  now += 600_001;
+  await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, options);
+  now += 30_000;
+  await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, options);
+  assert.equal(lookups, 2); assert.equal(batches.length, 3);
+  assert.ok(batches.every((batch) => batch.includes(USDC_MINT)));
+});
+
+test('an empty index checks again after one minute for newly listed pools', async () => {
+  clearPoolDiscoveryCache();
+  let now = 0; let lookups = 0;
+  const options = { now: () => now, fetchImpl: async () => {
+    lookups++; return { ok: true, json: async () => [] };
+  } };
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, WSOL_MINT, options);
+  now += 30_000;
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, WSOL_MINT, options);
+  assert.equal(lookups, 1);
+  now += 30_001;
+  await fetchVenuePoolsByMints(noPoolsConnection(), TOKEN, WSOL_MINT, options);
+  assert.equal(lookups, 2);
 });
 
 test('a pair token whose check failed waits a minute before the automatic re-check', () => {

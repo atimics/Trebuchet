@@ -30,8 +30,10 @@
 // Any failure in the lookup falls back to the floor — a fee estimate must
 // never be the reason an operation aborts.
 
-import { ComputeBudgetProgram } from '@solana/web3.js';
+import { ComputeBudgetProgram, SendTransactionError, Transaction } from '@solana/web3.js';
 import { publicKey as umiPublicKey } from '@metaplex-foundation/umi';
+import { inspectSolanaTransaction, readSolanaTransactionStatus } from '@trebuchet/runtime/solana';
+import { classifyChainError } from './chainRetry.js';
 
 // Floor: 50k micro-lamports/CU is a meaningful bid in quiet conditions and
 // costs almost nothing (50k uL * 100k CU = 5000 lamports = 0.000005 SOL).
@@ -115,6 +117,85 @@ export async function samplePriorityFeeMicroLamports(connection, {
     console.warn(`samplePriorityFeeMicroLamports: fee lookup failed, using floor (${e.message})`);
   }
   return floor;
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const needsRecovery = (message, transaction, cause) => Object.assign(new Error(message, { cause }), {
+  code: 'CHAIN_STATE_UNAVAILABLE', signature: transaction?.signature,
+});
+
+// Follow one signed message until finality or proven expiry. Every rebroadcast
+// uses the same bytes and signature, including after a lost send reply.
+export async function settleSignedTransaction(connection, transaction, {
+  timeoutMs = 180_000, pollIntervalMs = 1500, sleep = defaultSleep, now = Date.now,
+} = {}) {
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    let observed;
+    try { observed = await readSolanaTransactionStatus(connection, transaction); }
+    catch (cause) { throw needsRecovery('Read the signed transaction status before continuing.', transaction, cause); }
+    if (['confirmed', 'failed', 'expired'].includes(observed.state)) return observed;
+    if (now() >= deadline) throw needsRecovery('The signed transaction is still pending. Resume this transaction when the RPC is ready.', transaction);
+    if (observed.state === 'rebroadcast') {
+      try {
+        const signature = await connection.sendRawTransaction(Buffer.from(transaction.wire, 'base64'), {
+          skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 0,
+        });
+        if (signature !== transaction.signature) throw needsRecovery('The RPC reply must match the signed transaction.', transaction);
+      } catch (cause) {
+        if (cause?.code === 'CHAIN_STATE_UNAVAILABLE') throw cause;
+        const duplicate = /already (been )?processed/i.test(String(cause?.message || ''));
+        if (cause instanceof SendTransactionError && !duplicate && classifyChainError(cause) !== 'transient') {
+          throw Object.assign(new Error(cause.message, { cause }), {
+            code: 'EXECUTION_RECOVERY_REQUIRED', signature: transaction.signature,
+          });
+        }
+        // An RPC send error can follow chain acceptance. Keep observing these
+        // bytes until the chain provides the outcome.
+      }
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
+export async function sendPriorityTransaction({
+  connection, payer, instructions, signers = [], units = CU_MINT_OPS,
+  signTransaction = (transaction) => transaction.sign(payer, ...signers),
+  alreadyDone = null, onSigned = null, onSettled = null,
+  maxAttempts = 3, ...pollOptions
+}) {
+  const writableAccounts = [...new Map(instructions.flatMap((ix) => ix.keys)
+    .filter((key) => key.isWritable).map((key) => [key.pubkey.toBase58(), key.pubkey])).values()];
+  let priorFee = 0, minContextSlot = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (alreadyDone) {
+      let done;
+      try { done = await alreadyDone({ minContextSlot }); }
+      catch (cause) { throw needsRecovery('Verify the token step before signing its transaction.', null, cause); }
+      if (done) return { signature: null, skipped: true };
+    }
+    const sample = await samplePriorityFeeMicroLamports(connection, { writableAccounts });
+    const microLamports = Math.min(PRIORITY_FEE_CEIL_MICROLAMPORTS, Math.max(sample, priorFee * 2));
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    const transaction = new Transaction({ feePayer: payer.publicKey, blockhash, lastValidBlockHeight }).add(
+      ...computeBudgetIxs({ units, microLamports }), ...instructions,
+    );
+    await signTransaction(transaction);
+    const signed = { ...inspectSolanaTransaction(transaction.serialize()), lastValidBlockHeight, microLamports };
+    // Hosts persist these public signed bytes before the first broadcast.
+    await onSigned?.(signed);
+    const settled = await settleSignedTransaction(connection, signed, pollOptions);
+    await onSettled?.({ ...signed, ...settled });
+    if (settled.state === 'confirmed') return { signature: signed.signature, skipped: false };
+    if (settled.state === 'failed') {
+      throw Object.assign(new Error(`Transaction failed: ${JSON.stringify(settled.evidence.error)}`), {
+        code: 'TRANSACTION_FAILED', signature: signed.signature,
+      });
+    }
+    minContextSlot = settled.evidence.slot;
+    priorFee = microLamports;
+  }
+  throw Object.assign(new Error(`The transaction expired after ${maxAttempts} signed attempts. Resume the token step.`), { code: 'EXECUTION_RECOVERY_REQUIRED' });
 }
 
 /**

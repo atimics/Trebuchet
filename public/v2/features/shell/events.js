@@ -588,7 +588,7 @@ function handleClick(event) {
   }
 
   if (action === 'check-readiness') {
-    checkExecutionReadiness();
+    checkExecutionReadiness({ forceFresh: true });
     return;
   }
 

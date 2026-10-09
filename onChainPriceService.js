@@ -109,12 +109,12 @@ export function dlmmPriceYPerX(activeId, binStep, decimalsX, decimalsY) {
 export function evaluateVenuePool(pool, { assetIsA, anchorPrice }) {
   const st = pool.state;
   const decA = Number(pool.mintA.decimals); const decB = Number(pool.mintB.decimals);
-  const bPerA = st.kind === 'reserves'
-    ? reservePriceQuotePerBase(st.reserveA ?? 0, st.reserveB ?? 0, decA, decB)
-    : st.kind === 'bin'
+  const bPerA = st.kind === 'bin'
     ? dlmmPriceYPerX(st.activeId, st.binStep, decA, decB)
+    : st.kind === 'reserve'
+      ? reservePriceQuotePerBase(st.priceReserveA ?? st.reserveA ?? 0n, st.priceReserveB ?? st.reserveB ?? 0n, decA, decB)
     : clmmPriceBPerA(st.sqrtPriceX64, decA, decB);
-  if (!bPerA || !bPerA.gt(0)) return null;
+  if (!bPerA?.gt(0)) return null;
   const assetInAnchor = assetIsA ? bPerA : new Decimal(1).div(bPerA);
   const anchorRaw = assetIsA ? st.reserveB : st.reserveA;
   const anchorDecimals = assetIsA ? decB : decA;
@@ -122,7 +122,7 @@ export function evaluateVenuePool(pool, { assetIsA, anchorPrice }) {
   const anchorWhole = new Decimal(anchorRaw.toString()).div(new Decimal(10).pow(anchorDecimals));
   const reservesPresent = st.reserveA != null && st.reserveB != null
     && new Decimal(st.reserveA.toString()).gt(0) && new Decimal(st.reserveB.toString()).gt(0);
-  const hasLiquidity = ['bin', 'reserves'].includes(st.kind) ? true : new Decimal((st.liquidity ?? 0).toString()).gt(0);
+  const hasLiquidity = st.kind === 'bin' || st.kind === 'reserve' ? st.status == null || st.status === 0 : new Decimal((st.liquidity ?? 0).toString()).gt(0);
   return {
     priceUsd: assetInAnchor.mul(anchorPrice),
     liquidityUsd: anchorWhole.mul(anchorPrice).mul(2),
@@ -303,7 +303,7 @@ export async function getOnChainPriceUsd({
 
   if (sel.spreadPct.gt(maxSpreadPct)) {
     const err = new Error(
-      `The deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median (limit ${maxSpreadPct}%). ` +
+      `For ${mint}, the deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median (limit ${maxSpreadPct}%). ` +
       sel.qualifying.slice(0, 3).map((pool) =>
         `${pool.kind} ${pool.anchorSymbol}: $${pool.priceUsd.toSignificantDigits(6)} per token, $${pool.liquidityUsd.toFixed(0)} liquidity`
       ).join('; ') + '. Trebuchet checks prices again automatically. Review this pair in Token & pools and choose another pair to continue now.',

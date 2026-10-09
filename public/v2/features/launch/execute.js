@@ -1,15 +1,17 @@
-async function checkExecutionReadiness({ retried = false, quiet = false } = {}) {
+async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false } = {}) {
   if (state.executionChecking) return false;
   state.launchChecks = { ...state.launchChecks, active: true };
-  state.executionChecking = true;
   const say = quiet ? () => {} : notify;
-  try { await autoVerifyQuoteTokens(); } catch { /* A later check will retry. */ }
-  const config = currentLaunchConfig();
-  const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   state.executionChecking = true;
   renderClassicBridge();
 
   try {
+    if (forceFresh) {
+      await Promise.all([autoVerifyQuoteTokens({ forceFresh: true }), refreshManualPrefundBalance({ quiet: true })]);
+      await refreshQuotePrices({ forceFresh: true });
+    } else await autoVerifyQuoteTokens();
+    const config = currentLaunchConfig();
+    const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
       const readiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,

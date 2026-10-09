@@ -36,7 +36,7 @@ function harness() {
     console, Intl, Date, state, calls, CLASSIC_QUOTE_VENUES: {},
     TrebuchetCore: { fundingTokenCoverage },
     currentClassicFundingEstimateForConfig: () => state.classicFundingEstimate,
-    manualPrefundBalanceSnapshotStatus: () => ({ fresh: Boolean(state.manualPrefund.balance), matchesWallet: true, balance: state.manualPrefund.balance }),
+    WALLET_BALANCE_FRESH_MS: 60_000,
     currentLaunchConfig: () => ({ poolTopology: { pools } }),
     currentClassicModel: () => ({ pools }),
     classicFundingEstimateStatus: () => ({ hasEstimate: true, matchesConfig: true, stale: false }),
@@ -75,8 +75,8 @@ function harness() {
     executeAcquireQuoteTokens: async () => { calls.execute += 1; return { ...prepared, status: 'running' }; },
   };
   const names = [
-    'currentFundingTokenCoverage', 'pairTokenFundingDetail', 'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
-    'quoteAcquireResultMatchesRoute', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
+    'manualPrefundBalanceSnapshotStatus', 'currentFundingTokenCoverage', 'pairTokenFundingDetail', 'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
+    'quoteAcquireResultMatchesRoute', 'quoteWalletFundingStatus', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
     'findQuoteRouteForPool', 'findManualPrefundForPool', 'quotePoolGuidanceItems',
     'renderQuotePoolGuidance', 'renderQuoteAcquirePanel', 'reviewQuoteAcquireJob', 'startQuoteAcquire',
   ];
@@ -200,12 +200,57 @@ test('verified active pairs remain acquirable and inactive pairs leave no block'
   assert.equal(app.quoteAcquireBadge().label, 'Ready');
 });
 
-test('wallet balances satisfy combined pair requirements without an acquire job', () => {
-  const app = harness();
-  app.state.manualPrefund.balance = { tokens: { UsdcMint: { amountRaw: '100', decimals: 6 }, Usd1Mint: { amountRaw: '100', decimals: 6 } } };
+function putHeldBalance(app, raw = '100') {
+  app.state.manualPrefund = { walletPublicKey: 'Wallet111', lastUpdatedAt: new Date().toISOString(),
+    balance: { tokens: { UsdcMint: { amountRaw: raw }, Usd1Mint: { amountRaw: raw } } } };
+}
+
+test('a fresh wallet balance funds pair tokens without a purchase receipt', () => {
+  const app = harness(); putHeldBalance(app);
   assert.equal(app.quoteAcquireStatus().ready, true);
-  assert.equal(app.quoteAcquireStatus().held, true);
-  app.state.classicFundingEstimate.autoSwapPlan.push({ ...app.state.classicFundingEstimate.autoSwapPlan[0], allocationIndex: 3 });
-  assert.equal(app.quoteAcquireStatus().ready, false, 'two pools share one token balance');
-  assert.match(app.pairTokenFundingDetail(), /Add 0.0001 USDC/);
+  assert.equal(app.quoteAcquireStatus().walletFunding.missingRoutes.length, 0);
+  assert.match(app.renderQuoteAcquirePanel(), /holds enough pair tokens/);
+});
+
+test('a held balance sums pools using the same mint and includes manual deposits', () => {
+  const app = harness(); putHeldBalance(app, '150');
+  const routes = app.quoteAcquireRoutes(); routes[1].quoteMint = 'UsdcMint';
+  assert.equal(app.quoteAcquireStatus().ready, false);
+  app.state.manualPrefund.balance.tokens.UsdcMint.amountRaw = '200';
+  assert.equal(app.quoteAcquireStatus().ready, true);
+  app.state.classicFundingEstimate.byQuote = { UsdcMint: '1' };
+  assert.equal(app.quoteAcquireStatus().ready, false);
+});
+
+test('a fresh shortage takes priority over an earlier purchase receipt', () => {
+  const app = harness(); putHeldBalance(app, '99');
+  app.state.quoteAcquire.job = { status: 'done', v2QuoteAcquireFingerprint: 'current', completed: 2,
+    results: app.quoteAcquireRoutes().map((route) => ({ success: true, quoteMint: route.quoteMint })) };
+  assert.equal(app.quoteAcquireStatus().successEvidence, true);
+  assert.equal(app.quoteAcquireStatus().ready, false);
+});
+
+test('balances from another wallet or an older check require a fresh check', () => {
+  const app = harness(); putHeldBalance(app);
+  app.state.manualPrefund.walletPublicKey = 'AnotherWallet';
+  assert.equal(app.quoteAcquireStatus().ready, false);
+  putHeldBalance(app); app.state.manualPrefund.lastUpdatedAt = new Date(Date.now() - 61_000).toISOString();
+  assert.equal(app.quoteAcquireStatus().ready, false);
+});
+
+
+test('custom pair badges show fresh holdings for Jupiter and wallet-funded pairs', () => {
+  const info = { compatible: true, freezeAuthorityBlock: false, swapRoute: 'jupiter' };
+  const heldMints = new Set();
+  const h = { customQuoteLookupValue: () => 'OWL', customQuoteInfoRecord: () => ({ info }),
+    customQuoteResolvedInfo: () => info, quoteWalletFundingStatus: () => ({ heldMints }) };
+  vm.runInNewContext(functionSource('customQuoteInfoBadge'), h);
+  const pool = { quoteMint: 'OWL' };
+  assert.equal(h.customQuoteInfoBadge(pool).label, 'Verified');
+  info.swapRoute = 'none';
+  assert.equal(h.customQuoteInfoBadge(pool).label, 'Use wallet tokens');
+  heldMints.add('OWL');
+  assert.equal(h.customQuoteInfoBadge(pool).label, 'Held in wallet');
+  info.freezeAuthorityBlock = true;
+  assert.equal(h.customQuoteInfoBadge(pool).className, 'danger');
 });

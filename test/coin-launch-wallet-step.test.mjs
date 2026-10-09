@@ -8,6 +8,7 @@ const server = fs.readFileSync(new URL('../server.js', import.meta.url), 'utf8')
 const source = server.slice(server.indexOf('function coinCreationSteps('), server.indexOf("app.get('/api/v2/coins/:mint'"));
 const steps = (journal, launchWalletLamports) => {
   const context = vm.createContext({ SOL_DUST_THRESHOLD, Math, Set, Boolean, String,
+    recoveryJournalWithArt: (record) => record,
     sealedMetadataRevealReadiness: () => ({ positionCount: 0, lockedPositionCount: 0 }), v2JournalLiquidityResults: () => [],
     v2TrimmedText: (value) => String(value || '').trim(), pendingWallets: { keyRecord: () => null } });
   vm.runInContext(source, context);

@@ -240,12 +240,14 @@ restoreLaunchProof();
 restoreDiscoveryRegistry();
 bindEvents();
 bindWalletChips();
+bindTokenCards();
 bindActionGuards();
 bindCloseGuard();
 initializeSolflareWallet();
 setView('coins');
 renderAll();
 startLiveOpsPolling();
+startQuotePricePolling();
 bootLocalApi().catch((error) => {
   console.warn('v2 local API bootstrap failed:', error);
   applyBootState({

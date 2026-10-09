@@ -25,8 +25,6 @@ import {
   NATIVE_MINT,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountIdempotentInstruction,
-  createTransferCheckedInstruction,
   getAccount,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
@@ -42,9 +40,14 @@ import {
   derivePositionAddress,
   derivePositionNftAccount,
   getBaseFeeParams,
+  getDynamicFeeParams,
   getPriceFromSqrtPrice,
-  getUnClaimLpFee,
 } from '@meteora-ag/cp-amm-sdk';
+
+// Fee claiming for Meteora DAMM v2 lives in @trebuchet/claimer/venues/damm
+// (shared with the sealed runner). These functions re-export it so the launch
+// layer's callers are unchanged.
+import * as claimerDamm from '@trebuchet/claimer/venues/damm';
 
 export const DAMM_V2_PROGRAM_ID = CP_AMM_PROGRAM_ID;
 export const SOL_DECIMALS = 9;
@@ -90,6 +93,21 @@ export function dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMu
   return { initSqrtPrice: bn(sqrtStart), sqrtMinPrice: bn(sqrtStart), sqrtMaxPrice: bn(sqrtEnd) };
 }
 
+/** Recover a compatible raw quote value from the immutable lower pool bound. */
+export function dammV2MarketCapFromSqrtMin({ supplyRaw, sqrtMinPrice, rangeMultiple }) {
+  const supply = BigInt(supplyRaw);
+  const sqrtMin = BigInt(sqrtMinPrice.toString());
+  if (supply <= 0n || sqrtMin <= 0n) throw new RangeError('pool range and supply must be positive');
+  const q128 = 1n << 128n;
+  const numerator = sqrtMin * sqrtMin * supply;
+  const startingMarketCapLamports = (numerator + q128 - 1n) / q128;
+  const recoveredRange = dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMultiple });
+  if (!recoveredRange.sqrtMinPrice.eq(new BN(sqrtMin.toString()))) {
+    throw new Error('The pool lower price bound cannot be reconstructed from its supply.');
+  }
+  return startingMarketCapLamports;
+}
+
 export function tokenProgramFor(mintAccountOwner) {
   return mintAccountOwner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
@@ -105,6 +123,61 @@ async function mintOwnerProgram(connection, mint) {
  * `supplyRaw` of the token. Returns the transaction and the keypair of the new
  * position NFT, which also has to sign.
  */
+/**
+ * Translate a normalized Meteora DAMM v2 fee schedule (the pure
+ * `normalizeDammFeePlan` in @trebuchet/core/damm-v2-plan) into the
+ * pool-fees struct the program stores. Every model expresses its schedule
+ * in bps; `dynamic` adds the volatility-dynamic surcharge on top of the
+ * base fee. Pure apart from the SDK's encoder, so it can be unit-tested.
+ *
+ * models: fixed | ramp | marketcap | dynamic.
+ */
+export function buildPoolFees({ model = 'fixed', bps, ramp = {}, dynamic = {}, marketcap = {} } = {}) {
+  const start = Number(bps) || 25;
+  const flat = () => ({
+    baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
+    feeTimeSchedulerParam: { startingFeeBps: start, endingFeeBps: start, numberOfPeriod: 0, totalDuration: 0 },
+  });
+  switch (model) {
+    case 'ramp':
+      return {
+        baseFee: getBaseFeeParams({
+          baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
+          feeTimeSchedulerParam: {
+            startingFeeBps: start,
+            endingFeeBps: Number(ramp.endBps) ?? start,
+            numberOfPeriod: 1,
+            totalDuration: Number(ramp.durationSec) || 30 * 24 * 3600,
+          },
+        }),
+        dynamicFee: null,
+      };
+    case 'marketcap':
+      return {
+        baseFee: getBaseFeeParams({
+          baseFeeMode: BaseFeeMode.FeeMarketCapSchedulerLinear,
+          feeMarketCapSchedulerParam: {
+            startingFeeBps: start,
+            endingFeeBps: Number(marketcap.endBps) ?? start,
+            numberOfPeriod: 1,
+            priceMultiple: Number(marketcap.priceMultiple) || 10,
+            schedulerExpirationDuration: Number(marketcap.expirationSec) || 30 * 24 * 3600,
+          },
+        }),
+        dynamicFee: null,
+      };
+    case 'dynamic':
+      return {
+        baseFee: getBaseFeeParams(flat()),
+        dynamicFee: getDynamicFeeParams(start, Number(dynamic.maxPriceChangeBps) || 500),
+      };
+    case 'fixed':
+      return { baseFee: getBaseFeeParams(flat()), dynamicFee: null };
+    default:
+      throw new Error(`Unknown Meteora fee model: ${model}`);
+  }
+}
+
 export async function buildLockedPoolTransaction({
   connection,
   creator,
@@ -113,6 +186,10 @@ export async function buildLockedPoolTransaction({
   startingMarketCapLamports,
   rangeMultiple,
   feeBps,
+  // Normalized fee schedule (packages/core/damm-v2-plan): fixed by default,
+  // or ramp / marketcap / dynamic with their params. Defaults to a flat fee
+  // at `feeBps`, so existing callers behave exactly as before.
+  feePlan = { model: 'fixed', bps: feeBps },
   priorityMicroLamports = 0,
   positionNft = Keypair.generate(),
   // The pool's other side: SOL unless a launch pairs this pool with another token.
@@ -143,13 +220,9 @@ export async function buildLockedPoolTransaction({
     liquidityDelta,
     initSqrtPrice: range.initSqrtPrice,
     poolFees: {
-      baseFee: getBaseFeeParams({
-        baseFeeMode: BaseFeeMode.FeeTimeSchedulerLinear,
-        feeTimeSchedulerParam: { startingFeeBps: feeBps, endingFeeBps: feeBps, numberOfPeriod: 0, totalDuration: 0 },
-      }),
+      ...buildPoolFees(feePlan),
       compoundingFeeBps: 0,
       padding: 0,
-      dynamicFee: null,
     },
     hasAlphaVault: false,
     activationType: ActivationType.Timestamp,
@@ -214,6 +287,7 @@ export async function createLockedPool({
   startingMarketCapLamports,
   rangeMultiple,
   feeBps,
+  feePlan = { model: 'fixed', bps: feeBps },
   priorityMicroLamports = 0,
   commitment = 'confirmed',
   positionNft = Keypair.generate(),
@@ -230,7 +304,7 @@ export async function createLockedPool({
   if (held < BigInt(supplyRaw)) throw new Error('The launch wallet holds less of this token than the pool needs.');
 
   const built = await buildLockedPoolTransaction({
-    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, priorityMicroLamports, positionNft, quoteMint,
+    connection, creator: payer.publicKey, mint, supplyRaw, startingMarketCapLamports, rangeMultiple, feeBps, feePlan, priorityMicroLamports, positionNft, quoteMint,
   });
   const signers = [payer, built.positionNft];
   const simulated = await simulateOrThrow(connection, built.transaction, signers);
@@ -239,7 +313,18 @@ export async function createLockedPool({
   const signature = await sendAndConfirm(connection, built.transaction, signers, commitment);
   onProgress({ stage: 'damm_pool_created', pool: built.pool.toBase58(), position: built.position.toBase58(), positionNft: built.positionNft.publicKey.toBase58(), txId: signature });
 
-  const verification = await verifyLockedPool({ connection, pool: built.pool, position: built.position, mint, supplyRaw, commitment, quoteMint });
+  const verification = await verifyLockedPool({
+    connection,
+    pool: built.pool,
+    position: built.position,
+    mint,
+    supplyRaw,
+    startingMarketCapLamports,
+    rangeMultiple,
+    positionNft: built.positionNft.publicKey,
+    commitment,
+    quoteMint,
+  });
   onProgress({ stage: 'damm_pool_verified', ...verification });
   return {
     signature,
@@ -267,29 +352,66 @@ export async function findExistingPool({ connection, mint, positionNft, quoteMin
 }
 
 /** Read the pool and position back and check what a launch promises. */
-export async function verifyLockedPool({ connection, pool, position, mint, supplyRaw, commitment = 'confirmed', quoteMint = NATIVE_MINT }) {
+export async function verifyLockedPool({
+  connection,
+  pool,
+  position,
+  mint,
+  supplyRaw,
+  startingMarketCapLamports,
+  rangeMultiple,
+  positionNft,
+  commitment = 'confirmed',
+  quoteMint = NATIVE_MINT,
+}) {
+  if (rangeMultiple == null || !positionNft) {
+    throw new Error('Read the saved pool range multiple and position NFT before verifying this pool.');
+  }
+  const positionNftKey = positionNft instanceof PublicKey ? positionNft : new PublicKey(positionNft);
   const cpAmm = new CpAmm(connection);
   const poolState = await cpAmm.fetchPoolState(pool);
   const positionState = await cpAmm.fetchPositionState(position);
   const programId = await mintOwnerProgram(connection, mint);
   const vaultA = await getAccount(connection, poolState.tokenAVault, commitment, programId);
+  const recoveredFromPool = startingMarketCapLamports == null;
+  const effectiveMarketCap = recoveredFromPool
+    ? dammV2MarketCapFromSqrtMin({ supplyRaw, sqrtMinPrice: poolState.sqrtMinPrice, rangeMultiple })
+    : BigInt(startingMarketCapLamports);
+  const range = dammV2PriceRange({ supplyRaw, startingMarketCapLamports: effectiveMarketCap, rangeMultiple });
+  const expectedLiquidity = cpAmm.preparePoolCreationSingleSide({
+    tokenAAmount: bn(supplyRaw),
+    minSqrtPrice: range.sqrtMinPrice,
+    maxSqrtPrice: range.sqrtMaxPrice,
+    initSqrtPrice: range.initSqrtPrice,
+    collectFeeMode: CollectFeeMode.OnlyB,
+  });
+  const positionNftMatchesPlan = positionState.nftMint.equals(positionNftKey)
+    && derivePositionAddress(positionNftKey).equals(position);
+  const poolRangeMatchesPlan = poolState.sqrtMinPrice.eq(range.sqrtMinPrice)
+    && poolState.sqrtMaxPrice.eq(range.sqrtMaxPrice);
+  const lockedSupply = positionState.permanentLockedLiquidity.gte(expectedLiquidity);
   const checks = {
     pool: pool.toBase58(),
     position: position.toBase58(),
+    recoveredStartingMarketCapLamports: recoveredFromPool ? effectiveMarketCap.toString() : null,
     tokenA: poolState.tokenAMint.toBase58(),
     tokenB: poolState.tokenBMint.toBase58(),
     isNewTokenSideA: poolState.tokenAMint.equals(mint),
     isQuoteSol: poolState.tokenBMint.equals(NATIVE_MINT),
     isExpectedQuote: poolState.tokenBMint.equals(quoteMint),
     positionInPool: positionState.pool.equals(pool),
+    positionNftMatchesPlan,
+    poolRangeMatchesPlan,
     permanentlyLocked: cpAmm.isPermanentLockedPosition(positionState),
     nothingWithdrawable: positionState.unlockedLiquidity.isZero(),
+    lockedSupply,
     vaultHoldsSupply: vaultA.amount >= BigInt(supplyRaw),
     quoteSideEmpty: true,
     feesInQuote: poolState.collectFeeMode === CollectFeeMode.OnlyB,
   };
-  checks.passed = checks.positionInPool && checks.isNewTokenSideA && checks.isExpectedQuote && checks.permanentlyLocked
-    && checks.nothingWithdrawable && checks.vaultHoldsSupply && checks.feesInQuote;
+  checks.passed = checks.positionInPool && checks.positionNftMatchesPlan && checks.poolRangeMatchesPlan
+    && checks.isNewTokenSideA && checks.isExpectedQuote && checks.permanentlyLocked
+    && checks.nothingWithdrawable && checks.lockedSupply && checks.feesInQuote;
   return checks;
 }
 
@@ -299,71 +421,17 @@ export async function verifyLockedPool({ connection, pool, position, mint, suppl
  * token account.
  */
 export async function transferPositionNft({ connection, owner, positionNft, to, commitment = 'confirmed' }) {
-  const mint = new PublicKey(positionNft);
-  const recipient = new PublicKey(to);
-  // DAMM v2 holds the NFT in a program-derived token account owned by its holder.
-  const from = derivePositionNftAccount(mint);
-  const target = getAssociatedTokenAddressSync(mint, recipient, true, TOKEN_2022_PROGRAM_ID);
-  const transaction = new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, target, recipient, mint, TOKEN_2022_PROGRAM_ID),
-    createTransferCheckedInstruction(from, mint, target, owner.publicKey, 1n, 0, [], TOKEN_2022_PROGRAM_ID),
-  );
-  transaction.feePayer = owner.publicKey;
-  const signature = await sendAndConfirm(connection, transaction, [owner], commitment);
-  return { signature, to: recipient.toBase58() };
+  return claimerDamm.transferPositionNft({ connection, owner, positionNft, to, commitment });
 }
 
 /** Claim accrued fees from a locked position. Fees are SOL (quote side only). */
 export async function claimFees({ connection, owner, position, commitment = 'confirmed', receiver = null }) {
-  const cpAmm = new CpAmm(connection);
-  const positionKey = new PublicKey(position);
-  const positionState = await cpAmm.fetchPositionState(positionKey);
-  const pool = positionState.pool;
-  const poolState = await cpAmm.fetchPoolState(pool);
-  const tokenProgram = await mintOwnerProgram(connection, poolState.tokenAMint);
-  const tempWsol = Keypair.generate();
-  // Where the NFT is now: the original derived account, or the account it was sent to.
-  const held = (await cpAmm.getPositionsByUser(owner.publicKey)).find((entry) => entry.position.equals(positionKey));
-  if (!held) throw new Error('This wallet does not hold that position.');
-  const before = await connection.getBalance(owner.publicKey, commitment);
-  const transaction = await cpAmm.claimPositionFee({
-    owner: owner.publicKey,
-    position: positionKey,
-    pool,
-    positionNftAccount: held.positionNftAccount,
-    tokenAMint: poolState.tokenAMint,
-    tokenBMint: poolState.tokenBMint,
-    tokenAVault: poolState.tokenAVault,
-    tokenBVault: poolState.tokenBVault,
-    tokenAProgram: tokenProgram,
-    tokenBProgram: TOKEN_PROGRAM_ID,
-    receiver: receiver ? new PublicKey(receiver) : owner.publicKey,
-    tempWSolAccount: tempWsol.publicKey,
-  });
-  const signature = await sendAndConfirm(connection, transaction, [owner, tempWsol], commitment);
-  const after = await connection.getBalance(owner.publicKey, commitment);
-  return { signature, lamportsReceived: after - before };
+  return claimerDamm.claimFees({ connection, owner, position, commitment, receiver });
 }
 
 /** Positions owned by a wallet in this program, with unclaimed fees. */
 export async function listPositions({ connection, owner }) {
-  const cpAmm = new CpAmm(connection);
-  const rows = [];
-  for (const entry of await cpAmm.getPositionsByUser(new PublicKey(owner))) {
-    const state = entry.positionState;
-    const poolState = await cpAmm.fetchPoolState(state.pool);
-    const quoteIsB = poolState.tokenBMint.equals(NATIVE_MINT);
-    const fees = getUnClaimLpFee(poolState, state);
-    rows.push({
-      position: entry.position.toBase58(),
-      pool: state.pool.toBase58(),
-      positionNft: state.nftMint.toBase58(),
-      tokenMint: (quoteIsB ? poolState.tokenAMint : poolState.tokenBMint).toBase58(),
-      permanentlyLocked: cpAmm.isPermanentLockedPosition(state),
-      unclaimedQuoteLamports: (quoteIsB ? fees.feeTokenB : fees.feeTokenA).toString(),
-    });
-  }
-  return rows;
+  return claimerDamm.listPositions({ connection, owner });
 }
 
 // The pool's base fee: its first field is the cliff fee numerator, a u64 over 1e9.

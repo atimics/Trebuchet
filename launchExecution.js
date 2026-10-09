@@ -1,5 +1,6 @@
 import { throwIfExecutionPaused, isExecutionPaused } from './chainRetry.js';
 import { mergeTransferReceipts } from './sweepOrchestrator.js';
+import { readVanityMintKey } from './vanityMintKey.js';
 // Live launch services use ordinary inputs and shared host interfaces.
 // HTTP routes translate the result; the runtime can call these methods directly.
 
@@ -337,6 +338,37 @@ export function createLaunchExecutionServices({
 
       const logoBase64 = logoBase64FromCreateTokenInput(input, logoFile);
 
+      let vanityCAKeypair = null;
+      let vanityCAScalar = null;
+      let mintKeyInput = vanityCAKeypairRaw;
+      if (mintKeyInput == null || mintKeyInput === '') {
+        mintKeyInput = null;
+        if (vanityCAPublicKey) {
+          const candidate = vanityCaStore.get(vanityCAPublicKey);
+          if (!candidate) {
+            throw new LaunchRejection(404, { success: false, error: 'Saved Vanity CA not found' });
+          }
+          const secret = candidate.keyType === 'scalar' ? candidate.scalar : candidate.secretKey;
+          if (!Array.isArray(secret)) {
+            throw new LaunchRejection(409, { success: false, error: 'The saved Vanity CA key needs recovery. Unlock storage or import the original mint key.' });
+          }
+          mintKeyInput = candidate;
+        }
+      }
+      if (mintKeyInput != null) {
+        try {
+          const mintKey = readVanityMintKey(mintKeyInput, { publicKey: vanityCAPublicKey });
+          if (mintKey.keyType === 'scalar') {
+            if (normalizedMintFormat !== 'token-2022') {
+              throw new Error('Split-key vanity CAs need the Token-2022 mint format.');
+            }
+            vanityCAScalar = mintKey.scalar;
+          } else vanityCAKeypair = mintKey.secretKey;
+        } catch (error) {
+          throw new LaunchRejection(400, { success: false, code: error.code || 'INVALID_VANITY_KEY', error: error.message });
+        }
+      }
+
       const { secretKeyArr: tempWalletSecretKeyArr, walletPublicKey: resolvedWalletPublicKey } =
         resolveSigner({ tempWalletSecretKey, walletPublicKey: input.walletPublicKey });
       walletPublicKey = resolvedWalletPublicKey;
@@ -374,29 +406,6 @@ export function createLaunchExecutionServices({
         },
       );
 
-      let vanityCAKeypair = vanityCAKeypairRaw ? JSON.parse(vanityCAKeypairRaw) : null;
-      let vanityCAScalar = null;
-      if (!vanityCAKeypair && vanityCAPublicKey) {
-        const candidate = vanityCaStore.get(vanityCAPublicKey);
-        if (!candidate) {
-          throw new LaunchRejection(404, { success: false, error: 'Saved Vanity CA not found' });
-        }
-        if (candidate.keyType === 'scalar') {
-          if (!Array.isArray(candidate.scalar)) {
-            throw new LaunchRejection(409, { success: false, error: 'Saved Vanity CA secret could not be decrypted' });
-          }
-          vanityCAScalar = candidate.scalar;
-        } else {
-          if (!Array.isArray(candidate.secretKey)) {
-            throw new LaunchRejection(409, {
-              success: false,
-              error: 'Saved Vanity CA secret could not be decrypted',
-            });
-          }
-          vanityCAKeypair = candidate.secretKey;
-        }
-      }
-
       const result = await createTokenWithMetaplex({
         tempWalletSecretKey: tempWalletSecretKeyArr,
         name: normalizedName,
@@ -408,6 +417,7 @@ export function createLaunchExecutionServices({
         vanitySuffix: normalizedVanitySuffix || null,
         vanityCAKeypair,
         vanityCAScalar,
+        journalEvents: launchJournal.activeForWallet(walletPublicKey)?.events || [],
         sealedLaunch: useSealedLaunch,
         mintFormat: normalizedMintFormat,
         keepMetadataAuthority: input.keepMetadataAuthority === 'true',
@@ -646,6 +656,7 @@ export function createLaunchExecutionServices({
 
       const result = await createPoolsAndPositions({
         tempWalletSecretKey: secretKeyArr,
+        walletPublicKey,
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
         tokenTotalSupply,
@@ -942,6 +953,7 @@ export function createLaunchExecutionServices({
 
       const result = await createPoolsAndPositions({
         tempWalletSecretKey: secretKeyArr,
+        walletPublicKey,
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
         tokenTotalSupply,

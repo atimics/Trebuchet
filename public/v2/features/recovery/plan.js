@@ -157,14 +157,14 @@ function restoreLaunchConfigFromJournal(journal = {}) {
   // with a saved launch, the same way it appears after an upload.
   if (token.logo && typeof token.logo === 'object' && token.logo.dataUrl) {
     state.tokenLogo = {
-      dataUrl: token.logo.dataUrl,
-      mime: token.logo.mime || 'image/png',
+      ...token.logo,
+      mimeType: token.logo.mimeType || token.logo.mime || /^data:([^;]+)/.exec(token.logo.dataUrl)?.[1] || 'image/png',
       name: token.logo.name || 'logo',
-      animated: token.logo.animated === true,
+      animated: token.logo.animated === true || /^data:image\/gif;/.test(token.logo.dataUrl),
     };
     state.launchIdentity = null;
     // Only while the logo has yet to be uploaded: once the metadata exists, the logo is not resent.
-    if (!journal?.token?.metadataUri) {
+    if (!journal?.token?.metadataUri && !journal?.token?.onChainMetadataUri) {
       fitRestoredTokenLogo().catch((error) => { state.tokenLogoError = error.message || 'Token logo failed validation'; renderAll(); });
     }
   }

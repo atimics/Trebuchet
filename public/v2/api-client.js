@@ -2,6 +2,8 @@
   const API_SESSION_PATH = '/api/session';
   // Requests that read the chain wait their turn behind the app's RPC rate limit: give them a minute.
   const CHAIN_REQUEST_TIMEOUT_MS = 60_000;
+  // PIN work can wait for the OS keychain and saved-secret migration.
+  const SECRET_PIN_REQUEST_TIMEOUT_MS = 60_000;
   const LAUNCH_PLAN_PATH = '/api/v2/launch-plan';
   const V2_EXECUTION_READINESS_PATH = '/api/v2/execution-readiness';
   const V2_DEMO_LAUNCH_RUN_PATH = '/api/v2/demo-launch/run';
@@ -470,9 +472,9 @@
       return rawRequest(path, { ...init, headers });
     }
 
-    async function safeGet(path) {
+    async function safeGet(path, init) {
       try {
-        return { ok: true, data: await request(path) };
+        return { ok: true, data: await request(path, init) };
       } catch (error) {
         return { ok: false, error: errorMessage(error), code: error?.code || null };
       }
@@ -619,12 +621,13 @@
     }
 
     async function getSecretPinStatus() {
-      const data = await request(`${SECRET_PIN_PATH}/status`);
+      const data = await request(`${SECRET_PIN_PATH}/status`, { timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS });
       return data.status || {};
     }
 
     async function setupSecretPin(pin) {
       const data = await request(`${SECRET_PIN_PATH}/setup`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { pin },
       });
@@ -633,6 +636,7 @@
 
     async function unlockSecretPin(pin) {
       const data = await request(`${SECRET_PIN_PATH}/unlock`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { pin },
       });
@@ -641,6 +645,7 @@
 
     async function changeSecretPin({ currentPin, newPin } = {}) {
       const data = await request(`${SECRET_PIN_PATH}/change`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { currentPin, newPin },
       });
@@ -762,6 +767,10 @@
 
     async function getCoinAirdrop(mint) {
       return request(`/api/v2/coins/${encodeURIComponent(mint)}/airdrop`, { timeoutMs: 90_000 });
+    }
+
+    async function getTokenCard(mint) {
+      return request(`/api/v2/coins/${encodeURIComponent(mint)}/card`, { timeoutMs: 60_000 });
     }
 
     async function getCoinEvidence(mint) {
@@ -888,13 +897,13 @@
       return data.hub;
     }
 
-    async function getQuoteTokenInfo(quoteToken) {
+    async function getQuoteTokenInfo(quoteToken, { forceFresh = false } = {}) {
       const token = String(quoteToken || '').trim();
       if (!token) throw new V2ApiError('Quote token is required.', { code: 'BAD_QUOTE_TOKEN' });
       const data = await request(QUOTE_TOKEN_INFO_PATH, {
         timeoutMs: CHAIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
-        body: { quoteToken: token },
+        body: { quoteToken: token, forceFresh },
       });
       if (!data?.success || !data.info) {
         throw new V2ApiError(data?.error || 'Quote-token info response missing info.', { code: 'BAD_QUOTE_TOKEN_INFO' });
@@ -1207,7 +1216,8 @@
       try {
         const sessionToken = await getSessionToken();
         const entries = await Promise.all(
-          Object.entries(BOOT_ENDPOINTS).map(async ([key, path]) => [key, await safeGet(path)]),
+          Object.entries(BOOT_ENDPOINTS).map(async ([key, path]) => [key, await safeGet(path,
+            key === 'secretPin' ? { timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS } : undefined)]),
         );
         return deriveV2BootState({
           apiAvailable: true,
@@ -1260,6 +1270,7 @@
       calibrateVanity,
       listAirdropLists,
       getCoinEvidence,
+      getTokenCard,
       getSellQuote,
       listCoinPositions,
       withdrawPosition,
@@ -1267,6 +1278,13 @@
       listPositionWithdrawals,
       getClmmFeeTiers,
       getQuoteTokenInfo,
+      async getQuoteTokenPrices(mints, { forceFresh = false } = {}) {
+        const data = await request('/api/quote-token-prices', {
+          timeoutMs: CHAIN_REQUEST_TIMEOUT_MS, method: 'POST', body: { mints, forceFresh },
+        });
+        if (!data?.success || !Array.isArray(data.prices)) throw new V2ApiError(data?.error || 'Price response is awaiting a retry');
+        return data.prices;
+      },
       listFlywheelHubs,
       getTokenLogos,
       resolveFlywheelHub,

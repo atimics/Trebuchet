@@ -40,7 +40,11 @@ function normalizeClmmFeeTier(tier) {
   if (!Number.isInteger(index) || index < 0) return null;
   if (!Number.isInteger(tradeFeeRate) || tradeFeeRate <= 0) return null;
   if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) return null;
-  return { index, tradeFeeRate, tickSpacing };
+  // Dynamic-fee configs (Raydium CLMM upgrade, May 2026) keep their model tag
+  // so the picker, glossary, and evidence rows can disclose that the rate is
+  // a baseline, not the fee the pool always charges.
+  const feeModel = tier.feeModel === 'dynamic' ? 'dynamic' : 'fixed';
+  return { index, tradeFeeRate, tickSpacing, feeModel };
 }
 
 function normalizeClmmFeeTiers(tiers) {
@@ -57,7 +61,8 @@ function normalizeClmmFeeTiers(tiers) {
 
 function feeTierLabel(tier) {
   const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-  return `${feePercent}% / spacing ${tier.tickSpacing}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
+  const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic' : '';
+  return `${feePercent}% / spacing ${tier.tickSpacing}${dynamic}${Number(tier.index) === DEFAULT_POOL_CONFIG_INDEX ? ' (default)' : ''}`;
 }
 
 function feeTierOptionsHtml(selectedIndex) {
@@ -65,7 +70,7 @@ function feeTierOptionsHtml(selectedIndex) {
   const selected = Math.floor(Number(selectedIndex));
   const hasSelected = tiers.some((tier) => tier.index === selected);
   const options = tiers.map((tier) => `
-    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
+    <option value="${tier.index}" data-short="${escapeHtml(`${Number(tier.tradeFeeRate || 0) / 10000}%`)}" title="${tier.feeModel === 'dynamic' ? escapeHtml('Dynamic fee: the shown rate is the baseline; the pool charges more under volatility.') : ''}" ${tier.index === selected ? 'selected' : ''}>${escapeHtml(feeTierLabel(tier))}</option>
   `).join('');
   return `${options}${Number.isInteger(selected) && !hasSelected ? `<option value="${selected}" selected>Custom index ${selected}</option>` : ''}`;
 }
@@ -104,10 +109,11 @@ function customQuoteInfoBadge(pool = {}) {
   if (info.compatible === false) return { label: 'Incompatible', className: 'danger', detail: 'Token is not compatible with the Raydium CLMM launch path.' };
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
   const swapRoute = info.swapRoute || 'unknown';
+  const held = quoteWalletFundingStatus().heldMints.has(pool.quoteMint);
   if (info.compatible == null || info.freezeAuthorityBlock == null) {
     return { label: 'Checking safety', className: 'warn', detail: 'Trebuchet retries the token and authority checks automatically.' };
   }
-  if (swapRoute === 'none' || swapRoute === 'unknown') return {
+  if (!held && (swapRoute === 'none' || swapRoute === 'unknown')) return {
     label: swapRoute === 'none' ? 'Use wallet tokens' : 'Checking routes', className: 'warn',
     detail: 'Funding counts tokens in the launch wallet and shows the amount to add. Swap routes refresh automatically.',
   };
@@ -115,9 +121,9 @@ function customQuoteInfoBadge(pool = {}) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
   return {
-    label: 'Verified',
+    label: held ? 'Held in wallet' : 'Verified',
     className: '',
-    detail: `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
+    detail: held ? 'The token safety check passed and the launch wallet holds the required amount.' : `Quote-token metadata, compatibility, authority, and route checks passed (auto-buy via ${swapRoute === 'jupiter' ? 'Jupiter' : 'Raydium'}).`,
   };
 }
 
@@ -637,11 +643,16 @@ function currentClassicModel() {
       ? { venue: state.solPoolVenue, damm: state.solPoolDamm }
       : String(pool.id || '').endsWith('-flywheel')
         ? { venue: state.quotePoolVenue, damm: state.quotePoolDamm }
-        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange } } : null;
+        : custom ? { venue: custom.venue, damm: { feeBps: custom.dammFeeBps, rangeMultiple: custom.dammRange, feeModel: custom.dammFeeModel, ramp: custom.dammRamp } } : null;
     if (choice?.venue !== 'meteora-damm-v2') return;
     Object.assign(pool, {
       venue: 'meteora-damm-v2',
-      damm: { feeBps: Number(choice.damm?.feeBps) || 25, rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000 },
+      damm: {
+        feeBps: Number(choice.damm?.feeBps) || 25,
+        rangeMultiple: Number(choice.damm?.rangeMultiple) || 1000,
+        feeModel: choice.damm?.feeModel || 'fixed',
+        ...(choice.damm?.ramp ? { ramp: { endBps: Number(choice.damm.ramp.endBps) || 25, durationSec: Number(choice.damm.ramp.durationSec) || 30 * 24 * 3600 } } : {}),
+      },
       distribution: [{ sharePercent: 100, recipient: null }],
       ladder: { mode: 'off' },
       support: { mode: 'off' },

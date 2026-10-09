@@ -96,6 +96,7 @@ try {
   await waitForServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.clock.install();
   const pageErrors = [];
   const consoleErrors = [];
   const nativeDialogs = [];
@@ -479,6 +480,123 @@ try {
   assert.equal(new Set(pairIds.ids).size, pairIds.ids.length, `pairs share an id: ${pairIds.ids}`);
   assert.equal(new Set(pairIds.repaired).size, pairIds.repaired.length, `restore kept a repeated id: ${pairIds.repaired}`);
   await page.evaluate(() => { state.customPools = []; renderAll(); });
+
+  // Recover local art, then replace it after minting. The launch stays open
+  // even when its reserved mint is already in the coin list.
+  const recoveryArt = `data:image/png;base64,${readFileSync(path.join(root, 'public', 'release-assets', 'frames', 'f01.png')).toString('base64')}`;
+  await page.evaluate(({ mint, art }) => {
+    const config = JSON.parse(JSON.stringify(currentLaunchConfig()));
+    config.token.name = 'Recovered Launch';
+    config.token.symbol = 'RECOVER';
+    config.token.sealedLaunch = true;
+    config.token.logo = { name: 'recovered.png', dataUrl: art };
+    config.vanity = { ...config.vanity, selectedPublicKey: mint };
+    state.demoActive = false;
+    state.prefs.demoMode = false;
+    state.lastDemoLaunchRun = null;
+    state.tokenLogo = null;
+    state.coins.key = null;
+    state.coins.detail = null;
+    state.coins.list.push({ key: `mint:${mint}`, kind: 'onchain', launchedHere: true,
+      mint, name: config.token.name, symbol: config.token.symbol });
+    restoreLaunchConfigFromJournal({ id: 'image-recovery-fixture', launchConfig: config,
+      token: { mint, sealedLaunch: true, onChainMetadataUri: 'https://example.test/sealed.json' } });
+    state.launchProof = { source: 'launch-journal', stage: 'token_created', walletPublicKey: selectedLaunchWalletPublicKey(),
+      token: { mint, mintAuthorityRenounced: true, freezeAuthorityDisabled: true, sealedLaunch: true },
+      liquidity: { results: [] }, launchConfig: config };
+    state.lastRunEnvelope = { id: 'earlier-budget' };
+    state.activeView = 'launch';
+    state.launchWorkspace = 'mint';
+    state.phaseSlide = { ...(state.phaseSlide || {}), mint: 'details' };
+    renderAll();
+  }, { mint: evidenceMint, art: recoveryArt });
+  await page.waitForFunction(() => document.querySelector('#tokenLogoPreview img')?.naturalWidth > 0);
+  await page.setInputFiles('#tokenLogoFile', { name: 'reattached.png', mimeType: 'image/png',
+    buffer: readFileSync(path.join(root, 'public', 'release-assets', 'frames', 'f01.png')) });
+  try {
+    await page.waitForFunction(() => state.tokenLogo?.name === 'reattached.png' && state.lastRunEnvelope === null);
+  } catch (error) {
+    console.log('Recovery image state:', await page.evaluate(() => ({ name: state.tokenLogo?.name,
+      error: state.tokenLogoError, envelope: state.lastRunEnvelope, coin: state.coins.key,
+      mint: proofTokenMint(state.launchProof), mode: document.body.dataset.coinMode })));
+    throw error;
+  }
+  assert.equal(await page.evaluate(() => proofTokenMint(state.launchProof)), evidenceMint);
+  assert.equal(await page.evaluate(() => state.launchProof.token.mintAuthorityRenounced), true);
+  assert.equal(await page.evaluate(() => liveLaunchInProgress()), true);
+  assert.equal(await page.getAttribute('body', 'data-coin-mode'), 'create');
+  assert.equal(await page.evaluate(() => state.launchWorkspace), 'mint');
+  await page.setViewportSize({ width: 1046, height: 650 });
+  await page.waitForFunction(() => document.querySelectorAll('#toastStack .toast').length === 0);
+  await page.screenshot({ path: path.join(configDir, 'image-recovery.png'), fullPage: true });
+  console.log(`Recovery image screenshot: ${path.join(configDir, 'image-recovery.png')}`);
+
+  // The live launch screen polls quote prices, keeps its review, and uses held pair tokens.
+  const demoPrices = await page.evaluate(() => state.apiClient.getQuoteTokenPrices([DEFAULT_SOL_MINT]));
+  assert.equal(demoPrices[0].priceSource, 'demo-ledger');
+  const liveQuoteMint = Keypair.generate().publicKey.toBase58();
+  let pricePolls = 0; let safetyChecks = 0; let balanceChecks = 0;
+  await page.route('**/api/quote-token-prices', async (route) => {
+    pricePolls++;
+    await route.fulfill({ json: { success: true, prices: [{ mint: liveQuoteMint,
+      priceUsd: pricePolls === 1 ? '0.002' : '0.001', priceSource: 'geckoterminal', priceCheckedAt: new Date().toISOString() }] } });
+  });
+  await page.route('**/api/quote-token-info', async (route) => {
+    safetyChecks++; assert.equal(route.request().postDataJSON().forceFresh, true);
+    await route.fulfill({ json: { success: true, info: { address: liveQuoteMint, symbol: 'SI', decimals: 6,
+      priceUsd: '0.001', compatible: true, freezeAuthorityBlock: false, mintAuthorityWarning: false, swapRoute: 'none' } } });
+  });
+  await page.route('**/api/check-balance-detailed', async (route) => {
+    balanceChecks++;
+    await route.fulfill({ json: { success: true, balance: { sol: 10, tokens: { [liveQuoteMint]: { amountRaw: '100000', decimals: 6 } } } } });
+  });
+  await page.route('**/api/v2/execution-readiness', async (route) => route.fulfill({ json: { success: true,
+    readiness: { status: 'ready', blockers: [], warnings: [], phases: [] } } }));
+  const stableQuoteReview = await page.evaluate(async (mint) => {
+    state.demoActive = false; state.customPools = [{ id: 'quote-live', quoteMint: mint, quoteSymbol: 'SI', quoteDecimals: 6,
+      supplyPercent: 5, ammConfigIndex: 1, sliceShares: '100', bootstrapMode: 'minimal', ladderMode: 'off', supportMode: 'off' }];
+    state.quoteTokenInfo = { 'quote-live': { query: mint, info: { symbol: 'SI', decimals: 6, priceUsd: '0.003' }, checkedAt: new Date().toISOString() } };
+    state.activeView = 'launch'; document.body.dataset.activeView = 'launch';
+    state.manualPrefund = { walletPublicKey: selectedLaunchWalletPublicKey(), lastUpdatedAt: new Date().toISOString(),
+      balance: { sol: 10, tokens: { [mint]: { amountRaw: '100000', decimals: 6 } } } };
+    const config = currentLaunchConfig();
+    state.classicFundingEstimate = stampClassicFundingEstimate({ totalSol: 1, byQuote: {},
+      autoSwapPlan: [{ quoteMint: mint, allocationIndex: config.poolTopology.pools.findIndex((pool) => pool.quoteMint === mint), minRaw: '100000', targetRaw: '120000' }] }, config);
+    state.lastRunEnvelope = { id: 'price-review', status: 'armed' };
+    await refreshQuotePrices();
+    return { fingerprint: classicFundingEstimateFingerprint(), envelope: JSON.stringify(state.lastRunEnvelope),
+      estimate: JSON.stringify(state.classicFundingEstimate) };
+  }, liveQuoteMint);
+  assert.equal(await page.evaluate(() => state.quoteTokenInfo['quote-live'].info.priceUsd), '0.002');
+  console.log('Quote price: first poll passed');
+  await page.clock.fastForward(30_001);
+  await page.evaluate(() => quotePriceInFlight);
+  assert.equal(await page.evaluate(() => state.quoteTokenInfo['quote-live'].info.priceUsd), '0.001');
+  console.log('Quote price: 30-second poll passed');
+  assert.equal(pricePolls, 2);
+  const refreshedReview = await page.evaluate(() => ({ fingerprint: classicFundingEstimateFingerprint(),
+    envelope: JSON.stringify(state.lastRunEnvelope), estimate: JSON.stringify(state.classicFundingEstimate) }));
+  assert.deepEqual(refreshedReview, stableQuoteReview, 'Price polling changed the approved budget or run review');
+  await page.evaluate(() => checkExecutionReadiness({ forceFresh: true }));
+  assert.equal(safetyChecks, 1); assert.ok(balanceChecks >= 1);
+  assert.equal(await page.evaluate(() => quoteAcquireStatus().ready), true);
+  assert.equal(await page.evaluate(() => customQuoteInfoBadge(state.customPools[0]).label), 'Held in wallet');
+  const pricePanel = await page.evaluate(() => renderCustomQuoteInfoPanel(state.customPools[0]));
+  assert.match(pricePanel, /geckoterminal/); assert.match(pricePanel, /Price checked/); assert.match(pricePanel, /every 30 seconds/);
+  await page.clock.resume();
+  await page.evaluate(async () => {
+    state.coins.key = null; state.coins.detail = null; state.selectedVanityPublicKey = null; state.launchProof = null;
+    state.createdTokenInfo = null; state.lastDemoLaunchRun = null; state.executionReadiness = null;
+    $('#tokenName').value = 'Live quote test'; $('#tokenSymbol').value = 'QUOTE';
+    state.classicFundingEstimate = stampClassicFundingEstimate(state.classicFundingEstimate, currentLaunchConfig());
+    setView('launch'); setLaunchWorkspace('fund'); setPlanSlide('cost'); renderAll();
+    await refreshQuotePrices();
+  });
+  await page.locator('.pair-token-checks').waitFor({ state: 'visible' });
+  assert.match(await page.locator('.pair-token-checks').innerText(), /SI.*geckoterminal/s);
+  await page.locator('.pair-token-checks').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(configDir, 'quote-prices.png'), fullPage: true });
+  console.log(`Quote price screenshot: ${path.join(configDir, 'quote-prices.png')}`);
 
   assert.deepEqual(pageErrors, [], 'Trebuchet emitted page errors');
   assert.deepEqual(consoleErrors, [], 'Trebuchet emitted console errors');

@@ -488,6 +488,9 @@ function mergeLaunchConfigSnapshot(existing = null, incoming = null, existingPro
     token: { ...(base.token || {}) },
     poolTopology: { ...(base.poolTopology || {}) },
   };
+  if (!merged.token.logo?.dataUrl && incoming?.token?.logo?.dataUrl) {
+    merged.token.logo = { ...(merged.token.logo || {}), ...incoming.token.logo };
+  }
   const incomingDestination = String(
     incomingProof?.transfer?.destinationWallet
     || incomingProof?.destinationWallet
@@ -602,7 +605,12 @@ function mergeLaunchProofEvidence(existing, incoming) {
 function rememberLaunchProof(readinessOrProof) {
   const rawProof = readinessOrProof?.proof || readinessOrProof;
   if (rawProof && typeof rawProof === 'object') {
+    const previousToken = state.launchProof?.token;
     state.launchProof = mergeLaunchProofEvidence(state.launchProof, rawProof);
+    const token = state.launchProof?.token;
+    if (token?.mint && token.mintAuthorityRenounced === true
+        && (previousToken?.mint !== token.mint || previousToken?.mintAuthorityRenounced !== true)
+        && typeof refreshCoinAfterExecution === 'function') refreshCoinAfterExecution(token.mint);
     const proofConfig = proofConfigForFingerprint(state.launchProof, currentLaunchConfig());
     state.lastReportPublish = reportPublishIsProofCurrent(state.launchProof?.reportPublish, state.launchProof, proofConfig)
       ? state.launchProof.reportPublish

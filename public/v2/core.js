@@ -759,6 +759,66 @@ var TrebuchetCore = (() => {
     return (padded.slice(0, -decimals) + "." + padded.slice(-decimals)).replace(/0+$/, "").replace(/\.$/, "");
   }
 
+  // packages/core/src/damm-v2-plan.js
+  var DAMM_V2_KEY_TRANSFER_LAMPORTS = 2074080 + 5e3;
+  var DAMM_V2_DEFAULTS = Object.freeze({
+    startingMarketCapUsd: 25e4,
+    rangeMultiple: 1e3,
+    feeBps: 25,
+    feeModel: "fixed"
+  });
+  var DAMM_V2_LIMITS = Object.freeze({
+    startingMarketCapUsd: [1e3, 1e9],
+    rangeMultiple: [10, 1e5],
+    feeBps: [1, 1e3],
+    // Ramp: startingFeeBps -> endingFeeBps over a total duration, in seconds.
+    rampFeeBps: [1, 1e3],
+    rampDurationSec: [1, 90 * 24 * 3600],
+    // Dynamic: the drop is bounded by the pool charging its base plus up to a
+    // max price-move premium. maxPriceChangeBps is the volatility swing bound.
+    dynamicMaxPriceChangeBps: [1, 5e3],
+    // Market-cap scheduler: fee decays as the pool's market cap crosses one
+    // priceMultiple, then expires after schedulerExpirationDuration seconds.
+    marketcapPriceMultiple: [1, 1e6],
+    marketcapExpirationSec: [1, 90 * 24 * 3600]
+  });
+  var DAMM_FEE_MODELS = Object.freeze(["fixed", "ramp", "dynamic", "marketcap"]);
+  function normalizeDammFeePlan(input = {}) {
+    const model = DAMM_FEE_MODELS.includes(String(input.model || "fixed")) ? String(input.model || "fixed") : "fixed";
+    const bps = bounded("Fee schedule base", input.bps ?? DAMM_V2_DEFAULTS.feeBps, DAMM_V2_LIMITS.feeBps, true);
+    const rampBps = bounded("Ramp fee", input.ramp?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+    const durationSec = bounded("Ramp duration", input.ramp?.durationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.rampDurationSec, true);
+    const maxPriceChangeBps = bounded("Dynamic fee swing", input.dynamic?.maxPriceChangeBps ?? 500, DAMM_V2_LIMITS.dynamicMaxPriceChangeBps, true);
+    const marketcapEndBps = bounded("Market-cap end fee", input.marketcap?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+    const priceMultiple = bounded("Market-cap multiple", input.marketcap?.priceMultiple ?? 10, DAMM_V2_LIMITS.marketcapPriceMultiple);
+    const expirationSec = bounded("Market-cap scheduler expiry", input.marketcap?.expirationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.marketcapExpirationSec, true);
+    switch (model) {
+      case "fixed":
+        return { model: "fixed", bps };
+      case "ramp":
+        if (rampBps > bps) {
+          throw new Error("A ramp fee must decay: the end fee must be at or below the start fee");
+        }
+        return { model: "ramp", bps, ramp: { endBps: rampBps, durationSec } };
+      case "dynamic":
+        return { model: "dynamic", bps, dynamic: { maxPriceChangeBps } };
+      case "marketcap":
+        if (marketcapEndBps > bps) {
+          throw new Error("A market-cap fee must decay: the end fee must be at or below the start fee");
+        }
+        return { model: "marketcap", bps, marketcap: { endBps: marketcapEndBps, priceMultiple, expirationSec } };
+      default:
+        throw new Error(`Fee model must be one of: ${DAMM_FEE_MODELS.join(", ")}`);
+    }
+  }
+  function bounded(name, value, [min, max], integer = false) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`${name} must be a number`);
+    if (integer && !Number.isInteger(number)) throw new Error(`${name} must be a whole number`);
+    if (number < min || number > max) throw new Error(`${name} must be between ${min.toLocaleString("en-US")} and ${max.toLocaleString("en-US")}`);
+    return number;
+  }
+
   // packages/core/src/launch-plan.js
   var CONTRACT_VERSION = 1;
   var TREBUCHET_PLAN_SCHEMA = "trebuchet-launch-plan/v1";
@@ -778,6 +838,7 @@ var TrebuchetCore = (() => {
   ]);
   var DEFAULT_SOL_MINT = "So11111111111111111111111111111111111111112";
   var DEFAULT_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  var DEFAULT_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
   var DEFAULT_MEME_FLYWHEEL_MINT = "HipYKXiDh3Kjd1jb7ji6jCEsKQMSGWiFJMdtvH8yb5r";
   var DEFAULT_RESERVE_FLYWHEEL_MINT = "J1bZFRAFC8ALqAN7ktkcCpobgoeTGfP5Xh1BwCP1oqoj";
   var CLASSIC_LADDER_DEFAULT_SUPPLY_PERCENT = 50;
@@ -1016,6 +1077,11 @@ var TrebuchetCore = (() => {
   function launchPlanConfigFingerprint(input = {}) {
     const token = input?.token || {};
     const topology = input?.poolTopology || {};
+    const stableTopology = { ...topology };
+    if (Array.isArray(topology.pools)) stableTopology.pools = topology.pools.map((pool) => {
+      const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+      return intent;
+    });
     return JSON.stringify(stableFundingFingerprintValue({
       experience: input?.experience || null,
       token: {
@@ -1031,7 +1097,7 @@ var TrebuchetCore = (() => {
       launchSol: Number.isFinite(Number(input?.launchSol)) ? Number(input.launchSol) : null,
       mode: input?.mode || null,
       vanity: input?.vanity || null,
-      poolTopology: topology,
+      poolTopology: stableTopology,
       funding: {
         launchSol: Number.isFinite(Number(input?.funding?.launchSol ?? input?.launchSol)) ? Number(input.funding?.launchSol ?? input.launchSol) : null,
         targetMarketCapUsd: Number.isFinite(Number(input?.funding?.targetMarketCapUsd ?? topology.targetMarketCapUsd)) ? Number(input?.funding?.targetMarketCapUsd ?? topology.targetMarketCapUsd) : null
@@ -1046,7 +1112,12 @@ var TrebuchetCore = (() => {
     const topology = normalizePoolTopology(rawTopology);
     const token = input.token && typeof input.token === "object" ? input.token : {};
     return {
-      allocations: stableFundingFingerprintValue(classicAllocations(topology)),
+      allocations: stableFundingFingerprintValue(classicAllocations(topology).map((allocation, index) => {
+        const pool = rawTopology.pools?.[index] || {};
+        if (pool.quoteUsdOverride != null || pool.priceEnteredByUser === true) return allocation;
+        const { quoteUsdOverride: _livePrice, ...intent } = allocation;
+        return intent;
+      })),
       targetMarketCapUsd: Number(topology.targetMarketCapUsd || 0),
       publishLaunchReport: topology.report?.publish !== false,
       token: {
@@ -1198,6 +1269,7 @@ var TrebuchetCore = (() => {
         quoteSymbol,
         ...quoteDecimalsOverride !== void 0 ? { quoteDecimalsOverride } : {},
         ...quoteUsdOverride !== void 0 ? { quoteUsdOverride } : {},
+        ...pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {},
         ...pool.quotePriceSource ? { quotePriceSource: String(pool.quotePriceSource) } : {},
         ...quoteCompatibility ? { quoteCompatibility } : {},
         ...startPricePremiumPct !== void 0 ? { startPricePremiumPct } : {},
@@ -1210,7 +1282,17 @@ var TrebuchetCore = (() => {
           venue: METEORA_VENUE,
           damm: {
             feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
-            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1e3))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1e3)) : 1e3
+            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1e3))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1e3)) : 1e3,
+            // The full fee schedule lands in the normalized plan so the report
+            // and the pool creation always see the same numbers. Throws on a
+            // malformed schedule instead of silently defaulting.
+            ...normalizeDammFeePlan({
+              model: pool.damm?.feeModel,
+              bps: pool.damm?.feeBps ?? 25,
+              ramp: pool.damm?.ramp,
+              dynamic: pool.damm?.dynamic,
+              marketcap: pool.damm?.marketcap
+            })
           },
           distribution: [{ sharePercent: 100 }],
           bootstrap: { mode: "minimal" },
@@ -1356,6 +1438,7 @@ var TrebuchetCore = (() => {
       supplyPercent: pool.supplyPercent,
       ammConfigIndex: pool.ammConfigIndex,
       quoteUsdOverride: pool.quoteUsdOverride,
+      ...pool.priceEnteredByUser === true ? { priceEnteredByUser: true } : {},
       quoteDecimalsOverride: pool.quoteDecimalsOverride,
       quoteSymbolOverride: pool.quoteSymbol,
       ...pool.startPricePremiumPct !== void 0 ? { startPricePremiumPct: pool.startPricePremiumPct } : {},
@@ -1376,7 +1459,7 @@ var TrebuchetCore = (() => {
     const upper = raw2.toUpperCase();
     if (raw2 === DEFAULT_SOL_MINT || upper === "SOL") return "SOL";
     if (raw2 === DEFAULT_USDC_MINT || upper === "USDC") return "USDC";
-    if (upper === "USDT") return "USDT";
+    if (raw2 === DEFAULT_USDT_MINT || upper === "USDT") return "USDT";
     if (!mint && symbol && token && symbol.toUpperCase() === token.toUpperCase()) {
       return symbol.toUpperCase();
     }
@@ -2395,24 +2478,6 @@ var TrebuchetCore = (() => {
         detail: issue.detail
       });
     });
-    quoteTokenSafetyIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
-      if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
-        addBlocker({
-          id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-          phase: "liquidity",
-          title: "Quote token safety",
-          detail: issue.detail
-        });
-        return;
-      }
-      warnings.push(readinessIssue({
-        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
-        phase: "liquidity",
-        title: "Quote token safety",
-        detail: issue.detail,
-        severity: "warning"
-      }));
-    });
     feeKeyRecipientIssues(plan.poolTopology.pools).forEach((issue, issueIndex) => {
       addBlocker({
         id: `invalid-fee-key-recipient-${issue.poolIndex + 1}-${issue.sliceIndex + 1}-${issueIndex + 1}`,
@@ -2455,6 +2520,36 @@ var TrebuchetCore = (() => {
     );
     const fundingEstimateUsable = fundingEstimateAttached && !fundingEstimateStale;
     const fundingEstimate = fundingEstimateUsable ? candidateFundingEstimate : null;
+    const quoteSafety = quoteTokenSafetyIssues(plan.poolTopology.pools);
+    setPlanGuardrail(plan, "classic-quote-safety", {
+      state: quoteSafety.some((issue) => issue.state === "danger") ? "danger" : quoteSafety.length ? "warn" : "pass",
+      detail: quoteSafety[0]?.detail || "Pair-token safety checks passed."
+    });
+    quoteSafety.forEach((issue, issueIndex) => {
+      if (setupSafetyGateRequired && issue.blocksFreshLive !== false) {
+        addBlocker({
+          id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+          phase: "liquidity",
+          title: "Quote token safety",
+          detail: issue.detail
+        });
+        return;
+      }
+      warnings.push(readinessIssue({
+        id: `quote-token-safety-${issue.index + 1}-${issueIndex + 1}`,
+        phase: "liquidity",
+        title: "Quote token safety",
+        detail: issue.detail,
+        severity: "warning"
+      }));
+    });
+    const executionAllocations = allocations.map((allocation, index) => {
+      if (allocation.priceEnteredByUser === true) return allocation;
+      const rows = Array.isArray(fundingEstimate?.resolvedPrices) ? fundingEstimate.resolvedPrices : [];
+      const price = rows.find((row) => row?.allocationIndex === index && poolQuoteIdentity({ quoteToken: row.quoteMint }) === poolQuoteIdentity(allocation));
+      const quoteUsd = optionalPositiveNumber(price?.quoteUsd);
+      return quoteUsd === void 0 ? allocation : { ...allocation, quoteUsdOverride: String(price.quoteUsd) };
+    });
     const rpcPosture = rpcPostureStatus(context);
     setPlanGuardrail(plan, "rpc-posture", {
       title: rpcPosture.title,
@@ -2636,7 +2731,7 @@ var TrebuchetCore = (() => {
       tokenDecimals: plan.token.decimals,
       tokenTotalSupply: plan.token.supply,
       targetMarketCapUsd,
-      allocations,
+      allocations: executionAllocations,
       lockPositions: true,
       airdrop: executableAirdrop
     };
@@ -2739,7 +2834,7 @@ var TrebuchetCore = (() => {
           tokenDecimals: plan.token.decimals,
           tokenTotalSupply: plan.token.supply,
           targetMarketCapUsd,
-          allocations
+          allocations: executionAllocations
         },
         createLp: createLpPayload,
         resumeLaunch: {

@@ -317,6 +317,52 @@ test('a GIF whose frames clear pixels is stamped without ghosting', () => {
   assert.ok(shown[5].rgba[(90 * SIZE + 25) * 4 + 3] < 128, 'the first square does not ghost into the last frame');
 });
 
+test('a cropped delta with disposal 2 clears older pixels outside its bounds', () => {
+  const scenes = [];
+  const scene = (rectangles) => {
+    const img = new Uint8ClampedArray(SIZE * SIZE * 4);
+    for (const { left, top, color } of rectangles) {
+      for (let y = top; y < top + 20; y += 1) {
+        for (let x = left; x < left + 20; x += 1) img.set([...color, 255], (y * SIZE + x) * 4);
+      }
+    }
+    return img;
+  };
+  scenes.push(scene([{ left: 20, top: 30, color: [240, 20, 20] }]));
+  scenes.push(scene([
+    { left: 20, top: 30, color: [240, 20, 20] },
+    { left: 110, top: 30, color: [20, 20, 240] },
+  ]));
+  scenes.push(scene([{ left: 190, top: 30, color: [20, 220, 20] }]));
+
+  const encoder = GIFEncoder();
+  scenes.forEach((img, index) => {
+    const palette = quantize(img, 256, { format: 'rgba4444', oneBitAlpha: true });
+    const clear = palette.findIndex((color) => color[3] === 0);
+    encoder.writeFrame(applyPalette(img, palette, 'rgba4444'), SIZE, SIZE, {
+      palette,
+      delay: 80,
+      repeat: index === 0 ? 0 : undefined,
+      transparent: true,
+      transparentIndex: Math.max(0, clear),
+      dispose: index === 1 ? 2 : 1,
+    });
+  });
+  encoder.finish();
+
+  const result = stampLogoDataUrl(`data:image/gif;base64,${Buffer.from(encoder.bytes()).toString('base64')}`, MINT);
+  assert.equal(result.stamped, true, result.reason);
+  const { shown } = playGif(decode(result.dataUrl));
+  assert.equal(shown.length, 3);
+  const alphaAt = (frame, x) => frame.rgba[(40 * SIZE + x) * 4 + 3];
+  assert.equal(alphaAt(shown[0], 25), 255, 'the first red square appears');
+  assert.equal(alphaAt(shown[1], 25), 255, 'the red square remains in the second scene');
+  assert.equal(alphaAt(shown[1], 115), 255, 'the blue square appears in the second scene');
+  assert.ok(alphaAt(shown[2], 25) < 128, 'the red square is cleared from the last scene');
+  assert.ok(alphaAt(shown[2], 115) < 128, 'the blue square is cleared from the last scene');
+  assert.equal(alphaAt(shown[2], 195), 255, 'the green square appears in the last scene');
+});
+
 test('an animated GIF that cannot fit at full quality trades colours and frame rate, keeping the loop length', () => {
   // Noisy frames defeat delta coding, so this needs the size fallbacks.
   const frames = 30;

@@ -11,9 +11,9 @@ test('normalizes a real-looking Raydium API response (bare array)', () => {
   ];
   const result = normalizeFeeTierList(raw);
   assert.equal(result.length, 3);
-  assert.deepEqual(result[0], { index: 4, tradeFeeRate: 100, tickSpacing: 1 });
-  assert.deepEqual(result[1], { index: 5, tradeFeeRate: 500, tickSpacing: 1 });
-  assert.deepEqual(result[2], { index: 1, tradeFeeRate: 2500, tickSpacing: 60 });
+  assert.deepEqual(result[0], { index: 4, tradeFeeRate: 100, tickSpacing: 1, feeModel: 'fixed' });
+  assert.deepEqual(result[1], { index: 5, tradeFeeRate: 500, tickSpacing: 1, feeModel: 'fixed' });
+  assert.deepEqual(result[2], { index: 1, tradeFeeRate: 2500, tickSpacing: 60, feeModel: 'fixed' });
 });
 
 test('normalizes wrapped { data: [...] } response', () => {
@@ -93,30 +93,39 @@ test('fallback list has the four stable tiers', () => {
 
 // ---------------------------------------------------------------------------
 // Dynamic-fee configs (Raydium CLMM upgrade, 18 May 2026).
-// Every consumer treats tradeFeeRate as a FIXED fee; a dynamic config's rate
-// is only a baseline. Offering one as static misstates the fee and misprices
-// the estimate, so the normalizer excludes them.
+// A dynamic config's tradeFeeRate is its BASELINE; the pool charges more
+// under volatility. The normalizer keeps dynamic configs but tags them
+// `feeModel: 'dynamic'` so the picker, funding estimate, and report can
+// present the rate as a baseline with disclosure instead of a fixed fee.
 // ---------------------------------------------------------------------------
 
-test('normalizeFeeTierList excludes dynamic-fee configs', () => {
+test('normalizeFeeTierList keeps dynamic-fee configs and tags feeModel', () => {
   const list = normalizeFeeTierList([
     { index: 0, tradeFeeRate: 100, tickSpacing: 1 },
     { index: 1, tradeFeeRate: 500, tickSpacing: 10, dynamicFeeControl: 1 },
     { index: 2, tradeFeeRate: 2500, tickSpacing: 60, dynamicFeeControl: 0 },
     { index: 3, tradeFeeRate: 10000, tickSpacing: 120, dynamicFeeControl: true },
   ]);
-  assert.deepEqual(list.map((c) => c.index), [0, 2],
-    'only static configs remain; a zero control flag is static');
+  assert.deepEqual(list.map((c) => c.index), [0, 1, 2, 3], 'every config stays; none are dropped');
+  assert.equal(list.find((c) => c.index === 1).feeModel, 'dynamic');
+  assert.equal(list.find((c) => c.index === 3).feeModel, 'dynamic');
+  assert.equal(list.find((c) => c.index === 0).feeModel, 'fixed', 'no control field is fixed');
+  assert.equal(list.find((c) => c.index === 2).feeModel, 'fixed', 'a zero control flag is static');
 });
 
 test('normalizeFeeTierList keeps configs that predate the control field', () => {
   // Responses from before the upgrade (or from the pinned SDK's decoder)
-  // carry no control field at all; those are static by definition.
+  // carry no control field at all; those are fixed by definition.
   const list = normalizeFeeTierList([
     { index: 0, tradeFeeRate: 100, tickSpacing: 1 },
     { index: 1, tradeFeeRate: 500, tickSpacing: 10 },
   ]);
   assert.equal(list.length, 2);
+  assert.ok(list.every((c) => c.feeModel === 'fixed'));
+});
+
+test('fallback tiers are all tagged fixed', () => {
+  assert.ok(FALLBACK_FEE_TIERS.every((t) => t.feeModel === 'fixed'));
 });
 
 test('isDynamicFeeConfig tolerates the field in numeric, boolean, and snake_case forms', () => {

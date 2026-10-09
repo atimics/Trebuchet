@@ -79,6 +79,20 @@ try {
   await waitForServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  // The local API normally gets this list from Raydium. Keep this UI check
+  // deterministic while still exercising the real bootstrap and controls.
+  // Twenty ordered choices preserve the keyboard assertions below.
+  const feeTiers = Array.from({ length: 20 }, (_, index) => ({
+    index,
+    tradeFeeRate: (index + 1) * 100,
+    tickSpacing: index + 1,
+    feeModel: 'fixed',
+  }));
+  await page.route('**/api/clmm-fee-tiers', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, tiers: feeTiers }),
+  }));
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
@@ -273,7 +287,8 @@ try {
   await field(':manual').fill('');
   assert.equal(await note('manual').textContent(), '');
 
-  // Names: every control is named by its label (helper text was removed).
+  // Names and descriptions stay separate so assistive technology reads the
+  // field label first, followed by its helper text and any live feedback.
   const names = await page.evaluate(() => [...document.querySelectorAll('.supply-settings input[type="text"], .supply-settings input:not([type]), .supply-settings textarea')].map((control) => {
     const label = document.getElementById(control.getAttribute('aria-labelledby'));
     const described = (control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean).map((id) => document.getElementById(id)?.textContent || '');
@@ -282,6 +297,7 @@ try {
   assert.ok(names.length >= 5);
   names.forEach((item) => {
     assert.ok(item.name, 'every field has a name');
+    assert.ok(item.described, `${item.name} has a description`);
   });
 
   // Narrow screen: no sideways scroll, and the tier labels stay inside.

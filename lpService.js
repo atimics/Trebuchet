@@ -126,6 +126,7 @@ import {
   DAMM_V2_POOL_RENT_LAMPORTS,
   DAMM_V2_POOL_TX_FEE_LAMPORTS,
   DAMM_V2_PRIORITY_FEE_LAMPORTS,
+  normalizeDammFeePlan,
 } from '@trebuchet/core/damm-v2-plan';
 import {
   computeBootstrapTicks,
@@ -152,7 +153,7 @@ import { getRpcUrl, getNetwork } from './rpcConfig.js';
 // USD lookups call getUsdPrice directly. A bare `export { ... } from` is only a
 // re-export and would leave these undefined locally (which silently sent every
 // SOL price into the fallback path).
-import { getTokenMetadata, getUsdPrice, setOnChainPriceFallback } from './tokenInfoService.js';
+import { getTokenMetadata, getUsdPrice, getGeckoTokenPrices, setOnChainPriceFallback } from './tokenInfoService.js';
 import { landTxWithRetry, throwIfExecutionPaused } from './chainRetry.js';
 import { getOnChainPriceUsd, clmmPriceBPerA } from './onChainPriceService.js';
 import { fetchVenuePoolsByMints } from './venuePoolService.js';
@@ -3730,6 +3731,7 @@ export async function resolveQuoteUsdForCreate({
   // Optional. When present, the on-chain pool read runs FIRST (see below).
   // Preflight and creation both have one; unit callers may omit it.
   raydium = null,
+  marketPrices = null,
 }) {
   let quoteUsd;
   let source;
@@ -3791,6 +3793,12 @@ export async function resolveQuoteUsdForCreate({
       }
     }
 
+    if (!quoteUsd && raydium?.connection) {
+      const market = (await (marketPrices ? marketPrices() : getGeckoTokenPrices([quoteToken.address], { forceFresh: true }))).get(quoteToken.address);
+      if (market?.gt(0) && Number(market.liquidityUsd) >= MIN_QUOTE_LIQUIDITY_USD) {
+        quoteUsd = market; source = 'geckoterminal';
+      }
+    }
     if (quoteUsd) {
       // Resolved on-chain; skip the probe and aggregator entirely.
     } else try {
@@ -4007,7 +4015,7 @@ export async function resolveQuoteUsdForCreate({
         throw new Error(
           `Price drift detected for ${symbolHint}: ` +
           `funding-estimate showed $${override.toString()} but current ` +
-          `Raydium price is $${quoteUsd.toString()} (${Math.abs(driftPct).toFixed(2)}% ` +
+          `market price is $${quoteUsd.toString()} (${Math.abs(driftPct).toFixed(2)}% ` +
           `difference, threshold is ` +
           `${((PRICE_DRIFT_THRESHOLD - 1) * 100).toFixed(0)}%). ` +
           `Refresh the funding estimate on Step 3 to recompute, then ` +
@@ -4164,6 +4172,7 @@ export async function preflightCreatePoolsAndPositions({
     console.warn(`preflight: SDK unavailable for on-chain pricing (${e.message}); using fallback sources`);
   }
 
+  const marketPrices = allocationMarketPrices(allocations);
   const resolvedPrices = [];
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
     const alloc = allocations[allocIdx];
@@ -4178,6 +4187,7 @@ export async function preflightCreatePoolsAndPositions({
         alloc,
         solUsd,
         raydium,
+        marketPrices,
       });
 
       // initialPrice = quote-per-launched = launchedTokenUsd / quoteUsd.
@@ -4334,36 +4344,85 @@ export function meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPerce
 
 async function createMeteoraPoolForAllocation({
   connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals,
-  alloc, allocIdx, quote, startPrice, progress,
+  alloc, allocIdx, quote, startPrice, poolIntent: savedPoolIntent = null, progress,
 }) {
   const damm = __dammService;
   const params = meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent: alloc.supplyPercent, startPrice, quoteDecimals: quote.decimals });
   const quoteMint = new PublicKey(quote.address);
   const feeBps = Number(alloc.damm?.feeBps) || DAMM_V2_DEFAULTS.feeBps;
   const rangeMultiple = Number(alloc.damm?.rangeMultiple) || DAMM_V2_DEFAULTS.rangeMultiple;
+  // The full fee schedule: fixed by default; ramp/marketcap/dynamic with their
+  // explicit params. The plan and report carry the schedule, not just a bps.
+  const feePlan = normalizeDammFeePlan({
+    model: alloc.damm?.feeModel,
+    bps: feeBps,
+    ramp: alloc.damm?.ramp,
+    dynamic: alloc.damm?.dynamic,
+    marketcap: alloc.damm?.marketcap,
+  });
   const mint = new PublicKey(tokenMint);
-  let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
-  progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
+  const quotePositionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
+  const legacyPositionNft = quoteMint.toBase58() === WSOL_MINT
+    ? null
+    : Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
+  let positionNft = quotePositionNft;
+  if (legacyPositionNft && savedPoolIntent?.positionNft === legacyPositionNft.publicKey.toBase58()) positionNft = legacyPositionNft;
+  let poolIntent = savedPoolIntent || {
+    tokenMint: mint.toBase58(),
+    quoteMint: quoteMint.toBase58(),
+    positionNft: positionNft.publicKey.toBase58(),
+    supplyRaw: params.poolRaw.toString(),
+    startingMarketCapLamports: params.poolMcapLamports.toString(),
+    rangeMultiple,
+  };
+  if (poolIntent.tokenMint !== mint.toBase58()
+    || poolIntent.quoteMint !== quoteMint.toBase58()
+    || ![quotePositionNft.publicKey.toBase58(), legacyPositionNft?.publicKey.toBase58()].includes(poolIntent.positionNft)
+    || String(poolIntent.supplyRaw) !== params.poolRaw.toString()
+    || Number(poolIntent.rangeMultiple) !== rangeMultiple
+    || !/^\d+$/.test(String(poolIntent.startingMarketCapLamports))
+    || BigInt(poolIntent.startingMarketCapLamports) <= 0n) {
+    throw new Error('The saved Meteora pool intent does not match this launch allocation.');
+  }
+  // The first attempt records this intent before any pool transaction is sent.
+  // A retry uses the same raw quote value even when the external quote price moved.
+  if (savedPoolIntent) params.poolMcapLamports = BigInt(poolIntent.startingMarketCapLamports);
 
   let existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
   // A pair pool made with the original derivation (wallet and mint only) is this launch's too.
-  if (existing.poolExists && !existing.positionExists && quoteMint.toBase58() !== WSOL_MINT) {
-    const original = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
-    const found = await damm.findExistingPool({ connection, mint, positionNft: original.publicKey, quoteMint });
+  if (existing.poolExists && !existing.positionExists && legacyPositionNft) {
+    const found = await damm.findExistingPool({ connection, mint, positionNft: legacyPositionNft.publicKey, quoteMint });
     if (found.positionExists) {
-      positionNft = original;
+      positionNft = legacyPositionNft;
       existing = found;
     }
   }
   let created;
   if (existing.poolExists && existing.positionExists) {
-    const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw, quoteMint });
+    const verification = await damm.verifyLockedPool({
+      connection,
+      pool: existing.pool,
+      position: existing.position,
+      mint,
+      supplyRaw: params.poolRaw,
+      startingMarketCapLamports: savedPoolIntent ? params.poolMcapLamports : null,
+      rangeMultiple,
+      positionNft: positionNft.publicKey,
+      quoteMint,
+    });
     if (!verification.passed) throw new Error('A Meteora pool for this token exists but is not the locked single-sided pool this launch makes.');
+    poolIntent = {
+      ...poolIntent,
+      positionNft: positionNft.publicKey.toBase58(),
+      startingMarketCapLamports: verification.recoveredStartingMarketCapLamports || params.poolMcapLamports.toString(),
+    };
+    progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
     created = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), signature: null, verification, adopted: true };
     progress({ stage: 'meteora_pool_adopted', allocationIndex: allocIdx, pool: created.pool });
   } else if (existing.poolExists) {
     throw new Error(`A Meteora ${quote.symbol || ''} pool for this token already exists and is not this launch's. Nothing was created.`);
   } else {
+    progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
     created = await damm.createLockedPool({
       connection,
       payer: ownerKeypair,
@@ -4373,6 +4432,7 @@ async function createMeteoraPoolForAllocation({
       startingMarketCapLamports: params.poolMcapLamports,
       rangeMultiple,
       feeBps,
+      feePlan,
       quoteMint,
       onProgress: (event) => progress({ ...event, allocationIndex: allocIdx }),
     });
@@ -4386,7 +4446,7 @@ async function createMeteoraPoolForAllocation({
     quoteAddress: quote.address,
     supplyPercent: alloc.supplyPercent,
     poolId: created.pool,
-    damm: { feeBps, rangeMultiple, position: created.position, verification: created.verification || null, adopted: created.adopted },
+    damm: { feeBps, rangeMultiple, feePlan, position: created.position, verification: created.verification || null, adopted: created.adopted, poolIntent },
     // One position, locked for good when the pool is made. Its NFT is the Fee Key.
     mainPositions: [{
       sliceIndex: 0,
@@ -4424,6 +4484,7 @@ export async function createPoolsAndPositions({
   // This means a single failed launch can be retried any number of times,
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
+  meteoraPoolIntents = {},
   execution = null,
 }) {
   onProgress?.({ stage: 'lp_preflight', allocationCount: allocations.length });
@@ -4948,6 +5009,7 @@ export async function createPoolsAndPositions({
     err.partialResults = priorResults;
     throw err;
   }
+  const marketPrices = allocationMarketPrices(allocations);
   console.log(`SOL/USD used for support sizing: $${solUsdForSupport.toString()}`);
 
   for (let allocIdx = 0; allocIdx < allocations.length; allocIdx++) {
@@ -4970,7 +5032,7 @@ export async function createPoolsAndPositions({
           const cached = quoteUsdByMint.get(quoteToken.address);
           if (cached) quoteUsd = cached.quoteUsd;
           else {
-            const resolved = await resolveQuoteUsdForCreate({ quoteToken, alloc, solUsd: solUsdForSupport, raydium });
+            const resolved = await resolveQuoteUsdForCreate({ quoteToken, alloc, solUsd: solUsdForSupport, raydium, marketPrices });
             quoteUsd = resolved.quoteUsd;
             quoteUsdByMint.set(quoteToken.address, { quoteUsd, source: resolved.source });
           }
@@ -4980,6 +5042,7 @@ export async function createPoolsAndPositions({
           alloc, allocIdx,
           quote: { address: quoteToken.address, decimals: quoteToken.decimals, symbol: quoteToken.symbol },
           startPrice: allocationStartPrice(launchedTokenUsd, quoteUsd, alloc),
+          poolIntent: meteoraPoolIntents?.[allocIdx] || null,
           progress: (event) => onProgress?.(event),
         }));
       } catch (error) {
@@ -5130,6 +5193,7 @@ export async function createPoolsAndPositions({
             alloc,
             solUsd: solUsdForSupport,
             raydium,
+            marketPrices,
           });
           quoteUsd = resolved.quoteUsd;
           quoteUsdSource = resolved.source;
@@ -5380,6 +5444,13 @@ export async function createPoolsAndPositions({
         fundOwner: '',
         description: '',
       };
+      if (isDynamicFeeConfig(baseCfg)) {
+        console.log(
+          `AmmConfig index ${cfgIdx} is a DYNAMIC fee config: the pool charges its baseline ` +
+          `${(Number(baseCfg.tradeFeeRate) || 0) / 10000}% plus more under volatility. ` +
+          'The funding estimate and fee-key income must be read as ranges, not fixed rates.',
+        );
+      }
 
       // 6g. Phase 1: create the pool, open the wide main position(s)
       //     according to distribution, and open the ladder bands if
@@ -5879,7 +5950,10 @@ export function onChainPriceDeps(raydium) {
       // spread among the deepest).
       const r = await raydium.api.fetchPoolByMints({
         mint1: m1, mint2: m2, sort: 'liquidity', order: 'desc',
-      }).catch((error) => { console.warn(`Raydium pool lookup: ${error.message}`); return []; });
+      }).catch((error) => {
+        console.warn(`on-chain price: Raydium index lookup failed: ${error.message}`);
+        return [];
+      });
       const raydiumPools = Array.isArray(r) ? r : (r && Array.isArray(r.data) ? r.data : []);
       // Orca and Meteora pools for the same pair, found and read on-chain.
       // A failure here leaves the Raydium pools to price the token alone.
@@ -5945,6 +6019,40 @@ export async function getQuoteTokenOnChainPrice({ mint, solUsd }) {
     if (process.env.TREBUCHET_DEBUG_TOKEN_INFO) console.warn(`on-chain price for ${mint}: ${e?.message || e}`);
     return null;
   }
+}
+
+export async function getQuoteTokenMarketPrice({ mint, solUsd, geckoPrice = null }) {
+  if (mint === WSOL_MINT) {
+    if (!solUsd?.gt(0)) throw new Error('SOL price is awaiting a market quote');
+    return { mint, priceUsd: solUsd.toString(), priceSource: 'market:SOL', priceCheckedAt: new Date().toISOString() };
+  }
+  const pool = await getQuoteTokenOnChainPrice({ mint, solUsd });
+  if (pool?.spreadError) throw new Error(pool.spreadError);
+  const price = pool?.priceUsd || geckoPrice || await getUsdPrice(mint, { forceFresh: true, skipOnChainFallback: true });
+  if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) throw new Error('Price is awaiting an active market');
+  return {
+    mint, priceUsd: price.toString(), priceSource: pool ? `on-chain:${pool.kind}/${pool.anchorSymbol}` : geckoPrice ? 'geckoterminal' : 'market:oracle',
+    priceCheckedAt: new Date().toISOString(), poolId: pool?.poolId || null,
+    liquidityUsd: (pool?.liquidityUsd || geckoPrice?.liquidityUsd)?.toString() || null,
+  };
+}
+
+// The funding estimate and LP creation share the same market order and depth floor.
+export async function getQuoteTokenReferencePrice({ mint, solUsd, marketPrices = null }) {
+  const pool = await getQuoteTokenOnChainPrice({ mint, solUsd });
+  if (pool?.priceUsd || pool?.spreadError) return pool;
+  const sdk = await readOnlySdk();
+  if (!sdk.connection) return null;
+  const market = (await (marketPrices ? marketPrices() : getGeckoTokenPrices([mint], { forceFresh: true }))).get(mint);
+  if (!market?.gt(0) || Number(market.liquidityUsd) < MIN_QUOTE_LIQUIDITY_USD || !Number.isFinite(Number(market.liquidityUsd))) return null;
+  return { priceUsd: market, liquidityUsd: market.liquidityUsd, source: 'geckoterminal' };
+}
+
+function allocationMarketPrices(allocations) {
+  let pending = null;
+  const mints = allocations.map((allocation) => KNOWN_QUOTES[String(allocation.quoteToken).toUpperCase()]?.address || allocation.quoteToken)
+    .filter((mint) => { try { return new PublicKey(mint).toBase58() === mint; } catch { return false; } });
+  return () => pending ||= getGeckoTokenPrices([WSOL_MINT, ...mints], { forceFresh: true });
 }
 // Token prices fall back to the token's own on-chain pools when every price
 // API misses, using the same rules as the launch (see tokenInfoService).
@@ -6142,9 +6250,15 @@ export async function estimateRequiredFunding({
   // callers omit these and use the real price/route services.
   priceOracle = null,
   routeDiscovery = null,
+  onChainPrice = null,
 }) {
   const lookupPrice = priceOracle || _estGetUsdPrice;
   const discoverRoute = routeDiscovery || _estDiscoverRaydiumRoute;
+  // Offline callers supply the pool reader when they need it. Live estimates
+  // use the same fresh pool selection as preflight and pool creation.
+  const readPoolPrice = onChainPrice || ((priceOracle || __estPriceOracleForTests)
+    ? async () => null : getQuoteTokenReferencePrice);
+  const marketPrices = allocationMarketPrices(allocations);
   const solBreakdown = [];
   const quoteBreakdown = [];
   const byQuote = {};
@@ -6160,6 +6274,7 @@ export async function estimateRequiredFunding({
   // where source is one of:
   //   'sol'           — SOL pool, used the SOL/USD oracle
   //   'user-override' — user typed a value in customize mode
+  //   'on-chain:*'   — a qualifying pool supplied the spot price
   //   'raydium-probe' — Trade API gave us an effective price
   //   'oracle'        — aggregator (Gecko/DexScreener) priced it
   //   'unresolved'    — funding-estimate couldn't get a price
@@ -6242,6 +6357,73 @@ export async function estimateRequiredFunding({
           : 6);
 
     const poolLabel = `Pool ${poolIdx + 1} (${quoteSymbol})`;
+
+    let route = null, quoteUsd = null, quoteUsdSource = null;
+    if (!isSol) {
+      // Try Raydium Trade API for route discovery. The probe quote also
+      // gives us the effective price (USD per whole quote token), which
+      // matters for low-volume tokens whose USD oracles often have no
+      // data. If the Trade API can route the swap at all, the route is
+      // viable and we get a usable price in the same call.
+      try {
+        route = await discoverRoute({
+          quoteMint: quoteAddr,
+          quoteDecimals,
+          solUsd,
+        });
+      } catch (e) {
+        console.warn(
+          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
+        );
+      }
+
+      // A hand-set price keeps its intent. Automatic prices are refreshed
+      // from pools first, as they are at creation. An earlier automatic
+      // quoteUsdOverride is a drift reference for creation, so refresh it here.
+      const manualPrice = userEnteredPrice(a);
+      if (manualPrice) {
+        quoteUsd = manualPrice;
+        quoteUsdSource = 'user-override';
+      } else {
+        let poolPrice = null;
+        try {
+          poolPrice = await readPoolPrice({ mint: quoteAddr, solUsd, marketPrices });
+        } catch (error) {
+          if (error.code === 'POOL_SPREAD') throw error;
+          console.warn(`estimateRequiredFunding: pool price read failed for ${quoteAddr}: ${error.message}`);
+        }
+        if (poolPrice?.spreadError) {
+          throw Object.assign(new Error(poolPrice.spreadError), { code: 'POOL_SPREAD' });
+        }
+        if (poolPrice?.priceUsd?.isFinite() && poolPrice.priceUsd.gt(0)) {
+          quoteUsd = poolPrice.priceUsd;
+          quoteUsdSource = poolPrice.source || `on-chain:${poolPrice.anchorSymbol}`;
+        }
+      }
+      if (!quoteUsd && route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
+        quoteUsd = route.effectiveQuoteUsd;
+        quoteUsdSource = `${route.provider || 'raydium'}-probe`;
+      } else if (!quoteUsd) {
+        try {
+          quoteUsd = await lookupPrice(quoteAddr);
+          if (quoteUsd && quoteUsd.gt(0)) {
+            quoteUsdSource = 'oracle';
+          } else {
+            quoteUsd = null;
+            quoteUsdSource = 'unresolved';
+          }
+        } catch (e) {
+          quoteUsd = null;
+          quoteUsdSource = 'unresolved';
+        }
+      }
+    }
+    resolvedPrices.push({
+      allocationIndex: poolIdx,
+      quoteMint: quoteAddr,
+      quoteUsd: isSol ? solUsd.toString() : quoteUsd?.toString() || null,
+      source: isSol ? 'sol' : quoteUsdSource,
+    });
 
     // A Meteora pool: its pool and position rent, and the transaction. No tick arrays, no bootstrap,
     // no quote: the position holds only the new token.
@@ -6390,16 +6572,6 @@ export async function estimateRequiredFunding({
     // sitting in the same wallet at LP-creation time. We surface support
     // as its own breakdown line so the user sees what each piece costs.
     if (isSol) {
-      // SOL pool: the canonical quote-USD is just the SOL/USD price we
-      // resolved at the top of the function. Record it now so the
-      // frontend has a complete picture regardless of pool composition.
-      resolvedPrices.push({
-        allocationIndex: poolIdx,
-        quoteMint: WSOL_MINT,
-        quoteUsd: solUsd.toString(),
-        source: 'sol',
-      });
-
       // (1) SOL pool — quote-side is just SOL.
       // For minimal mode we keep the historical dust constant (0.001 SOL,
       // which comfortably covers the 1-whole-token bootstrap's actual need).
@@ -6432,62 +6604,6 @@ export async function estimateRequiredFunding({
         );
       }
     } else {
-      // Try Raydium Trade API for route discovery. The probe quote also
-      // gives us the effective price (USD per whole quote token), which
-      // matters for low-volume tokens whose USD oracles often have no
-      // data. If the Trade API can route the swap at all, the route is
-      // viable and we get a usable price in the same call.
-      let route = null;
-      try {
-        route = await discoverRoute({
-          quoteMint: quoteAddr,
-          quoteDecimals,
-          solUsd,
-        });
-      } catch (e) {
-        console.warn(
-          `estimateRequiredFunding: route discovery failed for ${quoteAddr}: ${e.message}`,
-        );
-      }
-
-      // Resolve a USD price for the quote token. Priority:
-      //   1. Explicit override on the allocation config
-      //   2. Effective price from Trade API probe (covers low-volume tokens)
-      //   3. Standard USD oracle fallback (Coingecko/Jupiter)
-      // Used for sizing both the auto-swap and manual-prefund branches.
-      let quoteUsd = null;
-      let quoteUsdSource = null;
-      if (a.quoteUsdOverride !== undefined && a.quoteUsdOverride !== null) {
-        quoteUsd = new Decimal(a.quoteUsdOverride);
-        quoteUsdSource = 'user-override';
-      } else if (route && route.effectiveQuoteUsd && route.effectiveQuoteUsd.gt(0)) {
-        quoteUsd = route.effectiveQuoteUsd;
-        quoteUsdSource = `${route.provider || 'raydium'}-probe`;
-      } else {
-        try {
-          quoteUsd = await lookupPrice(quoteAddr);
-          if (quoteUsd && quoteUsd.gt(0)) {
-            quoteUsdSource = 'oracle';
-          } else {
-            quoteUsd = null;
-            quoteUsdSource = 'unresolved';
-          }
-        } catch (e) {
-          quoteUsd = null;
-          quoteUsdSource = 'unresolved';
-        }
-      }
-
-      // Record the canonical quote-USD for this allocation so the
-      // frontend can show the same number everywhere (Step 2 display,
-      // Step 3 cost preview, Step 5 pool creation).
-      resolvedPrices.push({
-        allocationIndex: poolIdx,
-        quoteMint: quoteAddr,
-        quoteUsd: quoteUsd ? quoteUsd.toString() : null,
-        source: quoteUsdSource,
-      });
-
       // Pick the acquire/prefund target USD. For minimal mode:
       //   auto-swap target = $2 (oversize the $1 actual need by 2x so a
       //                          partial fill still meets the need)
