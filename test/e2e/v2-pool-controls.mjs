@@ -79,6 +79,20 @@ try {
   await waitForServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  // The local API normally gets this list from Raydium. Keep this UI check
+  // deterministic while still exercising the real bootstrap and controls.
+  // Twenty ordered choices preserve the keyboard assertions below.
+  const feeTiers = Array.from({ length: 20 }, (_, index) => ({
+    index,
+    tradeFeeRate: (index + 1) * 100,
+    tickSpacing: index + 1,
+    feeModel: 'fixed',
+  }));
+  await page.route('**/api/clmm-fee-tiers', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ success: true, tiers: feeTiers }),
+  }));
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
