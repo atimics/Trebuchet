@@ -8134,11 +8134,11 @@ function renderSupplyEditor() {
   let fieldSeq = 0;
   const field = (label, hint, control, feedback = '', wide = false) => {
     const base = `supply-field-${++fieldSeq}`;
-    const described = [feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
+    const described = [hint ? `${base}-hint` : '', feedback ? `${base}-note` : ''].filter(Boolean).join(' ');
     const wired = control.replace(/^\s*<(input|textarea|select)/, (match) => (
       `${match} aria-labelledby="${base}-label"${described ? ` aria-describedby="${described}"` : ''}`
     ));
-    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
+    return `<label class="supply-field${wide ? ' supply-field-wide' : ''}"><span id="${base}-label">${escapeHtml(label)}</span>${wired}${hint ? `<small id="${base}-hint">${escapeHtml(hint)}</small>` : ''}${feedback ? `<small class="supply-feedback" id="${base}-note" data-feedback="${feedback}" role="status"></small>` : ''}</label>`;
   };
   const SLICE_HINT = 'Percent of the pool in each locked position, e.g. 50,50. A single 100 is one position.';
   const LADDER_HINT = `Extra liquidity bands at higher prices. 0 to ${CLASSIC_LADDER_MAX_BANDS}. 0 = off.`;
@@ -8158,7 +8158,7 @@ function renderSupplyEditor() {
         ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-supply-target="#ladderBands" data-supply-key="sol:ladder" value="${escapeHtml($('#ladderBands').value)}">`, 'ladder')}
         ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-supply-target="#supportSol" data-supply-key="sol:support" value="${escapeHtml($('#supportSol').value)}">`, 'support')}
         ${field('Support depth %', 'How far below the start price support reaches.', `<input type="text" inputmode="numeric" autocomplete="off" data-base-field="baseSupportDepth" data-supply-key="sol:depth" value="${escapeHtml(state.baseSupportDepth)}">`)}
-        ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
+        ${field('Support layers', 'Quote share, low price multiple and high price multiple, one layer per line.', `<textarea rows="3" spellcheck="false" data-base-field="baseSupportLayersText" data-supply-key="sol:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(state.baseSupportLayersText)}</textarea>`, 'layers', true)}
         ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-base-field="manualLadderText" data-supply-key="sol:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(state.baseManualLadderText)}</textarea>`, 'manual', true)}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>`;
     }
@@ -8167,8 +8167,8 @@ function renderSupplyEditor() {
     if (row.key === 'quote') {
       return `
         ${mapHost}
-        ${field('Fee tier', '', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
-        ${field('Start above SOL price %', '', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
+        ${field('Fee tier', 'Swap fee charged by the pair pool.', `<select data-choice="slider" data-choice-readout data-quote-pool-field="ammConfigIndex" data-supply-key="quote:tier">${feeTierOptionsHtml(state.pairPoolConfigIndex ?? DEFAULT_POOL_CONFIG_INDEX)}</select>`)}
+        ${field('Start above SOL price %', 'The pair opens above the SOL pool price. 0 to 500%.', `<input type="text" inputmode="decimal" autocomplete="off" data-quote-pool-field="startPremiumPct" data-supply-key="quote:premium" value="${escapeHtml(state.pairStartPremiumPct)}">`, 'premium')}
         <div class="supply-field-wide"><button class="pill-button" type="button" data-action="customize-quote-pool"><i class="fa-solid fa-sliders" aria-hidden="true"></i><span>Edit slices, ladder and support</span></button></div>`;
     }
     const pool = row.poolId ? state.customPools.find((item) => item.id === row.poolId) : null;
@@ -8182,7 +8182,7 @@ function renderSupplyEditor() {
       ${field('Position slices', SLICE_HINT, `<input data-custom-pool-field="sliceShares" data-pool-id="${id}" data-supply-key="${key}:slices" value="${escapeHtml(pool.sliceShares ?? '100')}" autocomplete="off">`, 'slices')}
       ${field('Ladder bands', LADDER_HINT, `<input type="text" inputmode="numeric" autocomplete="off" data-custom-pool-field="ladderBands" data-pool-id="${id}" data-supply-key="${key}:ladder" value="${escapeHtml(pool.ladderBands ?? 0)}">`, 'ladder')}
       ${field('Support SOL', 'SOL placed just below the start price. 0 = off.', `<input type="text" inputmode="decimal" autocomplete="off" data-custom-pool-field="supportSol" data-pool-id="${id}" data-supply-key="${key}:support" value="${escapeHtml(pool.supportSol ?? 0)}">`, 'support')}
-      ${field('Support layers', '', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
+      ${field('Support layers', 'Quote share, low price multiple and high price multiple, one layer per line.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="supportLayersText" data-pool-id="${id}" data-supply-key="${key}:layers" placeholder="quote share%, low×, high× — one layer per line">${escapeHtml(pool.supportLayersText || '')}</textarea>`, 'layers', true)}
       ${field('Custom ladder', 'Replaces ladder bands when set.', `<textarea rows="3" spellcheck="false" data-custom-pool-field="ladderText" data-pool-id="${id}" data-supply-key="${key}:manual" placeholder="supply%, low×, high× — one band per line">${escapeHtml(pool.ladderText || '')}</textarea>`, 'manual', true)}
       <div class="supply-field-wide"><button class="pill-button" type="button" data-action="round-slices-100">Round slices to 100%</button></div>
 `;
@@ -15561,8 +15561,18 @@ function launchPlanLogoFingerprint(logo = null) {
 }
 
 function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
+  if (typeof TrebuchetCore !== 'undefined' && typeof TrebuchetCore.launchPlanConfigFingerprint === 'function') {
+    return TrebuchetCore.launchPlanConfigFingerprint(config);
+  }
   const token = config?.token || {};
   const topology = config?.poolTopology || {};
+  const stableTopology = { ...topology };
+  if (Array.isArray(topology.pools)) {
+    stableTopology.pools = topology.pools.map((pool) => {
+      const { quotePriceUsd: _livePrice, quotePriceSource: _source, quotePriceCheckedAt: _time, ...intent } = pool;
+      return intent;
+    });
+  }
   return JSON.stringify(stableFundingFingerprintValue({
     experience: config?.experience || null,
     token: {
@@ -15578,7 +15588,7 @@ function launchPlanConfigFingerprint(config = currentLaunchConfig()) {
     launchSol: Number.isFinite(Number(config?.launchSol)) ? Number(config.launchSol) : null,
     mode: config?.mode || null,
     vanity: config?.vanity || null,
-    poolTopology: topology,
+    poolTopology: stableTopology,
     funding: {
       launchSol: Number.isFinite(Number(config?.funding?.launchSol ?? config?.launchSol))
         ? Number(config.funding?.launchSol ?? config.launchSol)

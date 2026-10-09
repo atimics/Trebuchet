@@ -392,8 +392,8 @@ function encodeStampedGif(frames, width, height, fit, { colors, step }) {
   const encoder = GIFEncoder();
   let pending = null; // the frame waiting for its disposal to be decided
 
-  const write = (frame, dispose) => {
-    const { out, box, delta, delay } = frame;
+  const write = (frame, dispose, box = frame.box) => {
+    const { out, delta, delay } = frame;
     const region = new Uint8ClampedArray(box.width * box.height * 4);
     let hasClear = false;
     for (let y = 0; y < box.height; y += 1) {
@@ -445,7 +445,16 @@ function encodeStampedGif(frames, width, height, fit, { colors, step }) {
       write(pending, 1);
       pending = { out: kept.out, box, delta: pending.out, delay: kept.delay, first: false };
     } else {
-      write(pending, 2);
+      // Disposal clears the whole image descriptor. The frame may only draw a
+      // cropped delta, while older pixels elsewhere also need to become clear.
+      // Expand the descriptor to cover every pixel that changes before the
+      // next full-canvas frame, then let that next frame redraw its scene.
+      const clearBox = changedBox(kept.out, pending.out, fit.width, fit.height);
+      const left = Math.min(clearBox.left, pending.box.left);
+      const top = Math.min(clearBox.top, pending.box.top);
+      const right = Math.max(clearBox.left + clearBox.width, pending.box.left + pending.box.width);
+      const bottom = Math.max(clearBox.top + clearBox.height, pending.box.top + pending.box.height);
+      write(pending, 2, { left, top, width: right - left, height: bottom - top });
       pending = { out: kept.out, box: { left: 0, top: 0, width: fit.width, height: fit.height }, delta: null, delay: kept.delay, first: false };
     }
     kept = null;
