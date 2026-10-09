@@ -134,3 +134,16 @@ test('Jupiter uses the current quote endpoint and sends its key only to Jupiter'
   assert.equal(calls[0].headers['x-api-key'], 'fixture-key');
   assert.equal(calls[1].headers['x-api-key'], undefined);
 });
+
+
+test('unsigned quote requests retry a busy provider with bounded backoff', async () => {
+  let calls = 0; const delays = [];
+  const api = createQuoteProvider({ sleep: async (ms) => delays.push(ms), fetchImpl: async () => {
+    calls++;
+    return calls < 3 ? new Response('{}', { status: calls === 1 ? 429 : 503 })
+      : new Response(JSON.stringify({ routePlan: [{ swapInfo: { label: 'PumpSwap' } }] }));
+  } });
+  const quote = await api.quote({ provider: 'jupiter' });
+  assert.equal(quote.routePlan[0].swapInfo.label, 'PumpSwap');
+  assert.equal(calls, 3); assert.deepEqual(delays, [2000, 4000]);
+});

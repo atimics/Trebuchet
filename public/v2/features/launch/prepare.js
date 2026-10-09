@@ -333,7 +333,7 @@ function pairTokensNeedingCheck(now = Date.now()) {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading) return false;
+    if (record.loading || record.info?.compatible === false || record.info?.freezeAuthorityBlock === true) return false;
     if (record.info && record.info.compatible != null && record.info.freezeAuthorityBlock != null
         && ['raydium', 'jupiter'].includes(record.info.swapRoute) && !record.info.priceWarning) return false;
     const failedAt = Date.parse(record.checkedAt || '');
@@ -390,6 +390,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
   const previousFundingFingerprint = classicFundingEstimateFingerprint();
+  const previousRoute = customQuoteResolvedInfo(pool)?.swapRoute;
   const query = customQuoteLookupValue(pool);
   const symbol = String(pool.quoteSymbol || '').trim().toUpperCase();
   if (!query || (!pool.quoteMint && !KNOWN_SAFE_QUOTE_SYMBOLS.has(symbol))) {
@@ -426,6 +427,10 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       checkedAt: new Date().toISOString(),
     };
     if (previousFundingFingerprint !== classicFundingEstimateFingerprint()) invalidateClassicOutputs();
+    else if (state.classicFundingEstimate && previousRoute !== info.swapRoute
+        && ['raydium', 'jupiter'].includes(info.swapRoute)) {
+      state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
+    }
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
@@ -444,10 +449,6 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     return null;
   }
 }
-
-// Return wallet. Launch assets only go to a proven wallet: the funder of the
-// launch wallet (blank = funder), or a wallet that signed a Trebuchet
-// challenge in the browser. Addresses are never typed in.
 
 // Read-only recovery starts when the user enters funding or asks for readiness.
 // One request runs at a time; outages back off to a one-minute interval.

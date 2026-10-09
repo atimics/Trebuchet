@@ -213,18 +213,24 @@ var TrebuchetCore = (() => {
     };
     for (const [mint, amount] of Object.entries(manual)) get(mint).required += raw(amount);
     for (const route of routes) get(route.quoteMint).required += raw(route.minRaw || route.targetRaw);
-    let swapCreditSol = 0;
-    const available = /* @__PURE__ */ new Map();
+    const purchases = /* @__PURE__ */ new Map();
     for (const route of routes) {
-      const row = get(route.quoteMint);
-      const held = available.get(row.mint) ?? (row.held > row.manual ? row.held - row.manual : 0n);
-      const minimum = raw(route.minRaw || route.targetRaw);
-      const target = raw(route.targetRaw);
-      const used = held < minimum ? held : minimum;
-      available.set(row.mint, held - used);
-      const fraction = minimum > 0n && used >= minimum ? 1 : target > 0n ? Number(used) / Number(target) : 0;
+      const purchase = purchases.get(route.quoteMint) || { minimum: 0n, target: 0n, spend: 0 };
+      purchase.minimum += raw(route.minRaw || route.targetRaw);
+      purchase.target += raw(route.targetRaw);
       const spend = Number(route.estSolSpend);
-      if (Number.isFinite(spend) && spend > 0) swapCreditSol += spend * fraction;
+      if (Number.isFinite(spend) && spend > 0) purchase.spend += spend;
+      purchases.set(route.quoteMint, purchase);
+    }
+    let swapCreditSol = 0;
+    for (const [mint, purchase] of purchases) {
+      const row = get(mint);
+      const held = row.held > row.manual ? row.held - row.manual : 0n;
+      if (purchase.minimum > 0n && held >= purchase.minimum) swapCreditSol += purchase.spend;
+      else if (purchase.target > 0n) {
+        const lamports = Math.floor(purchase.spend * 1e9);
+        if (Number.isSafeInteger(lamports)) swapCreditSol += Number(BigInt(lamports) * held / purchase.target) / 1e9;
+      }
     }
     return { swapCreditSol, rows: [...rows.values()].map((row) => {
       const missing = row.required > row.held ? row.required - row.held : 0n;

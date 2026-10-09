@@ -884,6 +884,7 @@ export function handleQuoteTokenInfo(req, res) {
     raydiumTradeable: 'yes',
     raydiumProbeError: null,
     swapRoute: 'raydium',
+    swapVenues: ['Raydium'],
     demo: true,
   };
   console.log(`[demo] quote-token-info ${base.symbol} -> $${base.priceUsd} (synthetic)`);

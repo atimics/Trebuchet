@@ -414,38 +414,6 @@ function fundingEstimateTotalSol(estimate = {}) {
   return solLamports > 0 ? solLamports / 1_000_000_000 : 0;
 }
 
-function parseRawTokenAmount(value) {
-  const text = String(value ?? '').trim();
-  if (!/^\d+$/.test(text)) return null;
-  try {
-    return BigInt(text);
-  } catch {
-    return null;
-  }
-}
-
-function addRawRequirement(requirements, mint, amount) {
-  const key = String(mint || '').trim();
-  const raw = parseRawTokenAmount(amount);
-  if (!key || raw == null || raw <= 0n) return;
-  requirements.set(key, (requirements.get(key) || 0n) + raw);
-}
-
-function walletTokenRawAmount(walletBalance, mint) {
-  const key = String(mint || '').trim();
-  if (!key) return 0n;
-  const raw = parseRawTokenAmount(walletBalance?.tokens?.[key]?.amountRaw);
-  return raw == null ? 0n : raw;
-}
-
-function fundingQuoteSymbol(estimate = {}, mint) {
-  const breakdown = Array.isArray(estimate.quoteBreakdown) ? estimate.quoteBreakdown : [];
-  const byBreakdown = breakdown.find((row) => String(row?.mint || '').trim() === mint)?.symbol;
-  if (byBreakdown) return byBreakdown;
-  const autoPlan = Array.isArray(estimate.autoSwapPlan) ? estimate.autoSwapPlan : [];
-  return autoPlan.find((row) => String(row?.quoteMint || '').trim() === mint)?.quoteSymbol || mint.slice(0, 6);
-}
-
 function fundingEstimateSolUsd(estimate = {}) {
   return positiveFinite(estimate.solUsd, 0);
 }

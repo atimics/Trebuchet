@@ -343,9 +343,8 @@ export async function discoverRaydiumRoute({
 }) {
   if (quoteMint === WSOL_MINT) return null;
 
-  // Cache lookup. Skipped when forceFresh is true. The cache stores
-  // both `null` (no route) and result objects (route found), so
-  // check via has() not value-truthiness.
+  // Successful routes stay fresh for one minute. Failed lookups can recover
+  // on the next funding check. forceFresh reads the provider immediately.
   // The cached price is per whole token, so it depends on the decimals it
   // was computed with. Keying by mint alone served a stale price after the
   // decimals changed (off by 10^decimals).

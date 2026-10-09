@@ -10,7 +10,7 @@ test('balances cover cumulative pool requirements and reduce only outstanding sw
   const result = fundingTokenCoverage(estimate, { tokens: { MINT: { amountRaw: '1500000' } } });
   assert.equal(result.rows[0].required, '2'); assert.equal(result.rows[0].held, '1.5');
   assert.equal(result.rows[0].missing, '0.5'); assert.equal(result.rows[0].funded, false);
-  assert.equal(result.swapCreditSol, 0.05);
+  assert.equal(result.swapCreditSol, 0.03, 'the remaining purchase uses the combined four-token target');
   assert.equal(fundingTokenCoverage(estimate, { tokens: { MINT: { amountRaw: '2000000' } } }).swapCreditSol, 0.08);
 });
 
