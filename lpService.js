@@ -4376,7 +4376,17 @@ async function createMeteoraPoolForAllocation({
   }
   let created;
   if (existing.poolExists && existing.positionExists) {
-    const verification = await damm.verifyLockedPool({ connection, pool: existing.pool, position: existing.position, mint, supplyRaw: params.poolRaw, quoteMint });
+    const verification = await damm.verifyLockedPool({
+      connection,
+      pool: existing.pool,
+      position: existing.position,
+      mint,
+      supplyRaw: params.poolRaw,
+      startingMarketCapLamports: params.poolMcapLamports,
+      rangeMultiple,
+      positionNft: positionNft.publicKey,
+      quoteMint,
+    });
     if (!verification.passed) throw new Error('A Meteora pool for this token exists but is not the locked single-sided pool this launch makes.');
     created = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), signature: null, verification, adopted: true };
     progress({ stage: 'meteora_pool_adopted', allocationIndex: allocIdx, pool: created.pool });

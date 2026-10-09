@@ -37,7 +37,7 @@ function fakeDamm({ poolExists = false, positionExists = false, verified = true 
       calls.push(['find', positionNft.toBase58()]);
       return { pool: new PublicKey(WSOL_MINT), position: Keypair.generate().publicKey, poolExists, positionExists };
     },
-    async verifyLockedPool() { calls.push(['verify']); return { passed: verified }; },
+    async verifyLockedPool(args) { calls.push(['verify', args]); return { passed: verified }; },
     async createLockedPool(args) {
       calls.push(['create', args.supplyRaw.toString(), args.startingMarketCapLamports.toString(), args.feeBps, args.rangeMultiple, args.positionNft.publicKey.toBase58()]);
       return { signature: 'sig-meteora', pool: 'PoolMeteora', position: 'PositionMeteora', positionNft: args.positionNft.publicKey.toBase58(), verification: { passed: true } };
@@ -83,6 +83,16 @@ test('a resume adopts the pool it already made, and refuses one it did not make'
     const result = await hooks.createMeteoraPoolForAllocation({ ...base, alloc: { venue: 'meteora-damm-v2', supplyPercent: 100 }, progress: () => {} });
     assert.equal(result.damm.adopted, true);
     assert.ok(!adopted.calls.some((call) => call[0] === 'create'), 'nothing is created twice');
+    const verifyArgs = adopted.calls.find((call) => call[0] === 'verify')[1];
+    assert.equal(verifyArgs.startingMarketCapLamports, lp.meteoraPoolParams({
+      tokenTotalSupply: base.tokenTotalSupply,
+      tokenDecimals: base.tokenDecimals,
+      supplyPercent: 100,
+      startPrice: base.startPrice,
+      quoteDecimals: base.quote.decimals,
+    }).poolMcapLamports);
+    assert.equal(verifyArgs.rangeMultiple, 1000);
+    assert.equal(verifyArgs.positionNft.toBase58(), adopted.calls[0][1]);
     lp.setDammServiceForTests(fakeDamm({ poolExists: true, positionExists: false }));
     await assert.rejects(hooks.createMeteoraPoolForAllocation({ ...base, alloc: { venue: 'meteora-damm-v2', supplyPercent: 100 }, progress: () => {} }), /already exists and is not this launch/);
     lp.setDammServiceForTests(fakeDamm({ poolExists: true, positionExists: true, verified: false }));
