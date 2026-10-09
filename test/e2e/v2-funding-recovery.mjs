@@ -116,17 +116,20 @@ try {
     };
     state.classicFundingEstimate = null;
     state.launchChecks = { active: true };
+    state.executionReadiness = { blockers: [{ id: 'quote-token-safety-6', title: 'SI276 awaiting check' }], warnings: [], phases: [] };
     await refreshLaunchChecks();
+    const staleTokenBlocker = state.executionReadiness.blockers.some((item) => item.id === 'quote-token-safety-6');
     const error = state.launchChecks.error;
     state.launchChecks.nextAt = 0;
     await refreshLaunchChecks();
     await refreshManualPrefundBalance({ quiet: true });
     renderClassicBridge();
-    return { error, attempts, readinessReads, sends, ready: manualPrefundSummary(quoteManualPrefundItems()).className,
+    return { error, attempts, readinessReads, sends, staleTokenBlocker, ready: manualPrefundSummary(quoteManualPrefundItems()).className,
       text: document.querySelector('.funding-task').textContent };
   });
+  assert.equal(recovered.staleTokenBlocker, false);
   assert.equal(recovered.error, 'Quote service busy'); assert.equal(recovered.attempts, 2);
-  assert.equal(recovered.readinessReads, 1); assert.equal(recovered.sends, 0); assert.equal(recovered.ready, '');
+  assert.equal(recovered.readinessReads, 2); assert.equal(recovered.sends, 0); assert.equal(recovered.ready, '');
   assert.match(recovered.text, /Launch wallet ready/);
   const priceReview = await page.evaluate(() => {
     state.classicFundingEstimate = null;

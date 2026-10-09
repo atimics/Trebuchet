@@ -73,9 +73,11 @@ export function poolReaderKind(pool) {
 // left behind. $100 admits genuinely tiny-but-real markets.
 export const MIN_LIQUIDITY_USD = 100;
 
-// If the deepest qualifying pool and the median of qualifying pools differ
-// by more than this, the market itself is inconsistent and no single number
-// is trustworthy as a launch reference.
+// Compare the deepest pool with other substantial pools. A small side pool
+// needs at least 5% of the deepest pool's liquidity to affect this check.
+export const MIN_COMPARISON_LIQUIDITY_RATIO = 0.05;
+
+// The allowed price spread among those pools remains 10%.
 export const MAX_POOL_SPREAD_PCT = 10;
 
 const TWO_POW_64 = new Decimal(2).pow(64);
@@ -153,9 +155,12 @@ export function selectBestPool(candidates, { minLiquidityUsd = MIN_LIQUIDITY_USD
   const sorted = [...qualifying].sort((a, b) => b.liquidityUsd.cmp(a.liquidityUsd));
   const best = sorted[0];
 
-  // Median of qualifying prices, as the "consensus" the deepest pool is
-  // compared against. With one pool the spread is zero by construction.
-  const prices = [...qualifying].map((c) => c.priceUsd).sort((a, b) => a.cmp(b));
+  // Keep the absolute floor for small markets, then compare pools of a
+  // meaningful size relative to this market. A $129 side pool should not
+  // veto the reference from a $31,158 pool.
+  const comparisonFloor = best.liquidityUsd.mul(MIN_COMPARISON_LIQUIDITY_RATIO);
+  const comparable = sorted.filter((c) => c.liquidityUsd.gte(comparisonFloor));
+  const prices = comparable.map((c) => c.priceUsd).sort((a, b) => a.cmp(b));
   const mid = Math.floor(prices.length / 2);
   const median = prices.length % 2 === 1
     ? prices[mid]
@@ -164,7 +169,7 @@ export function selectBestPool(candidates, { minLiquidityUsd = MIN_LIQUIDITY_USD
     ? best.priceUsd.sub(median).abs().div(median).mul(100)
     : new Decimal(0);
 
-  return { best, qualifying: sorted, spreadPct };
+  return { best, qualifying: sorted, comparable, spreadPct };
 }
 
 /**
@@ -303,8 +308,8 @@ export async function getOnChainPriceUsd({
 
   if (sel.spreadPct.gt(maxSpreadPct)) {
     const err = new Error(
-      `For ${mint}, the deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median (limit ${maxSpreadPct}%). ` +
-      sel.qualifying.slice(0, 3).map((pool) =>
+      `For ${mint}, the deepest pool price is ${sel.spreadPct.toFixed(1)}% from the median of ${sel.comparable.length} substantial pools (limit ${maxSpreadPct}%). ` +
+      sel.comparable.slice(0, 3).map((pool) =>
         `${pool.kind} ${pool.anchorSymbol}: $${pool.priceUsd.toSignificantDigits(6)} per token, $${pool.liquidityUsd.toFixed(0)} liquidity`
       ).join('; ') + '. Trebuchet checks prices again automatically. Review this pair in Token & pools and choose another pair to continue now.',
     );
@@ -321,6 +326,7 @@ export async function getOnChainPriceUsd({
     liquidityUsd: sel.best.liquidityUsd,
     spreadPct: sel.spreadPct,
     qualifyingCount: sel.qualifying.length,
+    comparisonCount: sel.comparable.length,
     discoveredCount: unique.length,
   };
 }

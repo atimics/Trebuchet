@@ -20727,11 +20727,16 @@ async function refreshLaunchChecks(now = Date.now()) {
   state.launchChecks.running = true;
   launchChecksInFlight = (async () => {
     await autoVerifyQuoteTokens();
-    if (!classicFundingEstimateStatus().matchesConfig) {
-      if (!await estimateClassicFunding({ quiet: true })) return false;
-    }
-    if (selectedLaunchWalletPublicKey()) return checkExecutionReadiness({ quiet: true });
-    return true;
+    const estimated = classicFundingEstimateStatus().matchesConfig
+      || await estimateClassicFunding({ quiet: true });
+    const fundingError = { error: state.launchChecks.error, errorCode: state.launchChecks.errorCode };
+    // Refresh finished token checks even while a price prevents an estimate.
+    // The next timed pass owns the estimate retry.
+    const checked = selectedLaunchWalletPublicKey()
+      ? await checkExecutionReadiness({ quiet: true, estimateFunding: false })
+      : true;
+    if (!estimated && fundingError.error) Object.assign(state.launchChecks, fundingError);
+    return estimated && checked;
   })();
   try {
     const ok = await launchChecksInFlight;
@@ -22291,7 +22296,7 @@ async function cancelSavedSupportJob(jobId) {
   } finally { await refreshSavedSupportJobs(); renderAll(); }
 }
 
-async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false } = {}) {
+async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false, estimateFunding = true } = {}) {
   if (state.executionChecking) return false;
   state.launchChecks = { ...state.launchChecks, active: true };
   const say = quiet ? () => {} : notify;
@@ -22320,7 +22325,7 @@ async function checkExecutionReadiness({ retried = false, forceFresh = false, qu
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
+      if (estimateFunding && !retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
         state.executionChecking = false;
         say('Updating the funding estimate');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };

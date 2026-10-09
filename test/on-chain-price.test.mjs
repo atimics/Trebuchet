@@ -91,6 +91,35 @@ test('spread is measured deepest-vs-median so one deep outlier is caught', () =>
   assert.equal(sel.spreadPct.toFixed(0), '100', 'deepest is 100% off the 0.50 median');
 });
 
+test('OWL screenshot: a $129 side pool leaves the $31,158 reference usable', () => {
+  const sel = selectBestPool([
+    cand({ id: 'owl-main', price: '0.000918447', liq: 31_158 }),
+    cand({ id: 'owl-side', price: '0.00118085', liq: 129 }),
+  ]);
+  assert.equal(sel.best.poolId, 'owl-main');
+  assert.equal(sel.qualifying.length, 2);
+  assert.equal(sel.comparable.length, 1);
+  assert.equal(sel.spreadPct.toString(), '0');
+});
+
+test('a pool with five percent of the main liquidity still participates in the price check', () => {
+  const sel = selectBestPool([
+    cand({ id: 'main', price: 1, liq: 20_000 }),
+    cand({ id: 'peer', price: 2, liq: 1_000 }),
+  ]);
+  assert.equal(sel.comparable.length, 2);
+  assert.ok(sel.spreadPct.gt(10));
+});
+
+test('small markets still compare their substantial pools above the absolute floor', () => {
+  const sel = selectBestPool([
+    cand({ id: 'main', price: 1, liq: 200 }),
+    cand({ id: 'peer', price: 2, liq: 100 }),
+  ]);
+  assert.equal(sel.comparable.length, 2);
+  assert.ok(sel.spreadPct.gt(10));
+});
+
 // --- evaluation --------------------------------------------------------------
 
 test('evaluatePool: CLMM, asset as mintA, SOL anchor', async () => {

@@ -1,4 +1,4 @@
-async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false } = {}) {
+async function checkExecutionReadiness({ retried = false, forceFresh = false, quiet = false, estimateFunding = true } = {}) {
   if (state.executionChecking) return false;
   state.launchChecks = { ...state.launchChecks, active: true };
   const say = quiet ? () => {} : notify;
@@ -27,7 +27,7 @@ async function checkExecutionReadiness({ retried = false, forceFresh = false, qu
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
+      if (estimateFunding && !retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
         state.executionChecking = false;
         say('Updating the funding estimate');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };

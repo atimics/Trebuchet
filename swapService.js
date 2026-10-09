@@ -477,7 +477,9 @@ export async function discoverJupiterRoute({ quoteMint, quoteDecimals, solUsd, f
 export async function discoverSwapRoute(opts) {
   const raydium = await discoverRaydiumRoute(opts);
   if (raydium) return { ...raydium, provider: 'raydium' };
-  return discoverJupiterRoute(opts);
+  const jupiter = await discoverJupiterRoute(opts);
+  if (jupiter) console.log(`Swap route for ${opts.quoteMint}: Jupiter via ${jupiter.venues.join(', ') || 'available venues'}`);
+  return jupiter;
 }
 
 export async function probeRaydiumPriceStrict({

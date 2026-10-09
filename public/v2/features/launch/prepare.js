@@ -469,11 +469,16 @@ async function refreshLaunchChecks(now = Date.now()) {
   state.launchChecks.running = true;
   launchChecksInFlight = (async () => {
     await autoVerifyQuoteTokens();
-    if (!classicFundingEstimateStatus().matchesConfig) {
-      if (!await estimateClassicFunding({ quiet: true })) return false;
-    }
-    if (selectedLaunchWalletPublicKey()) return checkExecutionReadiness({ quiet: true });
-    return true;
+    const estimated = classicFundingEstimateStatus().matchesConfig
+      || await estimateClassicFunding({ quiet: true });
+    const fundingError = { error: state.launchChecks.error, errorCode: state.launchChecks.errorCode };
+    // Refresh finished token checks even while a price prevents an estimate.
+    // The next timed pass owns the estimate retry.
+    const checked = selectedLaunchWalletPublicKey()
+      ? await checkExecutionReadiness({ quiet: true, estimateFunding: false })
+      : true;
+    if (!estimated && fundingError.error) Object.assign(state.launchChecks, fundingError);
+    return estimated && checked;
   })();
   try {
     const ok = await launchChecksInFlight;
