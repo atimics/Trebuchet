@@ -64,7 +64,7 @@ async function verify(t, options = {}) {
   const checks = await verifyLockedPool({
     ...state,
     supplyRaw,
-    startingMarketCapLamports,
+    ...(options.omitMarketCap ? {} : { startingMarketCapLamports }),
     rangeMultiple,
     quoteMint: NATIVE_MINT,
   });
@@ -84,6 +84,18 @@ test('adopts a valid locked pool after buyers have traded tokens from its vault'
   assert.equal(checks.passed, true, 'the locked position proves the original supply remains committed');
 });
 
+test('recovers a legacy pool range from immutable on-chain bounds when the old journal has no price intent', async (t) => {
+  const { checks, poolState } = await verify(t, { soldTokens: supplyRaw / 10n, omitMarketCap: true });
+  const recoveredMcap = BigInt(checks.recoveredStartingMarketCapLamports);
+  const rebuiltRange = dammV2PriceRange({ supplyRaw, startingMarketCapLamports: recoveredMcap, rangeMultiple });
+
+  assert.ok(recoveredMcap > 0n);
+  assert.equal(rebuiltRange.sqrtMinPrice.toString(), poolState.sqrtMinPrice.toString());
+  assert.equal(rebuiltRange.sqrtMaxPrice.toString(), poolState.sqrtMaxPrice.toString());
+  assert.equal(checks.vaultHoldsSupply, false);
+  assert.equal(checks.passed, true);
+});
+
 test('rejects a position NFT that differs from the saved launch position', async (t) => {
   const { checks } = await verify(t, { wrongNft: true });
 
@@ -98,6 +110,13 @@ test('rejects a pool whose saved price range differs from the launch plan', asyn
   assert.equal(checks.passed, false);
 });
 
+test('legacy range recovery still rejects bounds with the wrong configured multiple', async (t) => {
+  const { checks } = await verify(t, { wrongRange: true, omitMarketCap: true });
+
+  assert.equal(checks.poolRangeMatchesPlan, false);
+  assert.equal(checks.passed, false);
+});
+
 test('rejects a position that does not retain the expected permanently locked liquidity', async (t) => {
   const { checks } = await verify(t, { lessLocked: true });
 
@@ -107,7 +126,7 @@ test('rejects a position that does not retain the expected permanently locked li
 
 test('requires the saved range and position NFT before verification', async () => {
   await assert.rejects(
-    verifyLockedPool({ connection: {}, pool: new PublicKey(NATIVE_MINT), position: new PublicKey(NATIVE_MINT), mint: new PublicKey(NATIVE_MINT), supplyRaw }),
-    /saved pool price range and position NFT/,
+    verifyLockedPool({ connection: {}, pool: new PublicKey(NATIVE_MINT), position: new PublicKey(NATIVE_MINT), mint: new PublicKey(NATIVE_MINT), supplyRaw, startingMarketCapLamports }),
+    /saved pool range multiple and position NFT/,
   );
 });

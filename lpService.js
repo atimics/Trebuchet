@@ -4361,8 +4361,13 @@ async function createMeteoraPoolForAllocation({
     marketcap: alloc.damm?.marketcap,
   });
   const mint = new PublicKey(tokenMint);
-  let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
-  const poolIntent = savedPoolIntent || {
+  const quotePositionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
+  const legacyPositionNft = quoteMint.toBase58() === WSOL_MINT
+    ? null
+    : Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
+  let positionNft = quotePositionNft;
+  if (legacyPositionNft && savedPoolIntent?.positionNft === legacyPositionNft.publicKey.toBase58()) positionNft = legacyPositionNft;
+  let poolIntent = savedPoolIntent || {
     tokenMint: mint.toBase58(),
     quoteMint: quoteMint.toBase58(),
     positionNft: positionNft.publicKey.toBase58(),
@@ -4372,7 +4377,7 @@ async function createMeteoraPoolForAllocation({
   };
   if (poolIntent.tokenMint !== mint.toBase58()
     || poolIntent.quoteMint !== quoteMint.toBase58()
-    || poolIntent.positionNft !== positionNft.publicKey.toBase58()
+    || ![quotePositionNft.publicKey.toBase58(), legacyPositionNft?.publicKey.toBase58()].includes(poolIntent.positionNft)
     || String(poolIntent.supplyRaw) !== params.poolRaw.toString()
     || Number(poolIntent.rangeMultiple) !== rangeMultiple
     || !/^\d+$/.test(String(poolIntent.startingMarketCapLamports))
@@ -4381,16 +4386,14 @@ async function createMeteoraPoolForAllocation({
   }
   // The first attempt records this intent before any pool transaction is sent.
   // A retry uses the same raw quote value even when the external quote price moved.
-  params.poolMcapLamports = BigInt(poolIntent.startingMarketCapLamports);
-  progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
+  if (savedPoolIntent) params.poolMcapLamports = BigInt(poolIntent.startingMarketCapLamports);
 
   let existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
   // A pair pool made with the original derivation (wallet and mint only) is this launch's too.
-  if (existing.poolExists && !existing.positionExists && quoteMint.toBase58() !== WSOL_MINT) {
-    const original = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint));
-    const found = await damm.findExistingPool({ connection, mint, positionNft: original.publicKey, quoteMint });
+  if (existing.poolExists && !existing.positionExists && legacyPositionNft) {
+    const found = await damm.findExistingPool({ connection, mint, positionNft: legacyPositionNft.publicKey, quoteMint });
     if (found.positionExists) {
-      positionNft = original;
+      positionNft = legacyPositionNft;
       existing = found;
     }
   }
@@ -4402,17 +4405,24 @@ async function createMeteoraPoolForAllocation({
       position: existing.position,
       mint,
       supplyRaw: params.poolRaw,
-      startingMarketCapLamports: params.poolMcapLamports,
+      startingMarketCapLamports: savedPoolIntent ? params.poolMcapLamports : null,
       rangeMultiple,
       positionNft: positionNft.publicKey,
       quoteMint,
     });
     if (!verification.passed) throw new Error('A Meteora pool for this token exists but is not the locked single-sided pool this launch makes.');
+    poolIntent = {
+      ...poolIntent,
+      positionNft: positionNft.publicKey.toBase58(),
+      startingMarketCapLamports: verification.recoveredStartingMarketCapLamports || params.poolMcapLamports.toString(),
+    };
+    progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
     created = { pool: existing.pool.toBase58(), position: existing.position.toBase58(), positionNft: positionNft.publicKey.toBase58(), signature: null, verification, adopted: true };
     progress({ stage: 'meteora_pool_adopted', allocationIndex: allocIdx, pool: created.pool });
   } else if (existing.poolExists) {
     throw new Error(`A Meteora ${quote.symbol || ''} pool for this token already exists and is not this launch's. Nothing was created.`);
   } else {
+    progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
     created = await damm.createLockedPool({
       connection,
       payer: ownerKeypair,

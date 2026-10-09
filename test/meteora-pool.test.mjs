@@ -29,7 +29,7 @@ test('the position key comes from the wallet and the mint, so a resume finds the
   assert.notDeepEqual(a, lp.meteoraPositionSeed(Keypair.generate().secretKey, 'MintA'));
 });
 
-function fakeDamm({ poolExists = false, positionExists = false, verified = true } = {}) {
+function fakeDamm({ poolExists = false, positionExists = false, verified = true, recoveredMarketCap = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -37,7 +37,10 @@ function fakeDamm({ poolExists = false, positionExists = false, verified = true 
       calls.push(['find', positionNft.toBase58()]);
       return { pool: new PublicKey(WSOL_MINT), position: Keypair.generate().publicKey, poolExists, positionExists };
     },
-    async verifyLockedPool(args) { calls.push(['verify', args]); return { passed: verified }; },
+    async verifyLockedPool(args) {
+      calls.push(['verify', args]);
+      return { passed: verified, recoveredStartingMarketCapLamports: recoveredMarketCap };
+    },
     async createLockedPool(args) {
       calls.push(['create', args.supplyRaw.toString(), args.startingMarketCapLamports.toString(), args.feeBps, args.rangeMultiple, args.positionNft.publicKey.toBase58()]);
       return { signature: 'sig-meteora', pool: 'PoolMeteora', position: 'PositionMeteora', positionNft: args.positionNft.publicKey.toBase58(), verification: { passed: true } };
@@ -111,6 +114,23 @@ test('recovery keeps the original pool range when the live quote price changes',
   } finally { lp.resetTestFactories(); }
 });
 
+test('legacy recovery persists the range reconstructed from the on-chain pool', async () => {
+  const legacyRangeMcap = '25000000';
+  const recovered = fakeDamm({ poolExists: true, positionExists: true, recoveredMarketCap: legacyRangeMcap });
+  lp.setDammServiceForTests(recovered);
+  try {
+    const result = await hooks.createMeteoraPoolForAllocation({
+      ...base,
+      startPrice: '0.000002', // The old journal has no price snapshot.
+      alloc: { venue: 'meteora-damm-v2', supplyPercent: 100, damm: { rangeMultiple: 100 } },
+      progress: () => {},
+    });
+    const verifyArgs = recovered.calls.find((call) => call[0] === 'verify')[1];
+    assert.equal(verifyArgs.startingMarketCapLamports, null);
+    assert.equal(result.damm.poolIntent.startingMarketCapLamports, legacyRangeMcap);
+  } finally { lp.resetTestFactories(); }
+});
+
 test('a resume adopts the pool it already made, and refuses one it did not make', async () => {
   const adopted = fakeDamm({ poolExists: true, positionExists: true });
   lp.setDammServiceForTests(adopted);
@@ -119,13 +139,7 @@ test('a resume adopts the pool it already made, and refuses one it did not make'
     assert.equal(result.damm.adopted, true);
     assert.ok(!adopted.calls.some((call) => call[0] === 'create'), 'nothing is created twice');
     const verifyArgs = adopted.calls.find((call) => call[0] === 'verify')[1];
-    assert.equal(verifyArgs.startingMarketCapLamports, lp.meteoraPoolParams({
-      tokenTotalSupply: base.tokenTotalSupply,
-      tokenDecimals: base.tokenDecimals,
-      supplyPercent: 100,
-      startPrice: base.startPrice,
-      quoteDecimals: base.quote.decimals,
-    }).poolMcapLamports);
+    assert.equal(verifyArgs.startingMarketCapLamports, null, 'legacy adoption reconstructs its original range from the pool');
     assert.equal(verifyArgs.rangeMultiple, 1000);
     assert.equal(verifyArgs.positionNft.toBase58(), adopted.calls[0][1]);
     lp.setDammServiceForTests(fakeDamm({ poolExists: true, positionExists: false }));

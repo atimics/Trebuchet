@@ -93,6 +93,21 @@ export function dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMu
   return { initSqrtPrice: bn(sqrtStart), sqrtMinPrice: bn(sqrtStart), sqrtMaxPrice: bn(sqrtEnd) };
 }
 
+/** Recover a compatible raw quote value from the immutable lower pool bound. */
+export function dammV2MarketCapFromSqrtMin({ supplyRaw, sqrtMinPrice, rangeMultiple }) {
+  const supply = BigInt(supplyRaw);
+  const sqrtMin = BigInt(sqrtMinPrice.toString());
+  if (supply <= 0n || sqrtMin <= 0n) throw new RangeError('pool range and supply must be positive');
+  const q128 = 1n << 128n;
+  const numerator = sqrtMin * sqrtMin * supply;
+  const startingMarketCapLamports = (numerator + q128 - 1n) / q128;
+  const recoveredRange = dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMultiple });
+  if (!recoveredRange.sqrtMinPrice.eq(new BN(sqrtMin.toString()))) {
+    throw new Error('The pool lower price bound cannot be reconstructed from its supply.');
+  }
+  return startingMarketCapLamports;
+}
+
 export function tokenProgramFor(mintAccountOwner) {
   return mintAccountOwner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 }
@@ -349,8 +364,8 @@ export async function verifyLockedPool({
   commitment = 'confirmed',
   quoteMint = NATIVE_MINT,
 }) {
-  if (startingMarketCapLamports == null || rangeMultiple == null || !positionNft) {
-    throw new Error('Read the saved pool price range and position NFT before verifying this pool.');
+  if (rangeMultiple == null || !positionNft) {
+    throw new Error('Read the saved pool range multiple and position NFT before verifying this pool.');
   }
   const positionNftKey = positionNft instanceof PublicKey ? positionNft : new PublicKey(positionNft);
   const cpAmm = new CpAmm(connection);
@@ -358,7 +373,11 @@ export async function verifyLockedPool({
   const positionState = await cpAmm.fetchPositionState(position);
   const programId = await mintOwnerProgram(connection, mint);
   const vaultA = await getAccount(connection, poolState.tokenAVault, commitment, programId);
-  const range = dammV2PriceRange({ supplyRaw, startingMarketCapLamports, rangeMultiple });
+  const recoveredFromPool = startingMarketCapLamports == null;
+  const effectiveMarketCap = recoveredFromPool
+    ? dammV2MarketCapFromSqrtMin({ supplyRaw, sqrtMinPrice: poolState.sqrtMinPrice, rangeMultiple })
+    : BigInt(startingMarketCapLamports);
+  const range = dammV2PriceRange({ supplyRaw, startingMarketCapLamports: effectiveMarketCap, rangeMultiple });
   const expectedLiquidity = cpAmm.preparePoolCreationSingleSide({
     tokenAAmount: bn(supplyRaw),
     minSqrtPrice: range.sqrtMinPrice,
@@ -374,6 +393,7 @@ export async function verifyLockedPool({
   const checks = {
     pool: pool.toBase58(),
     position: position.toBase58(),
+    recoveredStartingMarketCapLamports: recoveredFromPool ? effectiveMarketCap.toString() : null,
     tokenA: poolState.tokenAMint.toBase58(),
     tokenB: poolState.tokenBMint.toBase58(),
     isNewTokenSideA: poolState.tokenAMint.equals(mint),

@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { createLaunchJournalStore } from '../packages/core/src/launch-journal.js';
 import {
   v2TransferHasWalletEmptyFinalSweepEvidence as coreTransferWalletEmptyEvidence,
   v2TransferSweepErrorCount as coreTransferSweepErrorCount,
@@ -190,22 +192,53 @@ test('classic resume materializes recoverable Phase 1 pool events before retryin
   );
 });
 
-test('Meteora recovery saves and reuses the original pool intent', () => {
-  assert.match(
-    lpSrc,
-    /stage: 'meteora_pool_start',[\s\S]*?poolIntent\s*\}\);/,
-    'the launch must record the pool intent before searching for or creating the pool',
-  );
-  assert.match(
-    serverSrc,
-    /event\.stage === 'meteora_pool_start'[\s\S]*?meteoraPoolIntents:[\s\S]*?\[event\.allocationIndex\]: event\.poolIntent/,
-    'the launch journal must preserve the first attempt intent by allocation',
-  );
-  assert.match(
-    serverSrc,
-    /meteoraPoolIntents: poolPlan\.meteoraPoolIntents \|\| \{\}/,
-    'journal resume must pass the saved Meteora intent into the pool creator',
-  );
+test('Meteora recovery journal stores original per-allocation intent and preserves the pool plan', () => {
+  const configDir = mkdtempSync(path.join(tmpdir(), 'trebuchet-meteora-intent-'));
+  try {
+    const filePath = path.join(configDir, 'launchJournals.json');
+    const launchJournal = createLaunchJournalStore({ filePath });
+    const wallet = 'Wallet1111111111111111111111111111111111';
+    launchJournal.start({ walletPublicKey: wallet });
+    launchJournal.upsertForWallet(wallet, {
+      poolPlan: { tokenMint: 'Mint111', allocations: [{ venue: 'meteora-damm-v2' }] },
+    });
+
+    const recordStart = serverSrc.indexOf('function recordLpJournalProgress(');
+    const recordEnd = serverSrc.indexOf('\nfunction mergePriorResults(', recordStart);
+    assert.ok(recordStart >= 0 && recordEnd > recordStart, 'journal progress handler must be extractable');
+    const sandbox = {
+      launchJournal,
+      journalResultList: () => [],
+      applyLpEventToResults: () => false,
+    };
+    vm.runInNewContext(
+      `${serverSrc.slice(recordStart, recordEnd)}\nglobalThis.recordLpJournalProgress = recordLpJournalProgress;`,
+      sandbox,
+      { filename: 'server.js Meteora journal handler' },
+    );
+
+    const intent = {
+      tokenMint: 'Mint111',
+      quoteMint: 'So11111111111111111111111111111111111111112',
+      positionNft: 'Position111',
+      supplyRaw: '800000000000000000',
+      startingMarketCapLamports: '25000000',
+      rangeMultiple: 1000,
+    };
+    sandbox.recordLpJournalProgress(wallet, {
+      stage: 'meteora_pool_start',
+      allocationIndex: 0,
+      poolIntent: intent,
+    });
+
+    const reloadedJournal = createLaunchJournalStore({ filePath }).activeForWallet(wallet);
+    assert.equal(reloadedJournal.poolPlan.tokenMint, 'Mint111');
+    assert.deepEqual(reloadedJournal.poolPlan.allocations, [{ venue: 'meteora-damm-v2' }]);
+    assert.deepEqual(reloadedJournal.poolPlan.meteoraPoolIntents[0], intent);
+    assert.equal(reloadedJournal.events.at(-1).stage, 'meteora_pool_start');
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+  }
 });
 
 test('Phase 1 recovery materializer reconstructs opened slices and blocks duplicate pool ids', () => {
@@ -705,4 +738,3 @@ test('display price and launch price share one on-chain adapter definition', () 
   assert.match(epBody, /priceLiquidityUsd/, 'endpoint must surface depth');
   assert.match(epBody, /priceWarning = oc\.spreadError/, 'endpoint must surface a spread finding, not hide it');
 });
-
