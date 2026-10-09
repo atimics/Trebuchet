@@ -161,6 +161,7 @@ import { normalizeDistribution } from './lpDistribution.js';
 import {
   FALLBACK_FEE_TIERS,
   normalizeFeeTierList,
+  isDynamicFeeConfig,
 } from './lpFeeTiers.js';
 import {
   classifyToken2022Extensions,
