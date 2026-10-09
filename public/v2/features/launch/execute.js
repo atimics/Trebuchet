@@ -1,5 +1,9 @@
-async function checkExecutionReadiness({ retried = false } = {}) {
-  await autoVerifyQuoteTokens();
+async function checkExecutionReadiness({ retried = false, quiet = false } = {}) {
+  if (state.executionChecking) return false;
+  state.launchChecks = { ...state.launchChecks, active: true };
+  state.executionChecking = true;
+  const say = quiet ? () => {} : notify;
+  try { await autoVerifyQuoteTokens(); } catch { /* A later check will retry. */ }
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   state.executionChecking = true;
@@ -7,28 +11,32 @@ async function checkExecutionReadiness({ retried = false } = {}) {
 
   try {
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
-      state.executionReadiness = await state.apiClient.checkExecutionReadiness({
+      const readiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,
         config,
         fundingEstimate: currentClassicFundingEstimateForConfig(config),
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
+      if (state.realExecutionRunning || state.fullRunRunning || walletPublicKey !== selectedLaunchWalletPublicKey()
+          || classicFundingEstimateFingerprint(config) !== classicFundingEstimateFingerprint()) return false;
+      state.executionReadiness = readiness;
+      state.launchChecks.error = null;
       rememberLaunchProof(state.executionReadiness);
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
+      if (!retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
         state.executionChecking = false;
-        notify('The plan changed since the estimate: estimating again');
+        say('Updating the funding estimate');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
-        await estimateClassicFunding();
-        return checkExecutionReadiness({ retried: true });
+        if (!await estimateClassicFunding({ quiet })) return false;
+        return await checkExecutionReadiness({ retried: true, quiet });
       }
       renderAll();
-      notify(blockers.length
-        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+      say(blockers.length
+        ? `Launch needs attention: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
         : 'Launch ready');
-      return;
+      return true;
     }
 
     state.executionReadiness = {
@@ -53,9 +61,11 @@ async function checkExecutionReadiness({ retried = false } = {}) {
       ],
     };
     renderAll();
-    notify('Local API required for execution readiness');
+    say('Open the local app for launch checks');
   } catch (error) {
-    notify(error.message || 'Execution readiness check failed');
+    state.launchChecks.error = error.message || 'Waiting for launch checks';
+    say(`${state.launchChecks.error}. Trebuchet will check again automatically.`);
+    return false;
   } finally {
     state.executionChecking = false;
     renderAll();

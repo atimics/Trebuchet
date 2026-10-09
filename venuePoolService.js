@@ -9,15 +9,22 @@
 // lb_clmm LbPair, cp_amm Pool). Offsets include the 8-byte discriminator.
 // This module only reads: it never builds a transaction for these venues.
 
+import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
 
 export const VENUE_PROGRAMS = Object.freeze({
+  PUMP_SWAP: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
   ORCA_WHIRLPOOL: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
   METEORA_DLMM: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
   METEORA_DAMM_V2: 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',
 });
 
+const PUMP_POOL_DISCRIMINATOR = Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]);
 const VENUES = [
+  {
+    venue: 'pumpswap', programId: VENUE_PROGRAMS.PUMP_SWAP,
+    discriminator: PUMP_POOL_DISCRIMINATOR, mintA: 43, mintB: 75, decode: decodePumpSwapPool,
+  },
   {
     venue: 'orca-whirlpool',
     programId: VENUE_PROGRAMS.ORCA_WHIRLPOOL,
@@ -46,6 +53,17 @@ const VENUES = [
 
 const pubkeyAt = (data, offset) => new PublicKey(data.subarray(offset, offset + 32)).toBase58();
 const u128At = (data, offset) => data.readBigUInt64LE(offset) + (data.readBigUInt64LE(offset + 8) << 64n);
+
+// Pump's official IDL: pump-fun/pump-public-docs/idl/pump_amm.json.
+// A discriminator filter supports both original and extended Pool accounts.
+export function decodePumpSwapPool(data) {
+  if (data.length < 211 || !data.subarray(0, 8).equals(PUMP_POOL_DISCRIMINATOR)) return null;
+  // Boost pools use virtual reserves and need a separate curve reader.
+  if (data.length >= 261 && data.subarray(245, 261).some((byte) => byte !== 0)) return null;
+  return { kind: 'reserves', mintA: pubkeyAt(data, 43), mintB: pubkeyAt(data, 75),
+    vaultA: pubkeyAt(data, 139), vaultB: pubkeyAt(data, 171),
+    quoteFees: data.length >= 287 ? data.readBigUInt64LE(271) + data.readBigUInt64LE(279) : 0n };
+}
 
 // Orca Whirlpool: concentrated liquidity, price from sqrt_price (Q64.64).
 export function decodeWhirlpool(data) {
@@ -107,7 +125,7 @@ async function accountsByKey(connection, keys) {
 async function findVenuePools(connection, venue, first, second) {
   const accounts = await connection.getProgramAccounts(new PublicKey(venue.programId), {
     filters: [
-      { dataSize: venue.size },
+      ...(venue.size ? [{ dataSize: venue.size }] : [{ memcmp: { offset: 0, bytes: bs58.encode(venue.discriminator) } }]),
       { memcmp: { offset: venue.mintA, bytes: first } },
       { memcmp: { offset: venue.mintB, bytes: second } },
     ],
@@ -117,7 +135,7 @@ async function findVenuePools(connection, venue, first, second) {
     programId: venue.programId,
     venue: venue.venue,
     state: venue.decode(account.data),
-  }));
+  })).filter((pool) => pool.state);
 }
 
 /**
@@ -170,8 +188,18 @@ async function discoverVenuePools(connection, mint, anchor) {
 
 export async function fetchVenuePoolsByMints(connection, mint, anchor) {
   if (!connection || !mint || !anchor || mint === anchor) return [];
-  const pools = await discoverVenuePools(connection, mint, anchor);
-  if (!pools.length) return [];
+  const discovered = await discoverVenuePools(connection, mint, anchor);
+  if (!discovered.length) return [];
+  // Discovery caches identities. Prices and fee balances come from current state.
+  const current = await accountsByKey(connection, discovered.map((pool) => pool.id));
+  const pools = discovered.flatMap((pool) => {
+    const data = current.get(pool.id);
+    const venue = VENUES.find((item) => item.programId === pool.programId);
+    if (!data) return [];
+    const state = venue.decode(data);
+    if (!state || state.mintA !== pool.state.mintA || state.mintB !== pool.state.mintB) return [];
+    return [{ ...pool, state }];
+  });
 
   const extra = await accountsByKey(connection, [
     mint,
@@ -185,7 +213,8 @@ export async function fetchVenuePoolsByMints(connection, mint, anchor) {
     state: {
       ...pool.state,
       reserveA: tokenAmount(extra.get(pool.state.vaultA)),
-      reserveB: tokenAmount(extra.get(pool.state.vaultB)),
+      reserveB: tokenAmount(extra.get(pool.state.vaultB)) == null ? null
+        : tokenAmount(extra.get(pool.state.vaultB)) - (pool.state.quoteFees || 0n),
     },
   })).filter((pool) => pool.mintA.decimals != null && pool.mintB.decimals != null);
 }

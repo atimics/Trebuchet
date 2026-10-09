@@ -2040,7 +2040,7 @@ test('buildV2ExecutionReadiness blocks unverified custom quote tokens before fre
   assert.equal(readiness.status, 'blocked');
   assert.equal(readiness.nextEndpoint, null);
   assert.match(readiness.blockers.map((item) => item.id).join(','), /quote-token-safety-1-1/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /safety check/);
+  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /token check/);
   assert.equal(readiness.phases.find((phase) => phase.id === 'liquidity')?.state, 'blocked');
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-quote-safety')?.state, 'warn');
 });
@@ -2083,7 +2083,7 @@ test('buildV2ExecutionReadiness blocks custom quote tokens with hard safety fail
   assert.equal(readiness.status, 'blocked');
   assert.match(readiness.blockers.map((item) => item.id).join(','), /quote-token-safety-1-/);
   assert.match(readiness.blockers.map((item) => item.detail).join(' '), /freeze-authority risk/);
-  assert.match(readiness.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter has a route/);
+  assert.equal(readiness.blockers.filter((item) => item.id.startsWith('quote-token-safety')).length, 1);
   assert.equal(readiness.plan.guardrails.find((item) => item.id === 'classic-quote-safety')?.state, 'danger');
 });
 
@@ -2165,14 +2165,12 @@ test('a pair with no Raydium route but a Jupiter route does not block', () => {
   assert.doesNotMatch(readiness.warnings.map((item) => item.detail).join(' '), /route/);
 });
 
-test('no route anywhere blocks; an unverified route blocks fresh live until re-checked', () => {
-  const none = quoteRouteReadiness('none');
-  assert.equal(none.status, 'blocked');
-  assert.match(none.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter has a route/);
-  const unknown = quoteRouteReadiness('unknown');
-  assert.equal(unknown.status, 'blocked');
-  assert.match(unknown.blockers.map((item) => item.detail).join(' '), /route status is incomplete/);
-  assert.doesNotMatch(unknown.blockers.map((item) => item.detail).join(' '), /neither Raydium nor Jupiter/);
+test('route availability is a funding choice after token safety passes', () => {
+  for (const route of ['none', 'unknown']) {
+    const readiness = quoteRouteReadiness(route);
+    assert.equal(readiness.status, 'ready');
+    assert.equal(readiness.blockers.some((item) => item.id.startsWith('quote-token-safety')), false);
+  }
 });
 
 test('buildV2ExecutionReadiness allows the same quote across different fee tiers', () => {

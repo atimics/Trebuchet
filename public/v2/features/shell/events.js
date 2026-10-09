@@ -384,6 +384,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'review-pair-tokens') {
+    state.phaseSlide = { ...state.phaseSlide, liquidity: 'pairs' };
+    setLaunchWorkspace('liquidity');
+    return;
+  }
   if (action === 'add-sol-support') {
     addSolPoolSupport(actionTarget.dataset.sol);
     return;

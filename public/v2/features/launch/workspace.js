@@ -418,6 +418,9 @@ function renderLaunchWorkspace() {
 // A blocker the app can fix itself carries the fix; it is offered as one button beside it.
 function blockerFixHtml(item) {
   const fix = item?.fix;
+  if (String(item?.id || '').startsWith('quote-token-safety-')) {
+    return '<button class="secondary-button compact" type="button" data-action="review-pair-tokens">Review pair tokens</button>';
+  }
   if (fix?.action === 'add-sol-support' && Number(fix.sol) > 0) {
     return `<button class="secondary-button compact" type="button" data-action="add-sol-support" data-sol="${escapeHtml(String(fix.sol))}">Add ${escapeHtml(String(fix.sol))} SOL support</button>`;
   }
@@ -572,9 +575,10 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${action}
       ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
       ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
-        <span class="rail-label">Can't launch yet</span>
+        <span class="rail-label">Launch checks</span>
         <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}${blockerFixHtml(item)}</li>`).join('')}</ul>
-        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+        <p>${state.launchChecks?.running ? 'Checking balances, pair tokens, and funding…' : 'Checks refresh automatically.'}${state.launchChecks?.error ? ` ${escapeHtml(state.launchChecks.error)}` : ''}</p>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check now'}</button>
       </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
@@ -827,6 +831,10 @@ function setLaunchWorkspace(workspace, { focus = false } = {}) {
   }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
+  if (workspace === 'wallet') {
+    state.launchChecks = { ...state.launchChecks, active: true };
+    refreshLaunchChecks().catch(() => null);
+  }
   renderLaunchWorkspace();
   renderLaunchIdentity();
   // A different row opens at its top. Re-selecting the open row (e.g. Grind
@@ -1213,7 +1221,8 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     estimateMatches: fundingEstimateStatus.matchesConfig,
     estimatedSol: state.classicFundingEstimate?.totalSol,
   }) || { available: false, value: null, label: 'Estimate required' };
-  const estimatedCost = estimate.value;
+  const coverage = currentFundingTokenCoverage();
+  const estimatedCost = estimate.available ? Math.max(0, estimate.value - coverage.swapCreditSol) : estimate.value;
   const missingSol = estimate.available ? Math.max(0, estimatedCost - availableSol) : null;
   const routes = quoteAcquireRoutes();
   const quoteStatus = quoteAcquireStatus(config);
@@ -1234,7 +1243,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     ? ''
     : observedSpend.errorCount ? 'warn' : '';
 
-  const acquireLabel = state.quoteAcquire.job
+  const acquireLabel = quoteStatus.held ? 'In wallet' : state.quoteAcquire.job
     ? quoteStatus.stale
       ? 'Run again'
       : `${acquiredCount}/${routeTotal} acquired${failedCount ? ` / ${failedCount} failed` : ''}`
@@ -1245,7 +1254,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
           ? `${routes.length} route${routes.length === 1 ? '' : 's'} ready`
           : 'None')
         : 'Estimate first';
-  const acquireClass = failedCount || state.quoteAcquire.error
+  const acquireClass = quoteStatus.held ? '' : failedCount || state.quoteAcquire.error
     ? 'danger'
     : fundingEstimateStatus.stale || quoteStatus.stale
       ? 'warn'
@@ -1280,7 +1289,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     walletBalanceStale,
     walletBalanceCheckedAt: detailedBalance?.checkedAt || null,
     estimateAvailable: estimate.available,
-    estimateLabel: estimate.label,
+    estimateLabel: coverage.swapCreditSol > 0 ? 'After wallet tokens' : estimate.label,
     estimatedCost,
     fundedPercent: estimate.available && estimatedCost > 0 ? clampPercent((availableSol / estimatedCost) * 100) : 0,
     missingSol,

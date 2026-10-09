@@ -1,3 +1,5 @@
+import { fundingTokenCoverage } from './funding-balance.js';
+export { fundingTokenCoverage, formatFundingTokenAmount } from './funding-balance.js';
 import { sha256Hex } from './sha256.js';
 import {
   COST_BS_QUOTE_SOL,
@@ -485,40 +487,13 @@ function fundingBalanceIssues({
   }
 
   const issues = [];
-  const quoteRequirements = new Map();
-  const byQuote = estimate?.byQuote && typeof estimate.byQuote === 'object' ? estimate.byQuote : {};
-  Object.entries(byQuote).forEach(([mint, rawAmount]) => {
-    addRawRequirement(quoteRequirements, mint, rawAmount);
-  });
-
-  const autoPlan = Array.isArray(estimate?.autoSwapPlan) ? estimate.autoSwapPlan : [];
-  autoPlan.forEach((item) => {
-    addRawRequirement(quoteRequirements, item?.quoteMint, item?.minRaw || item?.targetRaw);
-  });
-
-  let acquiredAutoSwapCreditSol = 0;
-  const remainingAutoRawByMint = new Map();
-  autoPlan.forEach((item) => {
-    const mint = String(item?.quoteMint || '').trim();
-    const minRaw = parseRawTokenAmount(item?.minRaw || item?.targetRaw);
-    if (!mint || minRaw == null || minRaw <= 0n) return;
-    const available = remainingAutoRawByMint.has(mint)
-      ? remainingAutoRawByMint.get(mint)
-      : walletTokenRawAmount(walletBalance, mint);
-    if (available >= minRaw) {
-      remainingAutoRawByMint.set(mint, available - minRaw);
-      acquiredAutoSwapCreditSol += positiveFinite(item?.estSolSpend, 0);
-    } else {
-      remainingAutoRawByMint.set(mint, available);
-    }
-  });
-
+  const coverage = fundingTokenCoverage(estimate, walletBalance);
   const subtotalSol = positiveFinite(estimate?.subtotalSol, 0);
   const baseSolNeeded = subtotalSol > 0 ? subtotalSol : fundingEstimateTotalSol(estimate);
   const completedSol = completedFundingCreditSol({ estimate, tokenCreated });
   const creditedSwapSol = Math.max(
     positiveFinite(estimate?.solCreditedForCompletedSwaps, 0),
-    acquiredAutoSwapCreditSol,
+    coverage.swapCreditSol,
   );
   const estimateIncludesAirdrop = estimate?.includesAirdropExecutionCost === true;
   const airdropExecutionSol = estimateIncludesAirdrop
@@ -534,15 +509,13 @@ function fundingBalanceIssues({
     });
   }
 
-  [...quoteRequirements.entries()].forEach(([mint, requiredRaw], index) => {
-    const currentRaw = walletTokenRawAmount(walletBalance, mint);
-    if (currentRaw >= requiredRaw) return;
-    const symbol = fundingQuoteSymbol(estimate, mint);
+  coverage.rows.forEach((row, index) => {
+    if (row.funded) return;
     issues.push({
       id: `funding-quote-short-${index + 1}`,
       phase: 'funding',
-      title: `${symbol} funding short`,
-      detail: `Wallet has ${currentRaw.toString()} raw ${symbol}; Classic needs ${requiredRaw.toString()} raw for ${mint}.`,
+      title: `Add ${row.missing} ${row.symbol}`,
+      detail: `Wallet has ${row.held} ${row.symbol}; total needed: ${row.required}. Send ${row.missing} ${row.symbol} to the launch wallet or buy it in Funding. Balances refresh automatically.`,
     });
   });
 
@@ -873,7 +846,7 @@ function quoteTokenSafetyIssues(pools = []) {
         index,
         state: 'warn',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) has not run the Classic quote-token safety check yet.`,
+        detail: `Pool ${index + 1} (${label}) is waiting for its token check. Trebuchet checks it automatically during funding.`,
       });
       return;
     }
@@ -893,27 +866,12 @@ function quoteTokenSafetyIssues(pools = []) {
         detail: `Pool ${index + 1} (${label}) quote token has a freeze-authority risk that can strand launch-wallet balances.`,
       });
     }
-    // swapRoute is decided once, by the host's quote-token check (Raydium,
-    // then Jupiter). Only "no route anywhere" blocks; nothing re-derives it.
-    const swapRoute = String(info.swapRoute || 'unknown').toLowerCase();
-    if (swapRoute === 'none') {
-      issues.push({
-        index,
-        state: 'danger',
-        blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote token cannot be bought with SOL: neither Raydium nor Jupiter has a route.`,
-      });
-    }
-    if (
-      info.compatible == null
-      || info.freezeAuthorityBlock == null
-      || !['raydium', 'jupiter', 'none'].includes(swapRoute)
-    ) {
+    if (info.compatible == null || info.freezeAuthorityBlock == null) {
       issues.push({
         index,
         state: 'warn',
         blocksFreshLive: true,
-        detail: `Pool ${index + 1} (${label}) quote-token compatibility, authority, or route status is incomplete. Trebuchet re-checks pair tokens automatically when you estimate funding.`,
+        detail: `Checking Pool ${index + 1} (${label}) token rules and authorities. Trebuchet retries this check automatically.`,
       });
     }
     if (info.mintAuthorityWarning === true) {
@@ -2051,8 +2009,8 @@ export function buildV2ExecutionReadiness(input = {}, context = {}) {
     const issue = {
       id: 'funding-not-estimated',
       phase: 'funding',
-      title: 'Funding not estimated',
-      detail: 'Run the classic funding estimate before funding the launch wallet.',
+      title: 'Calculating funding',
+      detail: 'Trebuchet estimates the required SOL and pair tokens automatically.',
     };
     if (demoMode || !fundingGateRequired) {
       warnings.push(readinessIssue({ ...issue, severity: 'warning' }));

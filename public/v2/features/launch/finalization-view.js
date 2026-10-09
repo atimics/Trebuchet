@@ -471,8 +471,9 @@ function renderClassicBridge() {
   const ladderCount = topology.pools.reduce((sum, pool) => sum + Number(pool.ladder?.bandCount || pool.ladder?.bands?.length || 0), 0);
   const fundingEstimateStatus = classicFundingEstimateStatus(config);
   const estimate = fundingEstimateStatus.matchesConfig ? state.classicFundingEstimate : null;
-  const totalSol = Number(estimate?.totalSol || 0);
-  const routeCount = estimate?.autoSwapPlan?.length || 0;
+  const totalSol = Math.max(0, Number(estimate?.totalSol || 0) - currentFundingTokenCoverage().swapCreditSol);
+  const coverage = currentFundingTokenCoverage();
+  const routeCount = (estimate?.autoSwapPlan || []).filter((route) => !coverage.fresh || !coverage.rows.find((row) => row.mint === route.quoteMint)?.funded).length;
   const manualQuoteCount = quoteAcquireManualCount();
   const funding = fundingMeterSnapshot(config);
   const fundingBalanceKnown = state.demoActive || (funding.hasWalletBalance && funding.walletBalanceFresh);
@@ -596,9 +597,7 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: routeCount
-              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
-              : 'Send the pair tokens to the launch wallet, then check the balance.',
+            detail: pairTokenFundingDetail(),
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }

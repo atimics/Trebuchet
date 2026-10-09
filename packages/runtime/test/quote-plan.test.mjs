@@ -120,3 +120,17 @@ for (const reply of [new Response('x'.repeat(50)), new Response('{bad'), new Res
     await assert.rejects(api.quote({ provider: 'raydium' }), { code: 'QUOTE_UNAVAILABLE' });
   });
 }
+
+
+test('Jupiter uses the current quote endpoint and sends its key only to Jupiter', async () => {
+  const calls = [];
+  const api = createQuoteProvider({ jupiterApiKey: 'fixture-key', fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), headers: options.headers });
+    return new Response(JSON.stringify(String(url).includes('api.jup.ag') ? { routePlan: [{ swapInfo: { label: 'PumpSwap' } }] } : { success: true }));
+  } });
+  await api.quote({ provider: 'jupiter', inputMint: 'SOL', outputMint: 'TOKEN', inputAmountRaw: '50000', slippageBps: 100 });
+  await api.quote({ provider: 'raydium', inputMint: 'SOL', outputMint: 'TOKEN', inputAmountRaw: '50000', slippageBps: 100 });
+  assert.ok(calls[0].url.startsWith('https://api.jup.ag/swap/v1/quote?'));
+  assert.equal(calls[0].headers['x-api-key'], 'fixture-key');
+  assert.equal(calls[1].headers['x-api-key'], undefined);
+});

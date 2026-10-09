@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { fundingTokenCoverage } from '../packages/core/src/funding-balance.js';
 
 const source = readFileSync(new URL('../public/v2/app.js', import.meta.url), 'utf8');
 
@@ -29,9 +30,13 @@ function harness() {
     apiStatus: 'connected', demoActive: false, customPools: pools.slice(1),
     classicFundingEstimate: { autoSwapPlan: routes, byQuote: {} },
     quoteAcquire: { running: false, job: null, jobId: null },
+    manualPrefund: {},
   };
   const sandbox = {
     console, Intl, Date, state, calls, CLASSIC_QUOTE_VENUES: {},
+    TrebuchetCore: { fundingTokenCoverage },
+    currentClassicFundingEstimateForConfig: () => state.classicFundingEstimate,
+    manualPrefundBalanceSnapshotStatus: () => ({ fresh: Boolean(state.manualPrefund.balance), matchesWallet: true, balance: state.manualPrefund.balance }),
     currentLaunchConfig: () => ({ poolTopology: { pools } }),
     currentClassicModel: () => ({ pools }),
     classicFundingEstimateStatus: () => ({ hasEstimate: true, matchesConfig: true, stale: false }),
@@ -70,7 +75,7 @@ function harness() {
     executeAcquireQuoteTokens: async () => { calls.execute += 1; return { ...prepared, status: 'running' }; },
   };
   const names = [
-    'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
+    'currentFundingTokenCoverage', 'pairTokenFundingDetail', 'quoteAcquireBlockedPools', 'quoteAcquireSafetyCheck', 'quoteAcquireSuccessEvidence',
     'quoteAcquireResultMatchesRoute', 'quoteAcquireStatus', 'quoteAcquireBadge', 'quoteAcquireRouteLabel', 'quoteKey', 'sameQuoteIdentity',
     'findQuoteRouteForPool', 'findManualPrefundForPool', 'quotePoolGuidanceItems',
     'renderQuotePoolGuidance', 'renderQuoteAcquirePanel', 'reviewQuoteAcquireJob', 'startQuoteAcquire',
@@ -193,4 +198,14 @@ test('verified active pairs remain acquirable and inactive pairs leave no block'
   const markup = app.renderQuoteAcquirePanel();
   assert.match(markup, /data-action="start-quote-acquire" >Acquire/);
   assert.equal(app.quoteAcquireBadge().label, 'Ready');
+});
+
+test('wallet balances satisfy combined pair requirements without an acquire job', () => {
+  const app = harness();
+  app.state.manualPrefund.balance = { tokens: { UsdcMint: { amountRaw: '100', decimals: 6 }, Usd1Mint: { amountRaw: '100', decimals: 6 } } };
+  assert.equal(app.quoteAcquireStatus().ready, true);
+  assert.equal(app.quoteAcquireStatus().held, true);
+  app.state.classicFundingEstimate.autoSwapPlan.push({ ...app.state.classicFundingEstimate.autoSwapPlan[0], allocationIndex: 3 });
+  assert.equal(app.quoteAcquireStatus().ready, false, 'two pools share one token balance');
+  assert.match(app.pairTokenFundingDetail(), /Add 0.0001 USDC/);
 });

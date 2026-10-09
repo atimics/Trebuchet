@@ -103,13 +103,14 @@ function customQuoteInfoBadge(pool = {}) {
   if (!info) return { label: 'Unverified', className: 'warn', detail: 'Verify the quote token before executing this custom pool.' };
   if (info.compatible === false) return { label: 'Incompatible', className: 'danger', detail: 'Token is not compatible with the Raydium CLMM launch path.' };
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
-  // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
-  // there), so only "no route anywhere" blocks.
-  const swapRoute = info.swapRoute || 'unknown'; // decided once, by the server's check
-  if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
-  if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
-    return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
+  const swapRoute = info.swapRoute || 'unknown';
+  if (info.compatible == null || info.freezeAuthorityBlock == null) {
+    return { label: 'Checking safety', className: 'warn', detail: 'Trebuchet retries the token and authority checks automatically.' };
   }
+  if (swapRoute === 'none' || swapRoute === 'unknown') return {
+    label: swapRoute === 'none' ? 'Use wallet tokens' : 'Checking routes', className: 'warn',
+    detail: 'Funding counts tokens in the launch wallet and shows the amount to add. Swap routes refresh automatically.',
+  };
   if (info.mintAuthorityWarning === true) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }

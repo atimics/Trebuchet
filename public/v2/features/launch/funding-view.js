@@ -83,6 +83,24 @@ function quoteAcquireSuccessEvidence(routes, job) {
   return routes.every((route) => results.some((result) => quoteAcquireResultMatchesRoute(result, route)));
 }
 
+function currentFundingTokenCoverage() {
+  const snapshot = manualPrefundBalanceSnapshotStatus();
+  const fresh = snapshot.fresh && snapshot.matchesWallet && !state.manualPrefund.error;
+  const coverage = TrebuchetCore.fundingTokenCoverage(
+    currentClassicFundingEstimateForConfig() || {}, fresh ? snapshot.balance : null,
+  );
+  return { ...coverage, fresh };
+}
+
+function pairTokenFundingDetail() {
+  const coverage = currentFundingTokenCoverage();
+  return coverage.rows.filter((row) => !coverage.fresh || !row.funded).map((row) =>
+    coverage.fresh
+      ? `Add ${row.missing} ${row.symbol} (have ${row.held}; need ${row.required}).`
+      : `Need ${row.required} ${row.symbol}. Checking the wallet balance.`
+  ).join(' ') + ' Balances refresh automatically.';
+}
+
 function quoteAcquireStatus(config = currentLaunchConfig()) {
   const routes = quoteAcquireRoutes();
   const progress = quoteAcquireProgress();
@@ -96,13 +114,15 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
   ).trim();
   const stale = Boolean(routes.length && hasJob && (!actualFingerprint || actualFingerprint !== expectedFingerprint));
   const successEvidence = quoteAcquireSuccessEvidence(routes, job);
-  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || Boolean(
+  const coverage = currentFundingTokenCoverage();
+  const held = routes.length > 0 && coverage.fresh && routes.every((route) => coverage.rows.find((row) => row.mint === route.quoteMint)?.funded);
+  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || held || (!coverage.fresh && Boolean(
     job?.status === 'done'
     && !stale
     && successEvidence
     && Number(progress.completed || 0) >= Number(progress.total || routes.length)
     && Number(progress.failed || 0) === 0
-  ));
+  )));
   return {
     routes,
     progress,
@@ -110,6 +130,7 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     actualFingerprint,
     stale,
     successEvidence,
+    held,
     ready,
   };
 }
@@ -228,7 +249,7 @@ function manualPrefundStatus(item) {
   const requiredRaw = parseRawTokenAmount(item.rawAmount);
   const currentRaw = parseRawTokenAmount(token?.amountRaw ?? '0') ?? 0n;
   const need = formatManualPrefundAmount(item.amount)
-    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), token?.decimals))
+    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), item.decimals ?? token?.decimals))
     || 'unknown';
   const have = formatManualPrefundBalance(token);
 
@@ -241,7 +262,7 @@ function manualPrefundStatus(item) {
     return { label: 'Funded', className: '', detail: `Wallet has ${have}; needs ${need}.` };
   }
   const shortRaw = requiredRaw - currentRaw;
-  const short = formatRawTokenAmount(shortRaw.toString(), token?.decimals) || `${shortRaw.toString()} raw`;
+  const short = formatRawTokenAmount(shortRaw.toString(), item.decimals ?? token?.decimals) || `${shortRaw.toString()} raw`;
   return { label: 'Short', className: 'danger', detail: `Wallet has ${have}; needs ${need}. Short ${short}.` };
 }
 
@@ -294,6 +315,7 @@ function quoteManualPrefundItems() {
       rawAmount: byQuote[mint] == null ? null : String(byQuote[mint]),
       symbol,
       amount: amount > 0 ? amount : null,
+      decimals: rows.find((row) => Number.isInteger(row.decimals))?.decimals,
       rows,
     };
   });
@@ -331,6 +353,7 @@ function quoteAcquireBadge() {
     if (failed) return { label: `${failed} failed`, className: 'danger' };
     return status.ready ? { label: 'Done', className: '' } : { label: 'Verify', className: 'warn' };
   }
+  if (status.held) return { label: 'In wallet', className: '' };
   if (quoteAcquireRoutes().length > 0) return { label: 'Ready', className: '' };
   if (quoteAcquireManualCount() > 0) return { label: 'Manual', className: 'warn' };
   return { label: 'None', className: '' };

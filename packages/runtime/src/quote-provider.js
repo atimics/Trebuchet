@@ -1,13 +1,13 @@
 const fail = (message) => Object.assign(new Error(message), { code: 'QUOTE_UNAVAILABLE' });
-const endpoints = Object.freeze({ raydium: 'https://transaction-v1.raydium.io', jupiter: 'https://lite-api.jup.ag/swap/v1' });
+const endpoints = Object.freeze({ raydium: 'https://transaction-v1.raydium.io', jupiter: 'https://api.jup.ag/swap/v1' });
 
 // Providers return public quotes and unsigned messages. Spending belongs to
 // the reviewed acquisition plan and its transaction engine.
-export function createQuoteProvider({ fetchImpl = fetch, timeoutMs = 15000, maxResponseBytes = 1024 * 1024 } = {}) {
+export function createQuoteProvider({ fetchImpl = fetch, timeoutMs = 15000, maxResponseBytes = 1024 * 1024, jupiterApiKey = process.env.JUPITER_API_KEY } = {}) {
   const json = async (url, body) => {
     try {
       const response = await fetchImpl(url, { method: body ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-        headers: { accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        headers: { accept: 'application/json', ...(new URL(url).hostname === 'api.jup.ag' && jupiterApiKey ? { 'x-api-key': jupiterApiKey } : {}), ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
       if (!response.ok) throw fail(`Quote service returned HTTP ${response.status}`);
       const chunks = []; let length = 0;
       for await (const chunk of response.body) {

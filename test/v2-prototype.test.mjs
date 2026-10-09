@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import * as core from '../packages/core/src/browser.js';
 
 import { launchPlanConfigFingerprint as serverLaunchPlanConfigFingerprint } from '../v2LaunchPlan.js';
 
@@ -1731,6 +1732,7 @@ function loadQuoteAcquireHarness() {
       fingerprint: null,
     },
     selectedWalletPublicKey: 'Wallet111',
+    manualPrefund: {},
     currentConfig: {
       token: { supply: '1000000', decimals: 9 },
       poolTopology: {
@@ -1747,6 +1749,8 @@ function loadQuoteAcquireHarness() {
     BigInt,
     state: harnessState,
     currentLaunchConfig: () => harnessState.currentConfig,
+    WALLET_BALANCE_FRESH_MS: 60000,
+    TrebuchetCore: core,
     customQuoteInfoBadge: () => ({ label: 'Verified', className: '' }),
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey,
     clampPercent: (value) => Math.max(0, Math.min(100, Number(value) || 0)),
@@ -1804,6 +1808,7 @@ function loadFundingMeterHarness() {
     },
     selectedLaunchWalletPublicKey: () => harnessState.selectedWalletPublicKey,
     classicFundingEstimateStatus: () => ({ matchesConfig: true, stale: false, hasEstimate: true }),
+    currentFundingTokenCoverage: () => ({ swapCreditSol: 0, rows: [], fresh: false }),
     quoteAcquireRoutes: () => [],
     quoteAcquireStatus: () => ({ ready: true, stale: false, progress: { total: 0, completed: 0, failed: 0 } }),
     quoteManualPrefundItems: () => [],

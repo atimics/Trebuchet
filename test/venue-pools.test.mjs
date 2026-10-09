@@ -7,6 +7,9 @@ import { PublicKey } from '@solana/web3.js';
 import {
   VENUE_PROGRAMS,
   decodeWhirlpool,
+  decodePumpSwapPool,
+  fetchVenuePoolsByMints,
+  clearPoolDiscoveryCache,
   decodeDlmmPair,
   decodeDammV2Pool,
 } from '../venuePoolService.js';
@@ -128,4 +131,51 @@ test('a SOL-paired venue pool is skipped when SOL has no USD price', async () =>
     state: { kind: 'bin', activeId: 0, binStep: 10, reserveA: 1n, reserveB: 1n },
   });
   assert.equal(await evaluatePool(pool, { mint: TOKEN, solUsd: null }), null);
+});
+
+function pumpData() {
+  const data = Buffer.alloc(287);
+  Buffer.from([241, 154, 109, 4, 17, 177, 109, 188]).copy(data);
+  putKey(data, 43, TOKEN); putKey(data, 75, WSOL_MINT);
+  putKey(data, 139, VAULT_A); putKey(data, 171, VAULT_B);
+  return data;
+}
+
+test('PumpSwap prices standard pools from vault reserves in either direction', async () => {
+  const state = { ...decodePumpSwapPool(pumpData()), reserveA: 1000000000n, reserveB: 2000000000n };
+  const pool = { id: TOKEN, programId: VENUE_PROGRAMS.PUMP_SWAP, venue: 'pumpswap',
+    mintA: { address: TOKEN, decimals: 6 }, mintB: { address: WSOL_MINT, decimals: 9 }, state };
+  const result = await evaluatePool(pool, { mint: TOKEN, solUsd: new Decimal(100) });
+  assert.equal(result.priceUsd.toString(), '0.2'); assert.equal(result.liquidityUsd.toString(), '400');
+  assert.equal(result.inRange, true);
+  const reverse = await evaluatePool({ ...pool, mintA: pool.mintB, mintB: pool.mintA,
+    state: { ...state, reserveA: state.reserveB, reserveB: state.reserveA } }, { mint: TOKEN, solUsd: new Decimal(100) });
+  assert.equal(reverse.priceUsd.toString(), '0.2');
+  assert.equal(decodePumpSwapPool(Buffer.alloc(287)), null);
+  const boost = pumpData(); boost[245] = 1;
+  assert.equal(decodePumpSwapPool(boost), null, 'virtual reserve pools need their own curve');
+});
+
+test('cached discovery reads current pool state and current fee balances', async () => {
+  clearPoolDiscoveryCache();
+  const data = pumpData(); let scans = 0;
+  const mint = (decimals) => { const b = Buffer.alloc(82); b[44] = decimals; return b; };
+  const vault = (amount) => { const b = Buffer.alloc(165); b.writeBigUInt64LE(amount, 64); return b; };
+  const poolKey = new PublicKey('11111111111111111111111111111111');
+  const accountData = new Map([[poolKey.toBase58(), data], [TOKEN, mint(6)], [WSOL_MINT, mint(9)],
+    [VAULT_A, vault(1000000000n)], [VAULT_B, vault(2000000000n)]]);
+  const connection = { rpcEndpoint: 'pump-fixture',
+    getProgramAccounts: async (program, opts) => {
+      scans++;
+      return program.toBase58() === VENUE_PROGRAMS.PUMP_SWAP && opts.filters[1].memcmp.bytes === TOKEN
+        ? [{ pubkey: poolKey, account: { data: Buffer.from(data) } }] : [];
+    },
+    getMultipleAccountsInfo: async (keys) => keys.map((key) => ({ data: accountData.get(key.toBase58()) })),
+  };
+  const first = await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT);
+  assert.equal(first[0].state.reserveB, 2000000000n);
+  data.writeBigUInt64LE(100000000n, 271);
+  const second = await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT);
+  assert.equal(second[0].state.reserveB, 1900000000n);
+  assert.equal(scans, 8, 'current state reuses discovered pool addresses');
 });

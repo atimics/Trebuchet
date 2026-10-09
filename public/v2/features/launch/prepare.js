@@ -281,11 +281,12 @@ async function runVanityGrind(job) {
 // queuing more RPC-heavy estimates behind it.
 let fundingEstimateInFlight = null;
 
-function estimateClassicFunding() {
+function estimateClassicFunding({ quiet = false } = {}) {
+  state.launchChecks = { ...state.launchChecks, active: true };
   if (fundingEstimateInFlight) return fundingEstimateInFlight;
   state.fundingEstimating = true;
   renderAll();
-  fundingEstimateInFlight = runClassicFundingEstimate().finally(() => {
+  fundingEstimateInFlight = runClassicFundingEstimate({ quiet }).finally(() => {
     fundingEstimateInFlight = null;
     state.fundingEstimating = false;
     renderAll();
@@ -293,25 +294,27 @@ function estimateClassicFunding() {
   return fundingEstimateInFlight;
 }
 
-async function runClassicFundingEstimate() {
+async function runClassicFundingEstimate({ quiet = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const fundingRequest = classicFundingEstimateRequest(config);
   if (state.apiStatus === 'connected' && state.apiClient?.estimateClassicFunding) {
     try {
-      state.classicFundingEstimate = stampClassicFundingEstimate(
-        await state.apiClient.estimateClassicFunding(fundingRequest),
-        config,
-      );
+      const result = await state.apiClient.estimateClassicFunding(fundingRequest);
+      if (classicFundingEstimateFingerprint(config) !== classicFundingEstimateFingerprint()) return false;
+      state.classicFundingEstimate = stampClassicFundingEstimate(result, config);
       resetQuoteAcquireState();
       resetManualPrefundState();
       renderAll();
       refreshManualPrefundBalance({ quiet: true }).catch(() => null);
-      notify(`Funding estimate: ${Number(state.classicFundingEstimate.totalSol || 0).toFixed(3)} SOL`);
-      return;
+      state.launchChecks.error = null;
+      if (!quiet) notify(`Funding estimate: ${Number(state.classicFundingEstimate.totalSol || 0).toFixed(3)} SOL`);
+      return true;
     } catch (error) {
-      notify(error.message || 'Funding estimate failed');
-      return;
+      state.launchChecks.error = error.message || 'Waiting for the funding service';
+      state.launchChecks.nextAt = Date.now() + 15000;
+      if (!quiet) notify(`${state.launchChecks.error}. Trebuchet will check again automatically.`);
+      return false;
     }
   }
   notify('Funding estimates require the Trebuchet desktop app');
@@ -330,7 +333,9 @@ function pairTokensNeedingCheck(now = Date.now()) {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading || record.info) return false;
+    if (record.loading) return false;
+    if (record.info && record.info.compatible != null && record.info.freezeAuthorityBlock != null
+        && ['raydium', 'jupiter'].includes(record.info.swapRoute) && !record.info.priceWarning) return false;
     const failedAt = Date.parse(record.checkedAt || '');
     return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
@@ -366,10 +371,10 @@ function renderPairTokenChecks() {
   const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
   const viaJupiter = rows.filter((row) => row.route === 'jupiter').length;
   const summary = problems.length
-    ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
+    ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} need attention`
     : checking
       ? 'Checking pair tokens…'
-      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+      : `${rows.length} pair token${rows.length === 1 ? '' : 's'} checked${viaJupiter ? ` (${viaJupiter} via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
@@ -384,6 +389,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     say('Custom pool is unavailable');
     return null;
   }
+  const previousFundingFingerprint = classicFundingEstimateFingerprint();
   const query = customQuoteLookupValue(pool);
   const symbol = String(pool.quoteSymbol || '').trim().toUpperCase();
   if (!query || (!pool.quoteMint && !KNOWN_SAFE_QUOTE_SYMBOLS.has(symbol))) {
@@ -419,7 +425,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       error: null,
       checkedAt: new Date().toISOString(),
     };
-    invalidateClassicOutputs();
+    if (previousFundingFingerprint !== classicFundingEstimateFingerprint()) invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
@@ -442,3 +448,35 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
 // Return wallet. Launch assets only go to a proven wallet: the funder of the
 // launch wallet (blank = funder), or a wallet that signed a Trebuchet
 // challenge in the browser. Addresses are never typed in.
+
+// Read-only recovery starts when the user enters funding or asks for readiness.
+// One request runs at a time; outages back off to a one-minute interval.
+let launchChecksInFlight = null;
+async function refreshLaunchChecks(now = Date.now()) {
+  if (!state.launchChecks?.active || launchChecksInFlight || state.executionChecking || state.fundingEstimating
+      || state.apiStatus !== 'connected' || state.demoActive || state.quoteAcquire.running
+      || state.realExecutionRunning || state.fullRunRunning || launchTokenExists()
+      || (typeof document !== 'undefined' && document.hidden)
+      || now < (state.launchChecks.nextAt || 0)) return;
+  state.launchChecks.running = true;
+  launchChecksInFlight = (async () => {
+    await autoVerifyQuoteTokens();
+    if (!classicFundingEstimateStatus().matchesConfig) {
+      if (!await estimateClassicFunding({ quiet: true })) return false;
+    }
+    if (selectedLaunchWalletPublicKey()) return checkExecutionReadiness({ quiet: true });
+    return true;
+  })();
+  try {
+    const ok = await launchChecksInFlight;
+    state.launchChecks.failures = ok ? 0 : (state.launchChecks.failures || 0) + 1;
+  } catch (error) {
+    state.launchChecks.error = error.message || 'Waiting for launch checks';
+    state.launchChecks.failures = (state.launchChecks.failures || 0) + 1;
+  } finally {
+    state.launchChecks.nextAt = Date.now() + Math.min(60000, 15000 * 2 ** Math.min(2, state.launchChecks.failures || 0));
+    state.launchChecks.running = false;
+    launchChecksInFlight = null;
+    renderClassicBridge();
+  }
+}

@@ -4538,13 +4538,14 @@ function customQuoteInfoBadge(pool = {}) {
   if (!info) return { label: 'Unverified', className: 'warn', detail: 'Verify the quote token before executing this custom pool.' };
   if (info.compatible === false) return { label: 'Incompatible', className: 'danger', detail: 'Token is not compatible with the Raydium CLMM launch path.' };
   if (info.freezeAuthorityBlock === true) return { label: 'Freeze block', className: 'danger', detail: 'Quote token freeze authority can strand launch-wallet balances.' };
-  // The auto-buy tries Raydium, then Jupiter (PumpSwap-only tokens route
-  // there), so only "no route anywhere" blocks.
-  const swapRoute = info.swapRoute || 'unknown'; // decided once, by the server's check
-  if (swapRoute === 'none') return { label: 'No route', className: 'danger', detail: 'Neither Raydium nor Jupiter can swap SOL into this token, so it cannot be auto-bought.' };
-  if (info.compatible == null || swapRoute === 'unknown' || info.freezeAuthorityBlock == null) {
-    return { label: 'Verify warning', className: 'warn', detail: 'Metadata resolved, but route or authority safety could not be fully verified.' };
+  const swapRoute = info.swapRoute || 'unknown';
+  if (info.compatible == null || info.freezeAuthorityBlock == null) {
+    return { label: 'Checking safety', className: 'warn', detail: 'Trebuchet retries the token and authority checks automatically.' };
   }
+  if (swapRoute === 'none' || swapRoute === 'unknown') return {
+    label: swapRoute === 'none' ? 'Use wallet tokens' : 'Checking routes', className: 'warn',
+    detail: 'Funding counts tokens in the launch wallet and shows the amount to add. Swap routes refresh automatically.',
+  };
   if (info.mintAuthorityWarning === true) {
     return { label: 'Mint warning', className: 'warn', detail: 'Quote token mint authority is still active; supply can be inflated.' };
   }
@@ -6016,6 +6017,9 @@ function renderLaunchWorkspace() {
 // A blocker the app can fix itself carries the fix; it is offered as one button beside it.
 function blockerFixHtml(item) {
   const fix = item?.fix;
+  if (String(item?.id || '').startsWith('quote-token-safety-')) {
+    return '<button class="secondary-button compact" type="button" data-action="review-pair-tokens">Review pair tokens</button>';
+  }
   if (fix?.action === 'add-sol-support' && Number(fix.sol) > 0) {
     return `<button class="secondary-button compact" type="button" data-action="add-sol-support" data-sol="${escapeHtml(String(fix.sol))}">Add ${escapeHtml(String(fix.sol))} SOL support</button>`;
   }
@@ -6170,9 +6174,10 @@ function renderLaunchNextRail(facts, next, workspace) {
       ${action}
       ${launchReady && !practice ? `<p class="rail-warn">${resuming ? 'Resume continues the launch on-chain.' : 'Launch cannot be undone.'}</p>` : ''}
       ${blockers.length && !beforePlan && !busy ? `<div class="rail-blockers" role="status">
-        <span class="rail-label">Can't launch yet</span>
+        <span class="rail-label">Launch checks</span>
         <ul>${blockers.map((item) => `<li><strong>${escapeHtml(item.title || 'Blocked')}</strong>${item.detail ? `<span>${escapeHtml(item.detail)}</span>` : ''}${blockerFixHtml(item)}</li>`).join('')}</ul>
-        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check again'}</button>
+        <p>${state.launchChecks?.running ? 'Checking balances, pair tokens, and funding…' : 'Checks refresh automatically.'}${state.launchChecks?.error ? ` ${escapeHtml(state.launchChecks.error)}` : ''}</p>
+        <button class="rail-link" type="button" data-action="check-readiness" ${state.executionChecking ? 'disabled' : ''}>${state.executionChecking ? 'Checking…' : 'Check now'}</button>
       </div>` : ''}
     </section>
     ${walletBlock}${fundingBlock}${positionsBlock}`;
@@ -6425,6 +6430,10 @@ function setLaunchWorkspace(workspace, { focus = false } = {}) {
   }
   const changed = state.launchWorkspace !== workspace;
   state.launchWorkspace = workspace;
+  if (workspace === 'wallet') {
+    state.launchChecks = { ...state.launchChecks, active: true };
+    refreshLaunchChecks().catch(() => null);
+  }
   renderLaunchWorkspace();
   renderLaunchIdentity();
   // A different row opens at its top. Re-selecting the open row (e.g. Grind
@@ -6811,7 +6820,8 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     estimateMatches: fundingEstimateStatus.matchesConfig,
     estimatedSol: state.classicFundingEstimate?.totalSol,
   }) || { available: false, value: null, label: 'Estimate required' };
-  const estimatedCost = estimate.value;
+  const coverage = currentFundingTokenCoverage();
+  const estimatedCost = estimate.available ? Math.max(0, estimate.value - coverage.swapCreditSol) : estimate.value;
   const missingSol = estimate.available ? Math.max(0, estimatedCost - availableSol) : null;
   const routes = quoteAcquireRoutes();
   const quoteStatus = quoteAcquireStatus(config);
@@ -6832,7 +6842,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     ? ''
     : observedSpend.errorCount ? 'warn' : '';
 
-  const acquireLabel = state.quoteAcquire.job
+  const acquireLabel = quoteStatus.held ? 'In wallet' : state.quoteAcquire.job
     ? quoteStatus.stale
       ? 'Run again'
       : `${acquiredCount}/${routeTotal} acquired${failedCount ? ` / ${failedCount} failed` : ''}`
@@ -6843,7 +6853,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
           ? `${routes.length} route${routes.length === 1 ? '' : 's'} ready`
           : 'None')
         : 'Estimate first';
-  const acquireClass = failedCount || state.quoteAcquire.error
+  const acquireClass = quoteStatus.held ? '' : failedCount || state.quoteAcquire.error
     ? 'danger'
     : fundingEstimateStatus.stale || quoteStatus.stale
       ? 'warn'
@@ -6878,7 +6888,7 @@ function fundingMeterSnapshot(config = currentLaunchConfig()) {
     walletBalanceStale,
     walletBalanceCheckedAt: detailedBalance?.checkedAt || null,
     estimateAvailable: estimate.available,
-    estimateLabel: estimate.label,
+    estimateLabel: coverage.swapCreditSol > 0 ? 'After wallet tokens' : estimate.label,
     estimatedCost,
     fundedPercent: estimate.available && estimatedCost > 0 ? clampPercent((availableSol / estimatedCost) * 100) : 0,
     missingSol,
@@ -7722,7 +7732,7 @@ function renderCustomQuoteInfoPanel(pool) {
     ['Symbol', info.symbol || pool.quoteSymbol || '-'],
     ['Decimals', info.decimals ?? '-'],
     ['Price', info.priceUsd ? `$${Number(info.priceUsd).toPrecision(6)}` : '-'],
-    ['Route', { raydium: 'Raydium', jupiter: 'Jupiter', none: 'none' }[info.swapRoute] || 'unknown'],
+    ['Route', info.swapRoute === 'jupiter' && info.swapVenues?.length ? `Jupiter · ${info.swapVenues.join(', ')}` : { raydium: 'Raydium', jupiter: 'Jupiter', none: 'Wallet tokens' }[info.swapRoute] || 'Checking'],
     ['Program', info.isToken2022 ? 'Token-2022' : 'SPL'],
     ['Authorities', info.freezeAuthorityBlock === true ? 'freeze risk' : info.mintAuthorityWarning === true ? 'mint warning' : info.freezeAuthorityBlock == null ? 'unknown' : 'safe'],
   ] : [];
@@ -7732,6 +7742,7 @@ function renderCustomQuoteInfoPanel(pool) {
         <span class="risk-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
         <small>${escapeHtml(badge.detail)}</small>
       </div>
+      ${info?.priceWarning ? `<p role="status">${escapeHtml(info.priceWarning)}</p>` : ''}
       ${facts.length ? `<div class="quote-info-facts">
         ${facts.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join('')}
       </div>` : ''}
@@ -13051,6 +13062,24 @@ function quoteAcquireSuccessEvidence(routes, job) {
   return routes.every((route) => results.some((result) => quoteAcquireResultMatchesRoute(result, route)));
 }
 
+function currentFundingTokenCoverage() {
+  const snapshot = manualPrefundBalanceSnapshotStatus();
+  const fresh = snapshot.fresh && snapshot.matchesWallet && !state.manualPrefund.error;
+  const coverage = TrebuchetCore.fundingTokenCoverage(
+    currentClassicFundingEstimateForConfig() || {}, fresh ? snapshot.balance : null,
+  );
+  return { ...coverage, fresh };
+}
+
+function pairTokenFundingDetail() {
+  const coverage = currentFundingTokenCoverage();
+  return coverage.rows.filter((row) => !coverage.fresh || !row.funded).map((row) =>
+    coverage.fresh
+      ? `Add ${row.missing} ${row.symbol} (have ${row.held}; need ${row.required}).`
+      : `Need ${row.required} ${row.symbol}. Checking the wallet balance.`
+  ).join(' ') + ' Balances refresh automatically.';
+}
+
 function quoteAcquireStatus(config = currentLaunchConfig()) {
   const routes = quoteAcquireRoutes();
   const progress = quoteAcquireProgress();
@@ -13064,13 +13093,15 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
   ).trim();
   const stale = Boolean(routes.length && hasJob && (!actualFingerprint || actualFingerprint !== expectedFingerprint));
   const successEvidence = quoteAcquireSuccessEvidence(routes, job);
-  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || Boolean(
+  const coverage = currentFundingTokenCoverage();
+  const held = routes.length > 0 && coverage.fresh && routes.every((route) => coverage.rows.find((row) => row.mint === route.quoteMint)?.funded);
+  const ready = quoteAcquireBlockedPools().length === 0 && (!routes.length || held || (!coverage.fresh && Boolean(
     job?.status === 'done'
     && !stale
     && successEvidence
     && Number(progress.completed || 0) >= Number(progress.total || routes.length)
     && Number(progress.failed || 0) === 0
-  ));
+  )));
   return {
     routes,
     progress,
@@ -13078,6 +13109,7 @@ function quoteAcquireStatus(config = currentLaunchConfig()) {
     actualFingerprint,
     stale,
     successEvidence,
+    held,
     ready,
   };
 }
@@ -13196,7 +13228,7 @@ function manualPrefundStatus(item) {
   const requiredRaw = parseRawTokenAmount(item.rawAmount);
   const currentRaw = parseRawTokenAmount(token?.amountRaw ?? '0') ?? 0n;
   const need = formatManualPrefundAmount(item.amount)
-    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), token?.decimals))
+    || (requiredRaw == null ? item.rawAmount : formatRawTokenAmount(requiredRaw.toString(), item.decimals ?? token?.decimals))
     || 'unknown';
   const have = formatManualPrefundBalance(token);
 
@@ -13209,7 +13241,7 @@ function manualPrefundStatus(item) {
     return { label: 'Funded', className: '', detail: `Wallet has ${have}; needs ${need}.` };
   }
   const shortRaw = requiredRaw - currentRaw;
-  const short = formatRawTokenAmount(shortRaw.toString(), token?.decimals) || `${shortRaw.toString()} raw`;
+  const short = formatRawTokenAmount(shortRaw.toString(), item.decimals ?? token?.decimals) || `${shortRaw.toString()} raw`;
   return { label: 'Short', className: 'danger', detail: `Wallet has ${have}; needs ${need}. Short ${short}.` };
 }
 
@@ -13262,6 +13294,7 @@ function quoteManualPrefundItems() {
       rawAmount: byQuote[mint] == null ? null : String(byQuote[mint]),
       symbol,
       amount: amount > 0 ? amount : null,
+      decimals: rows.find((row) => Number.isInteger(row.decimals))?.decimals,
       rows,
     };
   });
@@ -13299,6 +13332,7 @@ function quoteAcquireBadge() {
     if (failed) return { label: `${failed} failed`, className: 'danger' };
     return status.ready ? { label: 'Done', className: '' } : { label: 'Verify', className: 'warn' };
   }
+  if (status.held) return { label: 'In wallet', className: '' };
   if (quoteAcquireRoutes().length > 0) return { label: 'Ready', className: '' };
   if (quoteAcquireManualCount() > 0) return { label: 'Manual', className: 'warn' };
   return { label: 'None', className: '' };
@@ -14247,8 +14281,9 @@ function renderClassicBridge() {
   const ladderCount = topology.pools.reduce((sum, pool) => sum + Number(pool.ladder?.bandCount || pool.ladder?.bands?.length || 0), 0);
   const fundingEstimateStatus = classicFundingEstimateStatus(config);
   const estimate = fundingEstimateStatus.matchesConfig ? state.classicFundingEstimate : null;
-  const totalSol = Number(estimate?.totalSol || 0);
-  const routeCount = estimate?.autoSwapPlan?.length || 0;
+  const totalSol = Math.max(0, Number(estimate?.totalSol || 0) - currentFundingTokenCoverage().swapCreditSol);
+  const coverage = currentFundingTokenCoverage();
+  const routeCount = (estimate?.autoSwapPlan || []).filter((route) => !coverage.fresh || !coverage.rows.find((row) => row.mint === route.quoteMint)?.funded).length;
   const manualQuoteCount = quoteAcquireManualCount();
   const funding = fundingMeterSnapshot(config);
   const fundingBalanceKnown = state.demoActive || (funding.hasWalletBalance && funding.walletBalanceFresh);
@@ -14372,9 +14407,7 @@ function renderClassicBridge() {
           ? {
             eyebrow: 'Pair tokens missing',
             title: 'Get the pair tokens',
-            detail: routeCount
-              ? `${routeCount} pair token${routeCount === 1 ? '' : 's'} to buy with SOL from the launch wallet.`
-              : 'Send the pair tokens to the launch wallet, then check the balance.',
+            detail: pairTokenFundingDetail(),
             action: routeCount ? 'start-quote-acquire' : 'refresh-manual-prefund',
             actionLabel: routeCount ? 'Acquire tokens' : 'Check token balance',
           }
@@ -20180,11 +20213,12 @@ async function runVanityGrind(job) {
 // queuing more RPC-heavy estimates behind it.
 let fundingEstimateInFlight = null;
 
-function estimateClassicFunding() {
+function estimateClassicFunding({ quiet = false } = {}) {
+  state.launchChecks = { ...state.launchChecks, active: true };
   if (fundingEstimateInFlight) return fundingEstimateInFlight;
   state.fundingEstimating = true;
   renderAll();
-  fundingEstimateInFlight = runClassicFundingEstimate().finally(() => {
+  fundingEstimateInFlight = runClassicFundingEstimate({ quiet }).finally(() => {
     fundingEstimateInFlight = null;
     state.fundingEstimating = false;
     renderAll();
@@ -20192,25 +20226,27 @@ function estimateClassicFunding() {
   return fundingEstimateInFlight;
 }
 
-async function runClassicFundingEstimate() {
+async function runClassicFundingEstimate({ quiet = false } = {}) {
   await autoVerifyQuoteTokens();
   const config = currentLaunchConfig();
   const fundingRequest = classicFundingEstimateRequest(config);
   if (state.apiStatus === 'connected' && state.apiClient?.estimateClassicFunding) {
     try {
-      state.classicFundingEstimate = stampClassicFundingEstimate(
-        await state.apiClient.estimateClassicFunding(fundingRequest),
-        config,
-      );
+      const result = await state.apiClient.estimateClassicFunding(fundingRequest);
+      if (classicFundingEstimateFingerprint(config) !== classicFundingEstimateFingerprint()) return false;
+      state.classicFundingEstimate = stampClassicFundingEstimate(result, config);
       resetQuoteAcquireState();
       resetManualPrefundState();
       renderAll();
       refreshManualPrefundBalance({ quiet: true }).catch(() => null);
-      notify(`Funding estimate: ${Number(state.classicFundingEstimate.totalSol || 0).toFixed(3)} SOL`);
-      return;
+      state.launchChecks.error = null;
+      if (!quiet) notify(`Funding estimate: ${Number(state.classicFundingEstimate.totalSol || 0).toFixed(3)} SOL`);
+      return true;
     } catch (error) {
-      notify(error.message || 'Funding estimate failed');
-      return;
+      state.launchChecks.error = error.message || 'Waiting for the funding service';
+      state.launchChecks.nextAt = Date.now() + 15000;
+      if (!quiet) notify(`${state.launchChecks.error}. Trebuchet will check again automatically.`);
+      return false;
     }
   }
   notify('Funding estimates require the Trebuchet desktop app');
@@ -20229,7 +20265,9 @@ function pairTokensNeedingCheck(now = Date.now()) {
     if (!String(pool.quoteMint || '').trim() || !customQuoteLookupValue(pool)) return false;
     const record = customQuoteInfoRecord(pool);
     if (!record) return true;
-    if (record.loading || record.info) return false;
+    if (record.loading) return false;
+    if (record.info && record.info.compatible != null && record.info.freezeAuthorityBlock != null
+        && ['raydium', 'jupiter'].includes(record.info.swapRoute) && !record.info.priceWarning) return false;
     const failedAt = Date.parse(record.checkedAt || '');
     return !Number.isFinite(failedAt) || now - failedAt >= PAIR_TOKEN_RECHECK_MS;
   });
@@ -20265,10 +20303,10 @@ function renderPairTokenChecks() {
   const checking = rows.some((row) => ['Checking', 'Unverified'].includes(row.badge.label));
   const viaJupiter = rows.filter((row) => row.route === 'jupiter').length;
   const summary = problems.length
-    ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} cannot be used`
+    ? `${problems.length} pair token${problems.length === 1 ? '' : 's'} need attention`
     : checking
       ? 'Checking pair tokens…'
-      : `${rows.length === 1 ? 'The pair token is' : `All ${rows.length} pair tokens are`} real and tradeable${viaJupiter ? ` (${viaJupiter} bought via Jupiter)` : ''}`;
+      : `${rows.length} pair token${rows.length === 1 ? '' : 's'} checked${viaJupiter ? ` (${viaJupiter} via Jupiter)` : ''}`;
   return `
     <div class="pair-token-checks ${problems.length ? 'has-problems' : ''}">
       <small><i class="fa-solid ${problems.length ? 'fa-triangle-exclamation' : checking ? 'fa-spinner fa-spin' : 'fa-circle-check'}" aria-hidden="true"></i>${escapeHtml(summary)}</small>
@@ -20283,6 +20321,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
     say('Custom pool is unavailable');
     return null;
   }
+  const previousFundingFingerprint = classicFundingEstimateFingerprint();
   const query = customQuoteLookupValue(pool);
   const symbol = String(pool.quoteSymbol || '').trim().toUpperCase();
   if (!query || (!pool.quoteMint && !KNOWN_SAFE_QUOTE_SYMBOLS.has(symbol))) {
@@ -20318,7 +20357,7 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
       error: null,
       checkedAt: new Date().toISOString(),
     };
-    invalidateClassicOutputs();
+    if (previousFundingFingerprint !== classicFundingEstimateFingerprint()) invalidateClassicOutputs();
     refreshClassicPreview({ includePoolEditor: true });
     const badge = customQuoteInfoBadge(pool);
     say(badge.className === 'danger' ? 'Quote token blocked by safety check' : 'Quote token verified');
@@ -20341,6 +20380,38 @@ async function resolveCustomQuoteToken(poolId, { quiet = false } = {}) {
 // Return wallet. Launch assets only go to a proven wallet: the funder of the
 // launch wallet (blank = funder), or a wallet that signed a Trebuchet
 // challenge in the browser. Addresses are never typed in.
+
+// Read-only recovery starts when the user enters funding or asks for readiness.
+// One request runs at a time; outages back off to a one-minute interval.
+let launchChecksInFlight = null;
+async function refreshLaunchChecks(now = Date.now()) {
+  if (!state.launchChecks?.active || launchChecksInFlight || state.executionChecking || state.fundingEstimating
+      || state.apiStatus !== 'connected' || state.demoActive || state.quoteAcquire.running
+      || state.realExecutionRunning || state.fullRunRunning || launchTokenExists()
+      || (typeof document !== 'undefined' && document.hidden)
+      || now < (state.launchChecks.nextAt || 0)) return;
+  state.launchChecks.running = true;
+  launchChecksInFlight = (async () => {
+    await autoVerifyQuoteTokens();
+    if (!classicFundingEstimateStatus().matchesConfig) {
+      if (!await estimateClassicFunding({ quiet: true })) return false;
+    }
+    if (selectedLaunchWalletPublicKey()) return checkExecutionReadiness({ quiet: true });
+    return true;
+  })();
+  try {
+    const ok = await launchChecksInFlight;
+    state.launchChecks.failures = ok ? 0 : (state.launchChecks.failures || 0) + 1;
+  } catch (error) {
+    state.launchChecks.error = error.message || 'Waiting for launch checks';
+    state.launchChecks.failures = (state.launchChecks.failures || 0) + 1;
+  } finally {
+    state.launchChecks.nextAt = Date.now() + Math.min(60000, 15000 * 2 ** Math.min(2, state.launchChecks.failures || 0));
+    state.launchChecks.running = false;
+    launchChecksInFlight = null;
+    renderClassicBridge();
+  }
+}
 
 function returnWalletStatus() {
   const address = String($('#sweepDestination')?.value || '').trim();
@@ -21836,8 +21907,12 @@ async function cancelSavedSupportJob(jobId) {
   } finally { await refreshSavedSupportJobs(); renderAll(); }
 }
 
-async function checkExecutionReadiness({ retried = false } = {}) {
-  await autoVerifyQuoteTokens();
+async function checkExecutionReadiness({ retried = false, quiet = false } = {}) {
+  if (state.executionChecking) return false;
+  state.launchChecks = { ...state.launchChecks, active: true };
+  state.executionChecking = true;
+  const say = quiet ? () => {} : notify;
+  try { await autoVerifyQuoteTokens(); } catch { /* A later check will retry. */ }
   const config = currentLaunchConfig();
   const walletPublicKey = state.selectedWalletPublicKey || state.managedWallets[0]?.publicKey || '';
   state.executionChecking = true;
@@ -21845,28 +21920,32 @@ async function checkExecutionReadiness({ retried = false } = {}) {
 
   try {
     if (state.apiStatus === 'connected' && state.apiClient?.checkExecutionReadiness) {
-      state.executionReadiness = await state.apiClient.checkExecutionReadiness({
+      const readiness = await state.apiClient.checkExecutionReadiness({
         walletPublicKey,
         config,
         fundingEstimate: currentClassicFundingEstimateForConfig(config),
         airdropRecipients: config.poolTopology.airdrop.recipients,
       });
+      if (state.realExecutionRunning || state.fullRunRunning || walletPublicKey !== selectedLaunchWalletPublicKey()
+          || classicFundingEstimateFingerprint(config) !== classicFundingEstimateFingerprint()) return false;
+      state.executionReadiness = readiness;
+      state.launchChecks.error = null;
       rememberLaunchProof(state.executionReadiness);
       const blockers = state.executionReadiness.blockers || [];
       // The server binds the estimate to more of the plan than the screen does. A stale estimate is
       // fixed by estimating again, which is read-only: do it and check once more, before the token exists.
-      if (!retried && blockers.some((item) => item.id === 'funding-estimate-stale') && !launchTokenExists()) {
+      if (!retried && blockers.some((item) => ['funding-estimate-stale', 'funding-not-estimated'].includes(item.id)) && !launchTokenExists()) {
         state.executionChecking = false;
-        notify('The plan changed since the estimate: estimating again');
+        say('Updating the funding estimate');
         if (state.classicFundingEstimate) state.classicFundingEstimate = { ...state.classicFundingEstimate, v2FundingFingerprint: null };
-        await estimateClassicFunding();
-        return checkExecutionReadiness({ retried: true });
+        if (!await estimateClassicFunding({ quiet })) return false;
+        return await checkExecutionReadiness({ retried: true, quiet });
       }
       renderAll();
-      notify(blockers.length
-        ? `Can't launch yet: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
+      say(blockers.length
+        ? `Launch needs attention: ${blockers[0].title || 'see the list'}${blockers.length > 1 ? ` (+${blockers.length - 1} more, listed on the right)` : ''}`
         : 'Launch ready');
-      return;
+      return true;
     }
 
     state.executionReadiness = {
@@ -21891,9 +21970,11 @@ async function checkExecutionReadiness({ retried = false } = {}) {
       ],
     };
     renderAll();
-    notify('Local API required for execution readiness');
+    say('Open the local app for launch checks');
   } catch (error) {
-    notify(error.message || 'Execution readiness check failed');
+    state.launchChecks.error = error.message || 'Waiting for launch checks';
+    say(`${state.launchChecks.error}. Trebuchet will check again automatically.`);
+    return false;
   } finally {
     state.executionChecking = false;
     renderAll();
@@ -23034,6 +23115,7 @@ async function pollLiveOps() {
     state.liveOps.polling = false;
     return;
   }
+  refreshLaunchChecks().catch(() => null);
   const walletPublicKey = selectedLaunchWalletPublicKey();
   // Keep the proven return wallets current (throttled inside).
   refreshDestinations().catch(() => null);
@@ -23708,6 +23790,11 @@ function handleClick(event) {
     return;
   }
 
+  if (action === 'review-pair-tokens') {
+    state.phaseSlide = { ...state.phaseSlide, liquidity: 'pairs' };
+    setLaunchWorkspace('liquidity');
+    return;
+  }
   if (action === 'add-sol-support') {
     addSolPoolSupport(actionTarget.dataset.sol);
     return;

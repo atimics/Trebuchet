@@ -394,6 +394,7 @@ async function pollLiveOps() {
     state.liveOps.polling = false;
     return;
   }
+  refreshLaunchChecks().catch(() => null);
   const walletPublicKey = selectedLaunchWalletPublicKey();
   // Keep the proven return wallets current (throttled inside).
   refreshDestinations().catch(() => null);
