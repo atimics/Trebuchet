@@ -2,6 +2,8 @@
   const API_SESSION_PATH = '/api/session';
   // Requests that read the chain wait their turn behind the app's RPC rate limit: give them a minute.
   const CHAIN_REQUEST_TIMEOUT_MS = 60_000;
+  // PIN work can wait for the OS keychain and saved-secret migration.
+  const SECRET_PIN_REQUEST_TIMEOUT_MS = 60_000;
   const LAUNCH_PLAN_PATH = '/api/v2/launch-plan';
   const V2_EXECUTION_READINESS_PATH = '/api/v2/execution-readiness';
   const V2_DEMO_LAUNCH_RUN_PATH = '/api/v2/demo-launch/run';
@@ -619,12 +621,13 @@
     }
 
     async function getSecretPinStatus() {
-      const data = await request(`${SECRET_PIN_PATH}/status`);
+      const data = await request(`${SECRET_PIN_PATH}/status`, { timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS });
       return data.status || {};
     }
 
     async function setupSecretPin(pin) {
       const data = await request(`${SECRET_PIN_PATH}/setup`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { pin },
       });
@@ -633,6 +636,7 @@
 
     async function unlockSecretPin(pin) {
       const data = await request(`${SECRET_PIN_PATH}/unlock`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { pin },
       });
@@ -641,6 +645,7 @@
 
     async function changeSecretPin({ currentPin, newPin } = {}) {
       const data = await request(`${SECRET_PIN_PATH}/change`, {
+        timeoutMs: SECRET_PIN_REQUEST_TIMEOUT_MS,
         method: 'POST',
         body: { currentPin, newPin },
       });

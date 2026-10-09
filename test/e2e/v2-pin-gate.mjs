@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -41,6 +41,7 @@ const token = (await (await fetch(`${base}/api/session`)).json()).token;
 const call = async (method, route, body) => (await fetch(`${base}${route}`, { method, headers: { 'content-type': 'application/json', 'x-trebuchet-session': token }, body: body ? JSON.stringify(body) : undefined })).status;
 assert.equal(await call('POST', '/api/secret-pin/setup', { pin: '4321' }), 200);
 assert.equal(await call('POST', '/api/secret-pin/lock', {}), 200);
+const originalPinState = readFileSync(path.join(configDir, '.secretPin.json'));
 
 const GONE = 'AtPVyHp52LqHy1rnMu5fUx9eWpDMrr2DnC3C3mdFc54j';
 const LOCKED = '9smSZZnWGk3MLFpKcNNwqdHCBFXBmgjSi9rAP9uYMPbm';
@@ -50,12 +51,14 @@ const check = (label, condition, detail = '') => { assert.ok(condition, `${label
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const problems = [];
+let walletUnlocked = false;
 page.on('pageerror', (error) => problems.push(error.message));
 page.on('console', (message) => { if (message.type() === 'error' && !/Failed to load resource/.test(message.text())) problems.push(message.text()); });
 // The key-gone wallet is listed first, which is what used to get selected.
 await page.route(/\/api\/v2\/wallets$/, (route) => route.fulfill({ json: { success: true, wallets: [
   { publicKey: GONE, hasSecretKey: false, decryptionFailed: true, secretState: 'missing', label: 'Old wallet' },
-  { publicKey: LOCKED, hasSecretKey: false, decryptionFailed: false, secretPinLocked: true, secretState: 'locked', label: 'Launch wallet' },
+  { publicKey: LOCKED, hasSecretKey: walletUnlocked, decryptionFailed: false, secretPinLocked: !walletUnlocked,
+    secretState: walletUnlocked ? 'readable' : 'locked', label: 'Launch wallet' },
 ] } }));
 await page.route(/\/api\/check-balance$/, (route) => route.fulfill({ json: { success: true, balance: 0 } }));
 
@@ -93,6 +96,57 @@ for (const view of views) {
   });
   check(`${view}: any "unlock the PIN" message has an Unlock PIN button`, !result.says || result.button);
 }
+
+const unlockRoute = /\/api\/secret-pin\/unlock$/;
+await page.setViewportSize({ width: 1046, height: 650 });
+await page.route(unlockRoute, (route) => route.fulfill({ status: 503,
+  json: { success: false, code: 'TIMEOUT', error: 'Request timed out.' } }));
+await page.evaluate(() => { openRecoveryPinGate(); });
+await page.fill('#recoveryPinInput', '4321');
+await page.waitForSelector('#recoveryPinGate[data-status="error"]');
+await page.screenshot({ path: path.join(configDir, 'pin-timeout.png') });
+await page.waitForFunction(() => state.recoveryPinGate.status === 'idle' && state.recoveryPinGate.value === '');
+check('a timed out check clears the PIN and enables another try', await page.isEnabled('#recoveryPinInput'));
+check('a timed out check keeps a locked local vault locked', await page.evaluate(() => state.secretPin.locked));
+await page.unroute(unlockRoute);
+
+let unlockRequests = 0;
+await page.route(unlockRoute, async (route) => {
+  unlockRequests++;
+  const response = await route.fetch();
+  assert.equal(response.status(), 200);
+  walletUnlocked = true;
+  await new Promise((resolve) => setTimeout(resolve, 4000));
+  await route.fulfill({ response });
+});
+await page.fill('#recoveryPinInput', '4321');
+await page.waitForSelector('#recoveryPinGate', { state: 'hidden', timeout: 15000 });
+check('a valid PIN reply can take more than 3.5 seconds', await page.evaluate(() => state.secretPin.unlocked));
+check('a valid PIN refreshes the saved wallet and keeps one unlock request', unlockRequests === 1
+  && await page.evaluate(() => state.managedWallets.some((wallet) => wallet.publicKey === state.selectedWalletPublicKey && wallet.hasSecretKey)));
+await page.unroute(unlockRoute);
+
+assert.equal(await call('POST', '/api/secret-pin/lock', {}), 200);
+walletUnlocked = false;
+await page.evaluate(() => refreshLocalApiState());
+await page.setViewportSize({ width: 390, height: 844 });
+await page.route(unlockRoute, async (route) => {
+  unlockRequests++;
+  const response = await route.fetch();
+  assert.equal(response.status(), 200);
+  walletUnlocked = true;
+  await route.fulfill({ status: 503, json: { success: false, code: 'TIMEOUT', error: 'Unlock reply interrupted.' } });
+});
+await page.evaluate(() => { openRecoveryPinGate(); });
+await page.screenshot({ path: path.join(configDir, 'pin-mobile.png') });
+const closeBox = await page.locator('#recoveryPinCancel').boundingBox();
+check('the close button fits the narrow PIN screen', closeBox && closeBox.x >= 0 && closeBox.x + closeBox.width <= 390);
+await page.fill('#recoveryPinInput', '4321');
+await page.waitForSelector('#recoveryPinGate', { state: 'hidden', timeout: 15000 });
+check('a lost reply checks the real local status and completes the unlock', await page.evaluate(() => state.secretPin.unlocked));
+check('a lost reply uses one unlock request', unlockRequests === 2);
+check('PIN retries preserve the saved vault file', readFileSync(path.join(configDir, '.secretPin.json')).equals(originalPinState));
+console.log(`PIN screenshots: ${configDir}`);
 
 check('no JavaScript errors', problems.length === 0, problems.slice(0, 2).join(' || '));
 await browser.close();

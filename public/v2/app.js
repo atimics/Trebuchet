@@ -3480,9 +3480,30 @@ const RECOVERY_PIN_DEVICE_SECRET_MESSAGE = "This computer's keychain no longer h
 
 function recoveryPinFailureMessage(error) {
   if (error?.code === 'BAD_SECRET_PIN') return 'Incorrect PIN';
+  if (error?.code === 'TIMEOUT') return 'The PIN check took too long. Try again.';
   if (error?.code === 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE') return RECOVERY_PIN_DEVICE_SECRET_MESSAGE;
   if (error?.code === 'SECRET_PIN_STATE_DAMAGED') return RECOVERY_PIN_DAMAGED_MESSAGE;
   return error?.message || 'PIN check failed';
+}
+
+function recoveryPinRequestUncertain(error) {
+  if (['BAD_SECRET_PIN', 'SECRET_PIN_DEVICE_SECRET_UNAVAILABLE', 'SECRET_PIN_STATE_DAMAGED', 'SECRET_PIN_NOT_SET'].includes(error?.code)) return false;
+  return !error?.code || ['TIMEOUT', 'INVALID_JSON', 'HTTP_ERROR', 'V2_API_ERROR'].includes(error.code) || error.status >= 500;
+}
+
+async function unlockRecoveryPinWithStatus(pin) {
+  try { return await state.apiClient.unlockSecretPin(pin); }
+  catch (error) {
+    if (recoveryPinRequestUncertain(error) && state.apiClient?.getSecretPinStatus) {
+      state.recoveryPinGate.message = 'Checking the local unlock status…';
+      renderRecoveryPinGate();
+      try {
+        const status = await state.apiClient.getSecretPinStatus();
+        if (status?.configured === true && status.unlocked === true && status.locked === false && status.damaged !== true) return status;
+      } catch { /* Keep the original request error for the next try. */ }
+    }
+    throw error;
+  }
 }
 
 function secretPinMeta() {
@@ -3863,9 +3884,15 @@ async function submitRecoveryPinGate() {
   state.secretPin.busy = 'Unlocking';
   renderRecoveryPinGate();
   try {
-    const status = await state.apiClient.unlockSecretPin(pin);
+    const status = await unlockRecoveryPinWithStatus(pin);
     applySecretPinStatus(status);
-    await refreshSecretPinStatus({ reloadBoot: true });
+    state.recoveryPinGate.message = 'PIN verified. Loading saved wallets…';
+    renderRecoveryPinGate();
+    try { await refreshSecretPinStatus({ reloadBoot: true }); }
+    catch {
+      applySecretPinStatus(status);
+      notify('PIN verified. Refresh the wallet list to continue.');
+    }
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'success';
     state.recoveryPinGate.message = state.recoveryPinGate.reason === 'vanity'
@@ -3877,7 +3904,7 @@ async function submitRecoveryPinGate() {
     state.secretPin.busy = null;
     state.recoveryPinGate.status = 'error';
     state.recoveryPinGate.message = recoveryPinFailureMessage(error);
-    const retryable = !error?.code || error.code === 'BAD_SECRET_PIN';
+    const retryable = recoveryPinRequestUncertain(error) || error?.code === 'BAD_SECRET_PIN';
     renderRecoveryPinGate();
     recoveryPinGateTimer = window.setTimeout(() => {
       recoveryPinGateTimer = null;

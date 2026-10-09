@@ -212,5 +212,8 @@ jobs:
       - name: Run v2 API-backed E2E test
         run: npm run test:e2e:v2
 
+      - name: Run Recovery PIN browser checks
+        run: npm run test:e2e:pin-gate
+
       - name: Run v2 desktop and mobile viewport smoke
         run: npm run test:v2:viewport
