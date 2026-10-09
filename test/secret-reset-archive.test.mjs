@@ -269,6 +269,43 @@ test('copying the archive back and unlocking with the original PIN restores ever
   assert.equal(secretInventory().totals.readable, secretInventory().totals.total);
 });
 
+test('reset archive keeps the last good PIN state needed to recover after active state damage', (t) => {
+  const dir = freshConfig(t);
+  const recoveryWallet = Keypair.generate();
+  const publicKey = recoveryWallet.publicKey.toBase58();
+  const secret = Array.from(recoveryWallet.secretKey);
+  secretPinStore.setPin(PIN);
+  pendingWallets.add(publicKey, secret, null);
+  secretPinStore.rotateUnlockedPin('5731');
+
+  const stateFile = path.join(dir, '.secretPin.json');
+  const backupFile = `${stateFile}.bak`;
+  const backupBytes = fs.readFileSync(backupFile);
+  fs.writeFileSync(stateFile, '{ damaged state');
+  secretPinStore.lock();
+
+  const result = resetWithArchive({ confirmReset: RESET_PHRASE });
+  const archiveDir = path.join(dir, result.archive.path);
+  const archivedBackup = path.join(archiveDir, '.secretPin.json.bak');
+  assert.ok(fs.readFileSync(archivedBackup).equals(backupBytes));
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(archivedBackup).mode & 0o777, fs.statSync(backupFile).mode & 0o777);
+  }
+
+  // A new setup and later PIN change can replace the live one-deep backup.
+  secretStore.setupSecretPin('8642');
+  secretStore.changeSecretPin('9753');
+  assert.equal(fs.readFileSync(backupFile).equals(backupBytes), false);
+
+  // Restoring the archive's backup state makes its saved wallet readable again.
+  const restoreDir = fs.mkdtempSync(path.join(root, 'restore-'));
+  process.env.TREBUCHET_CONFIG_DIR = restoreDir;
+  fs.copyFileSync(path.join(archiveDir, 'pendingWallets.json'), path.join(restoreDir, 'pendingWallets.json'));
+  fs.copyFileSync(archivedBackup, path.join(restoreDir, '.secretPin.json'));
+  assert.equal(secretPinStore.unlock(PIN), true);
+  assert.deepEqual(pendingWallets.get(publicKey).secretKey, secret);
+});
+
 test('archiveSecrets works with no files at all', (t) => {
   freshConfig(t);
   const result = archiveSecrets();
