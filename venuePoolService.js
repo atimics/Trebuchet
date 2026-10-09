@@ -2,15 +2,14 @@
 //
 // Find and read a token's pools on PumpSwap, Orca, and Meteora, plus
 // active Pump curves, for on-chain pricing (see onChainPriceService.js).
-// Raydium pools come from Raydium's own pool index; these venues are found
-// directly on-chain with getProgramAccounts, filtered by the two mints.
+// Raydium pools come from Raydium's pool index. DexScreener supplies candidate
+// addresses for other venues; RPC account owners and layouts identify them.
 //
 // Account layouts are from each program's on-chain Anchor IDL (Whirlpool,
 // lb_clmm LbPair, cp_amm Pool). Offsets include the 8-byte discriminator.
-// This module only reads: it never builds a transaction for these venues.
+// Prices and reserves come from current RPC account reads.
 
 import { PublicKey } from '@solana/web3.js';
-import bs58 from 'bs58';
 
 export const VENUE_PROGRAMS = Object.freeze({
   ORCA_WHIRLPOOL: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
@@ -27,30 +26,27 @@ const WSOL = 'So11111111111111111111111111111111111111112';
 const VENUES = [
   {
     venue: 'pump-swap', programId: VENUE_PROGRAMS.PUMP_SWAP,
-    discriminator: PUMP_POOL_DISCRIMINATOR, mintA: 43, mintB: 75, decode: decodePumpSwapPool,
+    discriminator: PUMP_POOL_DISCRIMINATOR, decode: decodePumpSwapPool,
   },
   {
     venue: 'orca-whirlpool',
     programId: VENUE_PROGRAMS.ORCA_WHIRLPOOL,
+    discriminator: Buffer.from([63, 149, 209, 12, 225, 128, 99, 9]),
     size: 653,
-    mintA: 101,
-    mintB: 181,
     decode: decodeWhirlpool,
   },
   {
     venue: 'meteora-dlmm',
     programId: VENUE_PROGRAMS.METEORA_DLMM,
+    discriminator: Buffer.from([33, 11, 49, 98, 181, 101, 177, 13]),
     size: 904,
-    mintA: 88,
-    mintB: 120,
     decode: decodeDlmmPair,
   },
   {
     venue: 'meteora-damm-v2',
     programId: VENUE_PROGRAMS.METEORA_DAMM_V2,
+    discriminator: PUMP_POOL_DISCRIMINATOR,
     size: 1112,
-    mintA: 168,
-    mintB: 200,
     decode: decodeDammV2Pool,
   },
 ];
@@ -59,6 +55,9 @@ const pubkeyAt = (data, offset) => new PublicKey(data.subarray(offset, offset + 
 const u128At = (data, offset) => data.readBigUInt64LE(offset) + (data.readBigUInt64LE(offset + 8) << 64n);
 
 // Pump's official pump_amm and pump IDLs: pump-fun/pump-public-docs/idl.
+// Pool: discriminator (8), bump (1), index (2), creator (32), then mints at
+// 43 and 75. Current fields use 287 bytes; allocated accounts can include
+// padding (301 bytes). Legacy pools start at 211 bytes.
 export function decodePumpSwapPool(data) {
   if (data.length < 211 || !data.subarray(0, 8).equals(PUMP_POOL_DISCRIMINATOR)) throw new Error('Invalid PumpSwap pool');
   const virtualQuote = data.length >= 261 ? BigInt.asIntN(128, u128At(data, 245)) : 0n;
@@ -151,89 +150,89 @@ async function accountsByKey(connection, keys) {
   return out;
 }
 
-async function findVenuePools(connection, venue, first, second) {
-  const accounts = await connection.getProgramAccounts(new PublicKey(venue.programId), {
-    filters: [
-      ...(venue.size ? [{ dataSize: venue.size }] : [{ memcmp: { offset: 0, bytes: bs58.encode(venue.discriminator) } }]),
-      { memcmp: { offset: venue.mintA, bytes: first } },
-      { memcmp: { offset: venue.mintB, bytes: second } },
-    ],
-  });
-  return accounts.flatMap(({ pubkey, account }) => {
-    try { return [{
-    id: pubkey.toBase58(),
-    programId: venue.programId,
-    venue: venue.venue,
-    state: venue.decode(account.data),
-    }]; } catch { return []; }
-  });
-}
-
-/**
- * Pools on Orca and Meteora pairing `mint` with `anchor`, in the shape
- * onChainPriceService.evaluatePool reads: { id, programId, venue,
- * mintA: { address, decimals }, mintB: { address, decimals }, state }.
- * state carries the decoded price fields plus reserveA/reserveB (raw vault
- * amounts). A venue whose lookup fails is skipped, not fatal.
- */
-// Which pools exist for a pair changes rarely, and finding them is a scan of every pool account
-// (getProgramAccounts, the heaviest RPC call). Keep a complete scan for 10 minutes; reserves are
-// and price state are read fresh on every call. Partial scans wait a minute before retrying.
+// One mint lookup covers all venues and quote pairs. Cache addresses for ten
+// minutes; each price read still fetches current pool state and vault balances.
 const POOL_DISCOVERY_TTL_MS = 10 * 60 * 1000;
-const POOL_DISCOVERY_RETRY_MS = 60 * 1000;
+const POOL_DISCOVERY_EMPTY_TTL_MS = 60 * 1000;
+const POOL_DISCOVERY_RETRY_MS = 5 * 60 * 1000;
+const POOL_DISCOVERY_CACHE_LIMIT = 256;
+const MAX_INDEXED_POOLS = 128;
+const MAX_PAIR_POOLS = 32;
 const poolDiscoveryCache = new Map();
 
 export function clearPoolDiscoveryCache() {
   poolDiscoveryCache.clear();
 }
 
-async function discoverVenuePools(connection, mint, anchor) {
-  const key = `${connection.rpcEndpoint || ''}|${[mint, anchor].sort().join('|')}`;
-  const hit = poolDiscoveryCache.get(key);
+function indexedPools(payload, mint) {
+  if (!Array.isArray(payload)) throw new Error('Pool index returned an invalid response');
+  const pools = payload.flatMap((pair) => {
+    if (pair?.chainId !== 'solana') return [];
+    try {
+      const id = new PublicKey(pair.pairAddress).toBase58();
+      const mintA = new PublicKey(pair.baseToken?.address).toBase58();
+      const mintB = new PublicKey(pair.quoteToken?.address).toBase58();
+      if (mintA === mintB || ![mintA, mintB].includes(mint)) return [];
+      return [{ id, mintA, mintB, liquidity: Number(pair.liquidity?.usd) || 0 }];
+    } catch { return []; }
+  });
+  pools.sort((a, b) => b.liquidity - a.liquidity);
+  return [...new Map(pools.map((pool) => [pool.id, pool])).values()].slice(0, MAX_INDEXED_POOLS);
+}
+
+async function discoverVenuePools(mint, { fetchImpl = globalThis.fetch, now = Date.now } = {}) {
+  const hit = poolDiscoveryCache.get(mint);
   if (hit?.pending) return hit.pending;
-  if (hit && hit.expiresAt > Date.now()) return hit.pools;
+  if (hit && hit.expiresAt > now()) return hit.pools;
   const entry = {};
-  poolDiscoveryCache.set(key, entry);
+  poolDiscoveryCache.delete(mint);
+  poolDiscoveryCache.set(mint, entry);
+  while (poolDiscoveryCache.size > POOL_DISCOVERY_CACHE_LIMIT) {
+    poolDiscoveryCache.delete(poolDiscoveryCache.keys().next().value);
+  }
   entry.pending = (async () => {
-    const lookups = VENUES.flatMap((venue) => [
-      findVenuePools(connection, venue, mint, anchor),
-      findVenuePools(connection, venue, anchor, mint),
-    ]);
-    const settled = await Promise.allSettled(lookups);
-    const pools = [];
-    let complete = true;
-    settled.forEach((result) => {
-      if (result.status === 'fulfilled') pools.push(...result.value);
-      else {
-        complete = false;
-        console.warn(`venue pools: lookup failed: ${result.reason?.message || result.reason}`);
-      }
-    });
-    if (poolDiscoveryCache.get(key) === entry) {
-      poolDiscoveryCache.set(key, { pools, expiresAt: Date.now() + (complete ? POOL_DISCOVERY_TTL_MS : POOL_DISCOVERY_RETRY_MS) });
+    let pools = hit?.pools || [];
+    let ttl = POOL_DISCOVERY_RETRY_MS;
+    try {
+      const response = await fetchImpl(`https://api.dexscreener.com/token-pairs/v1/solana/${encodeURIComponent(mint)}`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) throw new Error(`Pool index HTTP ${response.status}`);
+      pools = indexedPools(await response.json(), mint);
+      ttl = pools.length ? POOL_DISCOVERY_TTL_MS : POOL_DISCOVERY_EMPTY_TTL_MS;
+    } catch (error) {
+      console.warn(`venue pools: mint lookup failed; retry in five minutes: ${error?.message || error}`);
+    }
+    if (poolDiscoveryCache.get(mint) === entry) {
+      poolDiscoveryCache.set(mint, { pools, expiresAt: now() + ttl });
     }
     return pools;
   })();
   return entry.pending;
 }
 
-export async function fetchVenuePoolsByMints(connection, mint, anchor) {
+export async function fetchVenuePoolsByMints(connection, mint, anchor, discoveryOptions) {
   if (!connection || !mint || !anchor || mint === anchor) return [];
-  const discovered = await discoverVenuePools(connection, mint, anchor);
-  let canonical = [];
-  try { canonical = pumpPoolAddresses(mint, anchor); } catch { /* invalid mint is handled by the caller */ }
+  try { new PublicKey(mint); new PublicKey(anchor); } catch { return []; }
+  const discovered = (await discoverVenuePools(mint, discoveryOptions))
+    .filter((pool) => [pool.mintA, pool.mintB].includes(anchor)).slice(0, MAX_PAIR_POOLS);
+  const canonical = pumpPoolAddresses(mint, anchor);
   const candidates = [...new Map([...discovered, ...canonical].map((pool) => [pool.id, pool])).values()];
   if (!candidates.length) return [];
   // Cache addresses, then read current sqrt price, active bin, and curve state each time.
   const current = await accountsByKey(connection, candidates.map((pool) => pool.id));
   const pools = candidates.flatMap((pool) => {
     const account = current.get(pool.id);
-    if (account?.owner?.toString() !== pool.programId) return [];
+    const programId = account?.owner?.toString();
+    if (!programId || (pool.programId && programId !== pool.programId)) return [];
     try {
-      const state = pool.venue === 'pump-curve' ? decodePumpCurve(account.data, mint)
-        : VENUES.find((venue) => venue.programId === pool.programId).decode(account.data);
+      const venue = VENUES.find((candidate) => candidate.programId === programId);
+      if (pool.venue !== 'pump-curve' && (!venue
+        || (venue.size && account.data.length !== venue.size)
+        || !account.data.subarray(0, 8).equals(venue.discriminator))) return [];
+      const state = pool.venue === 'pump-curve' ? decodePumpCurve(account.data, mint) : venue.decode(account.data);
       if (![state.mintA, state.mintB].includes(mint) || ![state.mintA, state.mintB].includes(anchor)) return [];
-      return [{ ...pool, state }];
+      return [{ id: pool.id, programId, venue: pool.venue === 'pump-curve' ? pool.venue : venue.venue, state }];
     } catch { return []; }
   });
   if (!pools.length) return [];

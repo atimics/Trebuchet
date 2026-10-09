@@ -188,10 +188,15 @@ test('the migrated SI276 pool can be found by its canonical address', () => {
     '12jc1DzJpzbCDaKuM4brAKh9jcFry2TLG1FfGsL4ftCG');
 });
 
-test('price reads reuse discovery while fresh pool state changes the displayed price', async () => {
+test('price reads reuse indexed addresses while fresh pool state changes the displayed price', async () => {
   clearPoolDiscoveryCache();
-  const id = new PublicKey(USDC_MINT); let scans = 0;
-  const data = Buffer.alloc(653); putKey(data, 101, TOKEN); putKey(data, 181, WSOL_MINT);
+  let lookups = 0;
+  const discovery = { fetchImpl: async () => { lookups++; return { ok: true, json: async () => [{
+    chainId: 'solana', pairAddress: USDC_MINT, dexId: 'pumpswap',
+    baseToken: { address: TOKEN }, quoteToken: { address: WSOL_MINT },
+  }] }; } };
+  const data = Buffer.alloc(653); Buffer.from([63, 149, 209, 12, 225, 128, 99, 9]).copy(data);
+  putKey(data, 101, TOKEN); putKey(data, 181, WSOL_MINT);
   putKey(data, 133, VAULT_A); putKey(data, 213, VAULT_B); putU128(data, 49, 1n);
   putU128(data, 65, sqrtX64For(0.001, 6, 9));
   const mintA = Buffer.alloc(82); mintA[44] = 6; const mintB = Buffer.alloc(82); mintB[44] = 9;
@@ -200,16 +205,81 @@ test('price reads reuse discovery while fresh pool state changes the displayed p
   const accounts = new Map([[USDC_MINT, { data, owner: new PublicKey(VENUE_PROGRAMS.ORCA_WHIRLPOOL) }],
     [TOKEN, { data: mintA }], [WSOL_MINT, { data: mintB }], [VAULT_A, { data: vaultA }], [VAULT_B, { data: vaultB }]]);
   const connection = { rpcEndpoint: 'fresh-price-test',
-    getProgramAccounts: async (program, opts) => { scans++; return program.toBase58() === VENUE_PROGRAMS.ORCA_WHIRLPOOL
-      && opts.filters[1].memcmp.bytes === TOKEN ? [{ pubkey: id, account: accounts.get(USDC_MINT) }] : []; },
+    getProgramAccounts: async () => { throw new Error('Broad scan reached'); },
     getMultipleAccountsInfo: async (keys) => keys.map((key) => accounts.get(key.toBase58()) || null) };
-  const first = (await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT))[0];
-  const count = scans; putU128(data, 65, sqrtX64For(0.002, 6, 9));
-  const second = (await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT))[0];
-  assert.equal(scans, count); assert.notEqual(first.state.sqrtPriceX64, second.state.sqrtPriceX64);
+  const first = (await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery))[0];
+  assert.equal(first.venue, 'orca-whirlpool', 'RPC owner takes precedence over the index label');
+  putU128(data, 65, sqrtX64For(0.002, 6, 9));
+  const second = (await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery))[0];
+  assert.equal(lookups, 1); assert.notEqual(first.state.sqrtPriceX64, second.state.sqrtPriceX64);
   const options = { mint: TOKEN, solUsd: new Decimal(100) };
   assert.equal((await evaluatePool(first, options)).priceUsd.toDecimalPlaces(6).toString(), '0.1');
   assert.equal((await evaluatePool(second, options)).priceUsd.toDecimalPlaces(6).toString(), '0.2');
   accounts.get(USDC_MINT).owner = new PublicKey(VENUE_PROGRAMS.PUMP_SWAP);
-  assert.equal((await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT)).length, 0);
+  assert.equal((await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery)).length, 0);
+});
+
+const pairEntry = (id, changes = {}) => ({ chainId: 'solana', pairAddress: id,
+  baseToken: { address: TOKEN }, quoteToken: { address: WSOL_MINT }, liquidity: { usd: 1000 }, ...changes });
+const indexResponse = (pairs) => ({ fetchImpl: async () => ({ ok: true, json: async () => pairs }) });
+const mintInfo = (decimals) => { const data = Buffer.alloc(82); data[44] = decimals; return { data }; };
+
+test('indexed PumpSwap accounts verify owner, discriminator, mints, and both current allocation sizes', async () => {
+  clearPoolDiscoveryCache();
+  let data = pumpAccount(); let owner = new PublicKey(VENUE_PROGRAMS.PUMP_SWAP);
+  const discovery = indexResponse([pairEntry(USDC_MINT)]);
+  const connection = { getMultipleAccountsInfo: async (keys) => keys.map((key) => {
+    const id = key.toBase58();
+    return id === USDC_MINT ? { owner, data } : id === TOKEN ? mintInfo(6) : id === WSOL_MINT ? mintInfo(9) : null;
+  }) };
+  for (const size of [287, 301]) {
+    data = pumpAccount().subarray(0, size);
+    const pools = await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery);
+    assert.equal(pools.length, 1); assert.equal(pools[0].venue, 'pump-swap');
+  }
+  owner = new PublicKey(TOKEN);
+  assert.deepEqual(await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery), []);
+  owner = new PublicKey(VENUE_PROGRAMS.PUMP_SWAP); data = pumpAccount(); data[0] ^= 1;
+  assert.deepEqual(await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery), []);
+  data = pumpAccount(); putKey(data, 43, USDC_MINT);
+  assert.deepEqual(await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery), []);
+  data = pumpAccount().subarray(0, 210);
+  assert.deepEqual(await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery), []);
+});
+
+test('invalid index entries are skipped and exact account reads stay bounded to the requested pair', async () => {
+  clearPoolDiscoveryCache();
+  const entries = Array.from({ length: 40 }, (_, i) => pairEntry(new PublicKey(Buffer.alloc(32, i + 1)).toBase58(),
+    { liquidity: { usd: 40 - i } }));
+  entries.push(pairEntry(USDC_MINT, { chainId: 'ethereum' }), pairEntry('invalid'),
+    pairEntry(USDC_MINT, { baseToken: { address: USDC_MINT } }),
+    pairEntry(USDC_MINT, { quoteToken: { address: USDC_MINT } }), entries[0]);
+  const batches = [];
+  const connection = { getMultipleAccountsInfo: async (keys) => {
+    batches.push(keys.map((key) => key.toBase58())); return keys.map(() => null);
+  } };
+  await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, indexResponse(entries));
+  assert.equal(batches.length, 1); assert.equal(batches[0].length, 34, '32 indexed addresses and two canonical Pump accounts');
+  assert.equal(new Set(batches[0]).size, 34);
+  assert.ok(entries.slice(0, 32).every((entry) => batches[0].includes(entry.pairAddress)));
+  assert.ok(entries.slice(32, 40).every((entry) => !batches[0].includes(entry.pairAddress)));
+  assert.ok(!batches[0].includes(USDC_MINT));
+});
+
+test('canonical Pump pools and active curves are read during an index outage', async () => {
+  clearPoolDiscoveryCache(); let lookups = 0;
+  const [pool, curve] = pumpPoolAddresses(TOKEN, WSOL_MINT);
+  const curveData = Buffer.alloc(151); Buffer.from([23, 183, 248, 55, 96, 216, 172, 96]).copy(curveData);
+  const accounts = new Map([
+    [pool.id, { owner: new PublicKey(VENUE_PROGRAMS.PUMP_SWAP), data: pumpAccount() }],
+    [curve.id, { owner: new PublicKey(VENUE_PROGRAMS.PUMP_CURVE), data: curveData }],
+    [TOKEN, mintInfo(6)], [WSOL_MINT, mintInfo(9)],
+  ]);
+  const connection = { getMultipleAccountsInfo: async (keys) => keys.map((key) => accounts.get(key.toBase58()) || null) };
+  const discovery = { fetchImpl: async () => { lookups++; throw new Error('index offline'); } };
+  for (let i = 0; i < 3; i++) {
+    const pools = await fetchVenuePoolsByMints(connection, TOKEN, WSOL_MINT, discovery);
+    assert.deepEqual(pools.map((item) => item.venue), ['pump-swap', 'pump-curve']);
+  }
+  assert.equal(lookups, 1);
 });
