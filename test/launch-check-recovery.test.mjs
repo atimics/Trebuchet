@@ -42,3 +42,31 @@ test('background checks share one request and pause during signing or hidden vie
   h.state.fullRunRunning = false; h.document.hidden = true; await h.refreshLaunchChecks();
   assert.equal(counts().reads, 1);
 });
+
+
+test('a price failure refreshes token readiness and keeps the estimate retry on its timer', async () => {
+  const { h, counts, advance } = harness();
+  h.state.executionReadiness = { blockers: [{ id: 'quote-token-safety-6', title: 'SI276 awaiting check' }] };
+  h.estimateClassicFunding = async () => {
+    h.state.launchChecks.error = 'OWL pool prices differ';
+    h.state.launchChecks.errorCode = 'POOL_SPREAD';
+    return false;
+  };
+  let checks = 0;
+  h.checkExecutionReadiness = async (options) => {
+    checks++;
+    assert.equal(options.estimateFunding, false);
+    h.state.executionReadiness = { blockers: [{ id: 'funding-not-estimated' }] };
+    h.state.launchChecks.error = null;
+    return true;
+  };
+  await h.refreshLaunchChecks();
+  assert.equal(checks, 1);
+  assert.equal(h.state.executionReadiness.blockers[0].id, 'funding-not-estimated');
+  assert.equal(h.state.launchChecks.error, 'OWL pool prices differ');
+  assert.equal(h.state.launchChecks.errorCode, 'POOL_SPREAD');
+  await h.refreshLaunchChecks();
+  assert.equal(checks, 1);
+  advance(30_000); await h.refreshLaunchChecks();
+  assert.equal(checks, 2);
+});
