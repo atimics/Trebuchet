@@ -656,6 +656,7 @@ export function createLaunchExecutionServices({
 
       const result = await createPoolsAndPositions({
         tempWalletSecretKey: secretKeyArr,
+        walletPublicKey,
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
         tokenTotalSupply,
@@ -952,6 +953,7 @@ export function createLaunchExecutionServices({
 
       const result = await createPoolsAndPositions({
         tempWalletSecretKey: secretKeyArr,
+        walletPublicKey,
         tokenMint,
         tokenDecimals: tokenDecimals || 9,
         tokenTotalSupply,

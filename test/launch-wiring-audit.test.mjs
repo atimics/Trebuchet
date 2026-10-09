@@ -231,11 +231,31 @@ test('Meteora recovery journal stores original per-allocation intent and preserv
       poolIntent: intent,
     });
 
-    const reloadedJournal = createLaunchJournalStore({ filePath }).activeForWallet(wallet);
+    const reloadedStore = createLaunchJournalStore({ filePath });
+    const reloadedJournal = reloadedStore.activeForWallet(wallet);
     assert.equal(reloadedJournal.poolPlan.tokenMint, 'Mint111');
     assert.deepEqual(reloadedJournal.poolPlan.allocations, [{ venue: 'meteora-damm-v2' }]);
     assert.deepEqual(reloadedJournal.poolPlan.meteoraPoolIntents[0], intent);
     assert.equal(reloadedJournal.events.at(-1).stage, 'meteora_pool_start');
+
+    const wrapperStart = serverSrc.indexOf('const createPoolsAndPositions = (requested) => {');
+    const wrapperEnd = serverSrc.indexOf('\nconst reconcileBeforeLiquidity', wrapperStart);
+    assert.ok(wrapperStart >= 0 && wrapperEnd > wrapperStart, 'shared pool wrapper must be extractable');
+    const wrapper = {
+      launchJournal: reloadedStore,
+      requireLiquidityExecution: () => ({ savedPlan: () => null, forLaunch: () => ({}) }),
+      feeKeyExecution: { forLaunch: () => ({}) },
+      createPoolsWithSdk: (request) => request,
+    };
+    vm.runInNewContext(
+      `${serverSrc.slice(wrapperStart, wrapperEnd)}\nglobalThis.invoke = createPoolsAndPositions;`,
+      wrapper,
+      { filename: 'server.js liquidity wrapper' },
+    );
+    const resumed = wrapper.invoke({ walletPublicKey: wallet, tokenMint: 'Mint111' });
+    assert.deepEqual(resumed.meteoraPoolIntents[0], intent);
+    const otherToken = wrapper.invoke({ walletPublicKey: wallet, tokenMint: 'DifferentMint111' });
+    assert.equal(Object.hasOwn(otherToken.meteoraPoolIntents, 0), false, 'a different mint cannot inherit this launch intent');
   } finally {
     rmSync(configDir, { recursive: true, force: true });
   }
