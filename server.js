@@ -6329,6 +6329,18 @@ function recordLpJournalProgress(walletPublicKey, event) {
   const partialResults = journalResultList(journal);
   const patch = { stage: event.stage || 'lp_progress' };
 
+  if (event.stage === 'meteora_pool_start'
+    && Number.isInteger(event.allocationIndex)
+    && event.poolIntent && typeof event.poolIntent === 'object') {
+    patch.poolPlan = {
+      ...(journal?.poolPlan || {}),
+      meteoraPoolIntents: {
+        ...(journal?.poolPlan?.meteoraPoolIntents || {}),
+        [event.allocationIndex]: event.poolIntent,
+      },
+    };
+  }
+
   if (applyLpEventToResults(partialResults, event, journal)) {
     patch.lp = { partialResults };
   }
@@ -8264,6 +8276,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       allocations,
       lockPositions,
       priorResults: effectivePriorResults,
+      meteoraPoolIntents: poolPlan.meteoraPoolIntents || {},
       onProgress: (event) => {
         recordLpJournalProgress(walletPublicKey, event);
         try { lpProgressEvent(walletPublicKey, event); }

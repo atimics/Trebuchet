@@ -190,6 +190,24 @@ test('classic resume materializes recoverable Phase 1 pool events before retryin
   );
 });
 
+test('Meteora recovery saves and reuses the original pool intent', () => {
+  assert.match(
+    lpSrc,
+    /stage: 'meteora_pool_start',[\s\S]*?poolIntent\s*\}\);/,
+    'the launch must record the pool intent before searching for or creating the pool',
+  );
+  assert.match(
+    serverSrc,
+    /event\.stage === 'meteora_pool_start'[\s\S]*?meteoraPoolIntents:[\s\S]*?\[event\.allocationIndex\]: event\.poolIntent/,
+    'the launch journal must preserve the first attempt intent by allocation',
+  );
+  assert.match(
+    serverSrc,
+    /meteoraPoolIntents: poolPlan\.meteoraPoolIntents \|\| \{\}/,
+    'journal resume must pass the saved Meteora intent into the pool creator',
+  );
+});
+
 test('Phase 1 recovery materializer reconstructs opened slices and blocks duplicate pool ids', () => {
   assert.ok(
     /function materializePhase1RecoveryResults\(journal, priorResults, allocations\)/.test(serverSrc),
@@ -687,5 +705,4 @@ test('display price and launch price share one on-chain adapter definition', () 
   assert.match(epBody, /priceLiquidityUsd/, 'endpoint must surface depth');
   assert.match(epBody, /priceWarning = oc\.spreadError/, 'endpoint must surface a spread finding, not hide it');
 });
-
 

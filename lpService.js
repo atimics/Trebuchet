@@ -4344,7 +4344,7 @@ export function meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPerce
 
 async function createMeteoraPoolForAllocation({
   connection, ownerKeypair, tokenMint, tokenTotalSupply, tokenDecimals,
-  alloc, allocIdx, quote, startPrice, progress,
+  alloc, allocIdx, quote, startPrice, poolIntent: savedPoolIntent = null, progress,
 }) {
   const damm = __dammService;
   const params = meteoraPoolParams({ tokenTotalSupply, tokenDecimals, supplyPercent: alloc.supplyPercent, startPrice, quoteDecimals: quote.decimals });
@@ -4362,7 +4362,27 @@ async function createMeteoraPoolForAllocation({
   });
   const mint = new PublicKey(tokenMint);
   let positionNft = Keypair.fromSeed(meteoraPositionSeed(ownerKeypair.secretKey, tokenMint, quoteMint.toBase58()));
-  progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple });
+  const poolIntent = savedPoolIntent || {
+    tokenMint: mint.toBase58(),
+    quoteMint: quoteMint.toBase58(),
+    positionNft: positionNft.publicKey.toBase58(),
+    supplyRaw: params.poolRaw.toString(),
+    startingMarketCapLamports: params.poolMcapLamports.toString(),
+    rangeMultiple,
+  };
+  if (poolIntent.tokenMint !== mint.toBase58()
+    || poolIntent.quoteMint !== quoteMint.toBase58()
+    || poolIntent.positionNft !== positionNft.publicKey.toBase58()
+    || String(poolIntent.supplyRaw) !== params.poolRaw.toString()
+    || Number(poolIntent.rangeMultiple) !== rangeMultiple
+    || !/^\d+$/.test(String(poolIntent.startingMarketCapLamports))
+    || BigInt(poolIntent.startingMarketCapLamports) <= 0n) {
+    throw new Error('The saved Meteora pool intent does not match this launch allocation.');
+  }
+  // The first attempt records this intent before any pool transaction is sent.
+  // A retry uses the same raw quote value even when the external quote price moved.
+  params.poolMcapLamports = BigInt(poolIntent.startingMarketCapLamports);
+  progress({ stage: 'meteora_pool_start', allocationIndex: allocIdx, supplyPercent: alloc.supplyPercent, feeBps, rangeMultiple, poolIntent });
 
   let existing = await damm.findExistingPool({ connection, mint, positionNft: positionNft.publicKey, quoteMint });
   // A pair pool made with the original derivation (wallet and mint only) is this launch's too.
@@ -4416,7 +4436,7 @@ async function createMeteoraPoolForAllocation({
     quoteAddress: quote.address,
     supplyPercent: alloc.supplyPercent,
     poolId: created.pool,
-    damm: { feeBps, rangeMultiple, feePlan, position: created.position, verification: created.verification || null, adopted: created.adopted },
+    damm: { feeBps, rangeMultiple, feePlan, position: created.position, verification: created.verification || null, adopted: created.adopted, poolIntent },
     // One position, locked for good when the pool is made. Its NFT is the Fee Key.
     mainPositions: [{
       sliceIndex: 0,
@@ -4454,6 +4474,7 @@ export async function createPoolsAndPositions({
   // This means a single failed launch can be retried any number of times,
   // each retry only attempting the work that didn't complete before.
   priorResults = [],
+  meteoraPoolIntents = {},
   execution = null,
 }) {
   onProgress?.({ stage: 'lp_preflight', allocationCount: allocations.length });
@@ -5011,6 +5032,7 @@ export async function createPoolsAndPositions({
           alloc, allocIdx,
           quote: { address: quoteToken.address, decimals: quoteToken.decimals, symbol: quoteToken.symbol },
           startPrice: allocationStartPrice(launchedTokenUsd, quoteUsd, alloc),
+          poolIntent: meteoraPoolIntents?.[allocIdx] || null,
           progress: (event) => onProgress?.(event),
         }));
       } catch (error) {

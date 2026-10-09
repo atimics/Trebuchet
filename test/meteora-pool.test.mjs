@@ -56,7 +56,7 @@ test('a fresh Meteora pool is created once, locked, and recorded as one locked p
   lp.setDammServiceForTests(damm);
   const events = [];
   try {
-    const result = await hooks.createMeteoraPoolForAllocation({ ...base, alloc: { venue: 'meteora-damm-v2', supplyPercent: 80, damm: { feeBps: 50, rangeMultiple: 100 } }, progress: (e) => events.push(e.stage) });
+    const result = await hooks.createMeteoraPoolForAllocation({ ...base, alloc: { venue: 'meteora-damm-v2', supplyPercent: 80, damm: { feeBps: 50, rangeMultiple: 100 } }, progress: (e) => events.push(e) });
     const create = damm.calls.find((call) => call[0] === 'create');
     assert.ok(create);
     assert.equal(create[1], (1_000_000_000n * 10n ** 9n * 8000n / 10000n).toString());
@@ -67,12 +67,47 @@ test('a fresh Meteora pool is created once, locked, and recorded as one locked p
     assert.equal(result.mainPositions.length, 1);
     assert.equal(result.mainPositions[0].locked, true);
     assert.equal(result.bootstrap, null);
-    assert.deepEqual(events.filter((stage) => stage.startsWith('meteora')), ['meteora_pool_start', 'meteora_pool_done']);
+    const meteoraEvents = events.filter((event) => event.stage.startsWith('meteora'));
+    assert.deepEqual(meteoraEvents.map((event) => event.stage), ['meteora_pool_start', 'meteora_pool_done']);
+    assert.deepEqual(meteoraEvents[0].poolIntent, result.damm.poolIntent, 'the immutable pool intent is journaled before the send');
     // The same wallet and mint give the same position key on a second run.
     const again = fakeDamm();
     lp.setDammServiceForTests(again);
     await hooks.createMeteoraPoolForAllocation({ ...base, alloc: { venue: 'meteora-damm-v2', supplyPercent: 80 }, progress: () => {} });
     assert.equal(again.calls[0][1], damm.calls[0][1]);
+  } finally { lp.resetTestFactories(); }
+});
+
+test('recovery keeps the original pool range when the live quote price changes', async () => {
+  const original = fakeDamm();
+  lp.setDammServiceForTests(original);
+  let savedPoolIntent;
+  try {
+    await hooks.createMeteoraPoolForAllocation({
+      ...base,
+      alloc: { venue: 'meteora-damm-v2', supplyPercent: 100, damm: { rangeMultiple: 100 } },
+      progress: (event) => { if (event.stage === 'meteora_pool_start') savedPoolIntent = event.poolIntent; },
+    });
+
+    const resumed = fakeDamm({ poolExists: true, positionExists: true });
+    lp.setDammServiceForTests(resumed);
+    await hooks.createMeteoraPoolForAllocation({
+      ...base,
+      startPrice: '0.000002', // Quote USD moved after the original pool was sent.
+      poolIntent: savedPoolIntent,
+      alloc: { venue: 'meteora-damm-v2', supplyPercent: 100, damm: { rangeMultiple: 100 } },
+      progress: () => {},
+    });
+    const verifyArgs = resumed.calls.find((call) => call[0] === 'verify')[1];
+    assert.equal(verifyArgs.startingMarketCapLamports.toString(), savedPoolIntent.startingMarketCapLamports);
+    assert.equal(verifyArgs.rangeMultiple, savedPoolIntent.rangeMultiple);
+
+    await assert.rejects(hooks.createMeteoraPoolForAllocation({
+      ...base,
+      poolIntent: { ...savedPoolIntent, supplyRaw: '1' },
+      alloc: { venue: 'meteora-damm-v2', supplyPercent: 100, damm: { rangeMultiple: 100 } },
+      progress: () => {},
+    }), /saved Meteora pool intent does not match/);
   } finally { lp.resetTestFactories(); }
 });
 
