@@ -718,10 +718,19 @@ const createPoolsAndPositions = (requested) => {
   // Resuming a launch whose liquidity plan is already saved builds the remaining steps from that
   // plan, not from the current screen.
   const saved = requireLiquidityExecution().savedPlan(requested);
-  const input = saved && saved.tokenMint === requested.tokenMint
+  const savedPlanInput = saved && saved.tokenMint === requested.tokenMint
     ? { ...requested, allocations: saved.allocations, targetMarketCapUsd: saved.targetMarketCapUsd, tokenTotalSupply: saved.tokenTotalSupply,
       tokenDecimals: saved.tokenDecimals, lockPositions: saved.lockPositions }
     : requested;
+  const journal = requested.walletPublicKey ? launchJournal.activeForWallet(requested.walletPublicKey) : null;
+  const journalPlan = journal?.poolPlan;
+  const journalIntents = journalPlan?.tokenMint === requested.tokenMint
+    ? journalPlan.meteoraPoolIntents || {}
+    : {};
+  const input = {
+    ...savedPlanInput,
+    meteoraPoolIntents: { ...(requested.meteoraPoolIntents || {}), ...journalIntents },
+  };
   return createPoolsWithSdk({ ...input, execution: {
     ...requireLiquidityExecution().forLaunch(input), transferFeeKey: feeKeyExecution.forLaunch(input),
   } });
@@ -6329,6 +6338,18 @@ function recordLpJournalProgress(walletPublicKey, event) {
   const partialResults = journalResultList(journal);
   const patch = { stage: event.stage || 'lp_progress' };
 
+  if (event.stage === 'meteora_pool_start'
+    && Number.isInteger(event.allocationIndex)
+    && event.poolIntent && typeof event.poolIntent === 'object') {
+    patch.poolPlan = {
+      ...(journal?.poolPlan || {}),
+      meteoraPoolIntents: {
+        ...(journal?.poolPlan?.meteoraPoolIntents || {}),
+        [event.allocationIndex]: event.poolIntent,
+      },
+    };
+  }
+
   if (applyLpEventToResults(partialResults, event, journal)) {
     patch.lp = { partialResults };
   }
@@ -8257,6 +8278,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
 
     const result = await createPoolsAndPositions({
       tempWalletSecretKey: wallet.secretKey,
+      walletPublicKey,
       tokenMint,
       tokenDecimals,
       tokenTotalSupply,
@@ -8264,6 +8286,7 @@ app.post('/api/launch-journals/resume', async (req, res) => {
       allocations,
       lockPositions,
       priorResults: effectivePriorResults,
+      meteoraPoolIntents: poolPlan.meteoraPoolIntents || {},
       onProgress: (event) => {
         recordLpJournalProgress(walletPublicKey, event);
         try { lpProgressEvent(walletPublicKey, event); }

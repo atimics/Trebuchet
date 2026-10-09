@@ -79,6 +79,21 @@ test('all six ordinary services return results and release their wallet admissio
   }
 });
 
+test('classic liquidity create and resume pass the resolved wallet to the shared pool wrapper', async () => {
+  for (const method of ['createLiquidity', 'resumeLiquidity']) {
+    const f = fixture();
+    let poolRequest;
+    f.deps.createPoolsAndPositions = async (request) => {
+      poolRequest = request;
+      return { results: [{ poolId: 'pool-a' }] };
+    };
+
+    await f.services()[method]({ ...input });
+
+    assert.equal(poolRequest.walletPublicKey, input.walletPublicKey, method);
+  }
+});
+
 test('concurrent liquidity requests preserve the active request and its progress', async () => {
   const f = fixture();
   let complete, entered;
