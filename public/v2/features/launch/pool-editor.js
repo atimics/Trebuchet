@@ -167,11 +167,15 @@ function setPoolVenueChoice(rowKey, patch) {
   }
   if (rowKey === 'quote') {
     if (patch.venue) state.quotePoolVenue = patch.venue;
+    // A ramp must decay: if the start fee drops below a saved end fee, the end
+    // fee follows it down rather than leaving an invalid schedule behind.
+    const nextStart = patch.feeBps ? patch.feeBps : Number(state.quotePoolDamm?.feeBps) || 25;
     state.quotePoolDamm = {
       ...state.quotePoolDamm,
       ...(patch.feeBps ? { feeBps: patch.feeBps } : {}),
       ...(patch.feeModel ? { feeModel: patch.feeModel } : {}),
-      ...(patch.ramp ? { ramp: { endBps: patch.ramp.endBps, durationSec: state.quotePoolDamm?.ramp?.durationSec || 30 * 24 * 3600 } } : {}),
+      ...(patch.ramp ? { ramp: { endBps: Math.min(patch.ramp.endBps, nextStart), durationSec: state.quotePoolDamm?.ramp?.durationSec || 30 * 24 * 3600 } } : {}),
+      ...(state.quotePoolDamm?.ramp && patch.feeBps ? { ramp: { ...state.quotePoolDamm.ramp, endBps: Math.min(state.quotePoolDamm.ramp.endBps, nextStart) } } : {}),
       ...(patch.rangeMultiple ? { rangeMultiple: patch.rangeMultiple } : {}),
     };
     if (patch.tierIndex != null) state.pairPoolConfigIndex = patch.tierIndex;
@@ -180,9 +184,12 @@ function setPoolVenueChoice(rowKey, patch) {
   const pool = state.customPools.find((item) => `custom:${item.id}` === rowKey);
   if (!pool) return;
   if (patch.venue) pool.venue = patch.venue;
-  if (patch.feeBps) pool.dammFeeBps = patch.feeBps;
+  if (patch.feeBps) {
+    pool.dammFeeBps = patch.feeBps;
+    if (pool.dammRamp) pool.dammRamp = { ...pool.dammRamp, endBps: Math.min(pool.dammRamp.endBps, patch.feeBps) };
+  }
   if (patch.feeModel) pool.dammFeeModel = patch.feeModel;
-  if (patch.ramp) pool.dammRamp = { endBps: patch.ramp.endBps, durationSec: pool.dammRamp?.durationSec || 30 * 24 * 3600 };
+  if (patch.ramp) pool.dammRamp = { endBps: Math.min(patch.ramp.endBps, Number(pool.dammFeeBps) || 25), durationSec: pool.dammRamp?.durationSec || 30 * 24 * 3600 };
   if (patch.rangeMultiple) pool.dammRange = patch.rangeMultiple;
   if (patch.tierIndex != null) pool.ammConfigIndex = patch.tierIndex;
 }
@@ -216,7 +223,10 @@ function rowSwitchesHtml(row) {
     fee += toggleGroupHtml({ label: `${row.label} fee`, action: 'set-pool-fee', rowKey: row.key, selected: current, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
     if (model === 'ramp') {
       const end = Number(poolVenueFor(row).damm?.ramp?.endBps) || 25;
-      fee += toggleGroupHtml({ label: `${row.label} ramp end fee`, action: 'set-pool-ramp-end', rowKey: row.key, selected: end, options: METEORA_FEES.map((bps) => [bps, `${bps / 100}%`]) });
+      // A ramp must decay: the end fee can never exceed the start fee, so only
+      // offer end-fee buttons at or below the current fee.
+      const endOptions = METEORA_FEES.filter((bps) => bps <= current);
+      fee += toggleGroupHtml({ label: `${row.label} ramp end fee`, action: 'set-pool-ramp-end', rowKey: row.key, selected: end, options: endOptions.map((bps) => [bps, `${bps / 100}%`]) });
     }
   } else {
     const tiers = normalizeClmmFeeTiers(state.clmmFeeTiers);
