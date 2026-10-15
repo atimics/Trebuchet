@@ -18,7 +18,17 @@
 // the flywheel, testable without a validator.
 
 export const FLYWHEEL_SCHEDULE_SCHEMA = 'trebuchet-flywheel-schedule/v1';
-export const FLYWHEEL_MODES = new Set(['static', 'rotating']);
+export const FLYWHEEL_MODES = new Set(['static', 'rotating', 'fee-routing']);
+
+// Fee-routing outputs: what a crank does with the claimed fees. There is
+// deliberately NO `add` output — adding liquidity is rotation, which is a
+// different promise and out of scope until the rotational-vs-locked
+// milestone. `holders` distributes pro-rata from a snapshot; `transfer`
+// sends to one wallet; `buyback-burn` swaps into the launched token and
+// burns it.
+export const FEE_ROUTING_OUTPUTS = new Set(['buyback-burn', 'transfer', 'holders']);
+export const DEFAULT_FEE_ROUTING_OUTPUT = Object.freeze({ type: 'transfer', pct: 100, wallet: null });
+const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 const HOUR_MS = 3600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -31,6 +41,7 @@ const LIMITS = Object.freeze({
   slippageBps: [10, 2000],
   cooldownAfterFailureSec: [60, 7 * 24 * 3600],
   maxCranksPerDay: [1, 288],
+  claimThresholdSol: [0, 100],
 });
 
 function numeric(value, fallback) {
@@ -94,10 +105,48 @@ export function normalizeFlywheelSchedule(input = {}) {
     }
   }
 
+  // Fee-routing outputs: every recognized type except `add`, pct sum 100,
+  // and a transfer carries a wallet. `holders` rows are taken at crank time
+  // so no snapshot is validated here.
+  let outputs = [];
+  if (mode === 'fee-routing') {
+    const rows = Array.isArray(input.outputs) ? input.outputs : [];
+    if (!rows.length) {
+      throw new Error('A fee-routing flywheel needs at least one output');
+    }
+    outputs = rows.map((output, index) => {
+      if (!output || typeof output !== 'object') {
+        throw new Error(`Fee-routing output ${index + 1} must be an object`);
+      }
+      const type = String(output.type || '').trim();
+      if (!FEE_ROUTING_OUTPUTS.has(type)) {
+        throw new Error(`Fee-routing output ${index + 1} must be one of: ${[...FEE_ROUTING_OUTPUTS].join(', ')} (no add: adding liquidity is rotation)`);
+      }
+      const pct = numeric(output.pct, NaN);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        throw new Error(`Fee-routing output ${index + 1} needs a percent between 0 and 100`);
+      }
+      const wallet = output.wallet ? String(output.wallet).trim() : null;
+      if (type === 'transfer' && (!wallet || !BASE58_ADDRESS.test(wallet))) {
+        throw new Error(`Fee-routing output ${index + 1} (transfer) needs a Solana wallet address`);
+      }
+      return { type, pct: Math.round(pct * 10) / 10, wallet };
+    });
+    const total = outputs.reduce((sum, output) => sum + output.pct, 0);
+    if (Math.abs(total - 100) > 0.1) {
+      throw new Error(`Fee-routing output percentages must sum to 100 (got ${total})`);
+    }
+    if (new Set(outputs.map((output) => `${output.type}:${output.wallet || ''}`)).size !== outputs.length) {
+      throw new Error('Fee-routing outputs must be distinct');
+    }
+  }
+
   return {
     schema: FLYWHEEL_SCHEDULE_SCHEMA,
     mode,
     targets: normalizedTargets,
+    outputs,
+    claimThresholdSol: bounded(input.claimThresholdSol, LIMITS.claimThresholdSol, 0.02),
     minIntervalSec: bounded(input.minIntervalSec, LIMITS.minIntervalSec, 900),
     driftThresholdPct: bounded(input.driftThresholdPct, LIMITS.driftThresholdPct, 3),
     maxSpendSolPerCrank: bounded(input.maxSpendSolPerCrank, LIMITS.maxSpendSolPerCrank, 0.05),
@@ -149,7 +198,7 @@ export function decideCrank({ schedule, state = {}, now = new Date() } = {}) {
     return { action: 'pause', reason: 'Invalid clock' };
   }
 
-  if (normalized.mode !== 'rotating') {
+  if (normalized.mode === 'static') {
     return { action: 'pause', reason: 'Schedule is static; nothing is allowed to move' };
   }
   if (normalized.killSwitch) {
@@ -180,6 +229,30 @@ export function decideCrank({ schedule, state = {}, now = new Date() } = {}) {
     }
   }
 
+  const ceiling = {
+    slippageBps: normalized.slippageBps,
+    spendCeilingSol: Math.round(Math.min(normalized.maxSpendSolPerCrank, dayRemaining) * 1e6) / 1e6,
+  };
+
+  // Fee routing: the trigger is claimable fees, not pool-weight drift. The
+  // keeper claims whatever is above the threshold and routes it per outputs;
+  // it never adds liquidity and never touches the locked positions.
+  if (normalized.mode === 'fee-routing') {
+    const claimableSol = Math.max(0, numeric(state.claimableSol, 0));
+    if (claimableSol < normalized.claimThresholdSol) {
+      return {
+        action: 'wait',
+        reason: `Claimable fees ${claimableSol} SOL are below the ${normalized.claimThresholdSol} SOL threshold`,
+      };
+    }
+    return {
+      action: 'crank',
+      reason: `Claimable fees ${claimableSol} SOL are above the ${normalized.claimThresholdSol} SOL threshold`,
+      outputs: normalized.outputs.map((output) => ({ ...output })),
+      ...ceiling,
+    };
+  }
+
   const drift = maxDriftPct(normalized.targets, state.pools || []);
   if (drift < normalized.driftThresholdPct) {
     return { action: 'wait', reason: `Drift ${drift}% is below the ${normalized.driftThresholdPct}% threshold` };
@@ -189,7 +262,6 @@ export function decideCrank({ schedule, state = {}, now = new Date() } = {}) {
     action: 'crank',
     reason: `Drift ${drift}% exceeds the ${normalized.driftThresholdPct}% threshold`,
     targets: normalized.targets.map((target) => ({ ...target })),
-    slippageBps: normalized.slippageBps,
-    spendCeilingSol: Math.round(Math.min(normalized.maxSpendSolPerCrank, dayRemaining) * 1e6) / 1e6,
+    ...ceiling,
   };
 }

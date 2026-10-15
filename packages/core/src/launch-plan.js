@@ -263,6 +263,8 @@ function normalizeSupport(input = {}) {
   return support;
 }
 
+import { normalizeDammFeePlan } from '@trebuchet/core/damm-v2-plan';
+
 const METEORA_VENUE = 'meteora-damm-v2';
 const METEORA_FEE_BPS = [25, 50, 100, 200];
 const METEORA_RANGES = [100, 1000, 10000];
@@ -619,6 +621,16 @@ function normalizePoolTopology(input = {}) {
           damm: {
             feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
             rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1000))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1000)) : 1000,
+            // The full fee schedule lands in the normalized plan so the report
+            // and the pool creation always see the same numbers. Throws on a
+            // malformed schedule instead of silently defaulting.
+            ...normalizeDammFeePlan({
+              model: pool.damm?.feeModel,
+              bps: pool.damm?.feeBps ?? 25,
+              ramp: pool.damm?.ramp,
+              dynamic: pool.damm?.dynamic,
+              marketcap: pool.damm?.marketcap,
+            }),
           },
           distribution: [{ sharePercent: 100 }],
           bootstrap: { mode: 'minimal' },

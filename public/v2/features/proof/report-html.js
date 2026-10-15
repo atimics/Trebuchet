@@ -772,12 +772,34 @@ function v2ReportPoolConfig(config, result, index) {
 }
 
 function v2ReportPoolFeeTierLabel(pool = {}, userPool = {}) {
+  // Meteora DAMM v2 pool: state the full fee schedule from the plan, never
+  // a bare number — a dynamic or ramping fee is a schedule, not a rate.
+  const damm = pool.damm ?? userPool.damm;
+  if (damm) {
+    const bps = Number(damm.bps ?? damm.feeBps) || 25;
+    const model = damm.model ?? damm.feeModel ?? 'fixed';
+    if (model === 'ramp') {
+      const end = Number(damm.ramp?.endBps) || 25;
+      const days = Math.max(1, Math.round((Number(damm.ramp?.durationSec) || 30 * 86400) / 86400));
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% over ${days}d (Meteora ramp)`;
+    }
+    if (model === 'dynamic') {
+      const swing = (Number(damm.dynamic?.maxPriceChangeBps) || 500) / 100;
+      return `${(bps / 100).toFixed(2)}% base + up to ${swing.toFixed(2)}% under volatility (Meteora dynamic)`;
+    }
+    if (model === 'marketcap') {
+      const end = Number(damm.marketcap?.endBps) || bps;
+      return `${(bps / 100).toFixed(2)}% → ${(end / 100).toFixed(2)}% by market cap (Meteora)`;
+    }
+    return `${(bps / 100).toFixed(2)}% (Meteora)`;
+  }
   const index = Math.floor(Number(pool.ammConfigIndex ?? userPool.ammConfigIndex));
   const tickSpacing = numberOrNull(pool.tickSpacing ?? userPool.tickSpacing);
   const tier = normalizeClmmFeeTiers(state.clmmFeeTiers).find((item) => item.index === index);
   if (tier) {
     const feePercent = Number(tier.tradeFeeRate || 0) / 10000;
-    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}`;
+    const dynamic = tier.feeModel === 'dynamic' ? ' · dynamic (base)' : '';
+    return `${feePercent.toFixed(2)}% / spacing ${tickSpacing ?? tier.tickSpacing}${dynamic}`;
   }
   if (Number.isFinite(tickSpacing) && Number.isFinite(index)) return `index ${index} / spacing ${tickSpacing}`;
   if (Number.isFinite(tickSpacing)) return `spacing ${tickSpacing}`;

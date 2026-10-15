@@ -689,6 +689,66 @@ var TrebuchetCore = (() => {
     return (padded.slice(0, -decimals) + "." + padded.slice(-decimals)).replace(/0+$/, "").replace(/\.$/, "");
   }
 
+  // packages/core/src/damm-v2-plan.js
+  var DAMM_V2_KEY_TRANSFER_LAMPORTS = 2074080 + 5e3;
+  var DAMM_V2_DEFAULTS = Object.freeze({
+    startingMarketCapUsd: 25e4,
+    rangeMultiple: 1e3,
+    feeBps: 25,
+    feeModel: "fixed"
+  });
+  var DAMM_V2_LIMITS = Object.freeze({
+    startingMarketCapUsd: [1e3, 1e9],
+    rangeMultiple: [10, 1e5],
+    feeBps: [1, 1e3],
+    // Ramp: startingFeeBps -> endingFeeBps over a total duration, in seconds.
+    rampFeeBps: [1, 1e3],
+    rampDurationSec: [1, 90 * 24 * 3600],
+    // Dynamic: the drop is bounded by the pool charging its base plus up to a
+    // max price-move premium. maxPriceChangeBps is the volatility swing bound.
+    dynamicMaxPriceChangeBps: [1, 5e3],
+    // Market-cap scheduler: fee decays as the pool's market cap crosses one
+    // priceMultiple, then expires after schedulerExpirationDuration seconds.
+    marketcapPriceMultiple: [1, 1e6],
+    marketcapExpirationSec: [1, 90 * 24 * 3600]
+  });
+  var DAMM_FEE_MODELS = Object.freeze(["fixed", "ramp", "dynamic", "marketcap"]);
+  function normalizeDammFeePlan(input = {}) {
+    const model = DAMM_FEE_MODELS.includes(String(input.model || "fixed")) ? String(input.model || "fixed") : "fixed";
+    const bps = bounded("Fee schedule base", input.bps ?? DAMM_V2_DEFAULTS.feeBps, DAMM_V2_LIMITS.feeBps, true);
+    const rampBps = bounded("Ramp fee", input.ramp?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+    const durationSec = bounded("Ramp duration", input.ramp?.durationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.rampDurationSec, true);
+    const maxPriceChangeBps = bounded("Dynamic fee swing", input.dynamic?.maxPriceChangeBps ?? 500, DAMM_V2_LIMITS.dynamicMaxPriceChangeBps, true);
+    const marketcapEndBps = bounded("Market-cap end fee", input.marketcap?.endBps ?? bps, DAMM_V2_LIMITS.rampFeeBps, true);
+    const priceMultiple = bounded("Market-cap multiple", input.marketcap?.priceMultiple ?? 10, DAMM_V2_LIMITS.marketcapPriceMultiple);
+    const expirationSec = bounded("Market-cap scheduler expiry", input.marketcap?.expirationSec ?? 30 * 24 * 3600, DAMM_V2_LIMITS.marketcapExpirationSec, true);
+    switch (model) {
+      case "fixed":
+        return { model: "fixed", bps };
+      case "ramp":
+        if (rampBps > bps) {
+          throw new Error("A ramp fee must decay: the end fee must be at or below the start fee");
+        }
+        return { model: "ramp", bps, ramp: { endBps: rampBps, durationSec } };
+      case "dynamic":
+        return { model: "dynamic", bps, dynamic: { maxPriceChangeBps } };
+      case "marketcap":
+        if (marketcapEndBps > bps) {
+          throw new Error("A market-cap fee must decay: the end fee must be at or below the start fee");
+        }
+        return { model: "marketcap", bps, marketcap: { endBps: marketcapEndBps, priceMultiple, expirationSec } };
+      default:
+        throw new Error(`Fee model must be one of: ${DAMM_FEE_MODELS.join(", ")}`);
+    }
+  }
+  function bounded(name, value, [min, max], integer = false) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`${name} must be a number`);
+    if (integer && !Number.isInteger(number)) throw new Error(`${name} must be a whole number`);
+    if (number < min || number > max) throw new Error(`${name} must be between ${min.toLocaleString("en-US")} and ${max.toLocaleString("en-US")}`);
+    return number;
+  }
+
   // packages/core/src/launch-plan.js
   var CONTRACT_VERSION = 1;
   var TREBUCHET_PLAN_SCHEMA = "trebuchet-launch-plan/v1";
@@ -1192,7 +1252,17 @@ var TrebuchetCore = (() => {
           venue: METEORA_VENUE,
           damm: {
             feeBps: METEORA_FEE_BPS.includes(Math.round(numeric(pool.damm?.feeBps, 25))) ? Math.round(numeric(pool.damm?.feeBps, 25)) : 25,
-            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1e3))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1e3)) : 1e3
+            rangeMultiple: METEORA_RANGES.includes(Math.round(numeric(pool.damm?.rangeMultiple, 1e3))) ? Math.round(numeric(pool.damm?.rangeMultiple, 1e3)) : 1e3,
+            // The full fee schedule lands in the normalized plan so the report
+            // and the pool creation always see the same numbers. Throws on a
+            // malformed schedule instead of silently defaulting.
+            ...normalizeDammFeePlan({
+              model: pool.damm?.feeModel,
+              bps: pool.damm?.feeBps ?? 25,
+              ramp: pool.damm?.ramp,
+              dynamic: pool.damm?.dynamic,
+              marketcap: pool.damm?.marketcap
+            })
           },
           distribution: [{ sharePercent: 100 }],
           bootstrap: { mode: "minimal" },
